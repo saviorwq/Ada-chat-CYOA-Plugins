@@ -4125,20 +4125,6 @@ ${t('prompt.rule.7')}`;
                     });
                     break;
             }
-
-            const hintBase = CYOA.t(CONFIG.VISION_SENSORY_HINTS?.[visionType] || '【视觉受限');
-            let hint = hintBase;
-            if (mt) {
-                const matNarr = CONFIG.VISION_MATERIAL_NARRATIVES?.[visionType]?.[mt.key];
-                if (matNarr) {
-                    hint += CYOA.t('narr.filter.hintDash') + CYOA.t(matNarr);
-                } else {
-                    hint += CYOA.t('narr.filter.hintDash') + CYOA.t(mt.label) + (mt.sf.touch ? (CYOA.lang === 'en' ? ' (' + CYOA.t(mt.sf.touch) + ')' : '（' + mt.sf.touch + '）') : '') + CYOA.t('narr.filter.matFace');
-                    if (mt.sf.resistance) hint += (CYOA.lang === 'en' ? ', ' : '，') + CYOA.t(mt.sf.resistance);
-                }
-            }
-            hint += CYOA.t('narr.filter.hintEnd');
-            t = hint + '\n\n' + t;
         }
 
         // 耳聋：去掉含声音描写的句子（controller_only模式保留控制者的话语）
@@ -4149,80 +4135,16 @@ ${t('prompt.rule.7')}`;
                     if (/主人|控制者|耳机|传来|命令|指令/.test(match)) return match;
                     return '';
                 });
-                let hint = CYOA.t('narr.filter.deaf.controllerHint', {label: CYOA.t(earDev.label || '耳部装置')});
-                t = hint + '\n\n' + t;
             } else {
                 t = t.replace(/[^。！？\n]*(?:听见|响声|听到|声音|声响|一声|喧哗|嘈杂|呼喊|叫声)[^。！？\n]*[。！？\n]?/g, '');
-                const mt = getMaterialFor('deaf');
-                const deafDevLabel = earDev ? CYOA.t(earDev.label) + (CYOA.lang === 'en' ? ' ' : '将') : '';
-                let hint = CYOA.t('narr.filter.deaf.hint.prefix', {label: deafDevLabel});
-                if (mt) {
-                    hint += CYOA.t('narr.filter.deaf.hint.withMat', {matLabel: CYOA.t(mt.label), touch: CYOA.t(mt.sf.touch || ''), resistance: CYOA.t(mt.sf.resistance || '物理阻隔')});
-                } else {
-                    hint += CYOA.t('narr.filter.deaf.hint.noMat');
-                }
-                hint += CYOA.t('narr.filter.hintEnd');
-                t = hint + '\n\n' + t;
             }
         }
 
-        // 禁言：不过滤文本，但注入材质感官提示
-        if (constraints.has('mute')) {
-            if (constraints.has('forced_open_mouth')) {
-                const gagDef = CYOA.getActiveGagType?.();
-                const mt = getMaterialFor('mute');
-                const matLabel = mt ? CYOA.t(mt.label) : '';
-                let hint = CYOA.t('narr.filter.mute.forcedOpen', {matLabel, gagLabel: CYOA.t(gagDef?.label || '口枷')});
-                t = hint + '\n\n' + t;
-            } else {
-                const mt = getMaterialFor('mute');
-                if (mt) {
-                    let hint = CYOA.t('narr.filter.mute.hint', {matLabel: CYOA.t(mt.label), touch: CYOA.t(mt.sf.touch || '')});
-                    if (mt.sf.resistance) hint += CYOA.t('narr.filter.mute.hintResist', {resistance: CYOA.t(mt.sf.resistance)});
-                    hint += CYOA.t('narr.filter.mute.hintEnd');
-                    t = hint + '\n\n' + t;
-                }
-            }
-        }
+        // 禁言：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
 
-        // 限步：根据 stepLimitCm 注入分级感官提示
-        if (constraints.has('limited_step')) {
-            const lsParams = getLimitedStepParams();
-            const cm = lsParams?.stepLimitCm ?? (CONFIG.LIMITED_STEP_DEFAULTS?.stepLimitCm || 20);
-            const pct = lsParams?.speedModifierPct ?? (CONFIG.LIMITED_STEP_DEFAULTS?.speedModifierPct || -50);
-            const tier = getLimitedStepTier(cm);
-            if (tier) {
-                const mt = getMaterialFor('limited_step');
-                const spdStr = pct >= 0 ? `+${pct}%` : `${pct}%`;
-                let hint = CYOA.t(tier.hint || '【限步中');
-                hint += (CYOA.lang === 'en' ? ` (${cm}cm / speed ${spdStr})` : `（${cm}cm / 速度${spdStr}）`);
-                if (mt) {
-                    const resistText = mt.sf.resistance ? CYOA.t('narr.filter.step.matResist', {resistance: CYOA.t(mt.sf.resistance)}) : '';
-                    hint += CYOA.t('narr.filter.step.matHint', {matLabel: CYOA.t(mt.label), resistText});
-                    if (mt.sf.touch) hint += CYOA.t('narr.filter.step.touchHint', {touch: CYOA.t(mt.sf.touch)});
-                }
-                hint += (CYOA.lang === 'en' ? '. ' : '。') + CYOA.t(tier.description) + (CYOA.lang === 'en' ? ']' : '】');
-                t = hint + '\n\n' + t;
-            }
-        }
+        // 限步：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
 
-        // 贞操：注入材质感官提示
-        if (constraints.has('chastity')) {
-            const mt = getMaterialFor('chastity');
-            let hint = CYOA.t('narr.filter.chastity.base');
-            if (mt) {
-                const matNarr = CONFIG.CONSTRAINT_MATERIAL_NARRATIVES?.chastity?.[mt.key];
-                if (matNarr) {
-                    hint += CYOA.t('narr.filter.hintDash') + CYOA.t(matNarr);
-                } else {
-                    const touchText = mt.sf.touch ? CYOA.t('narr.filter.chastity.matTouch', {touch: CYOA.t(mt.sf.touch)}) : '';
-                    hint += CYOA.t('narr.filter.chastity.matFallback', {matLabel: CYOA.t(mt.label), touchText});
-                    if (mt.sf.resistance) hint += (CYOA.lang === 'en' ? ', ' : '，') + CYOA.t(mt.sf.resistance);
-                }
-            }
-            hint += CYOA.t('narr.filter.hintEnd');
-            t = hint + '\n\n' + t;
-        }
+        // 贞操：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
 
         t = t.replace(/\n{3,}/g, '\n\n').trim();
 
