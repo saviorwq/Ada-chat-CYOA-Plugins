@@ -1,0 +1,10 @@
+# Game data (user-generated)
+cyoa_games/
+*.json
+!manifest.json
+
+# IDE / OS
+.vscode/
+.cursor/
+.DS_Store
+Thumbs.db

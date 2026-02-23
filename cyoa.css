@@ -1,0 +1,602 @@
+/* ===== CYOA 插件专用样式 ===== */
+
+/* --- 游戏模式下的主界面调整 --- */
+body.game-mode-active .sidebar { 
+    display: none !important; 
+}
+
+body.game-mode-active #dropZone { 
+    display: none !important; 
+}
+
+body.game-mode-active #cyoa-game-sidebar { 
+    display: flex !important; 
+}
+
+body.game-mode-active #cyoa-game-input-area { 
+    display: flex !important; 
+}
+
+/* --- 游戏侧边栏 --- */
+#cyoa-game-sidebar {
+    display: none;
+    width: 320px;
+    background: var(--bg-light);
+    border-left: 1px solid var(--border);
+    flex-direction: column;
+    height: 100%;
+    position: relative;
+    z-index: 100;
+    box-shadow: -4px 0 15px rgba(0,0,0,0.05);
+}
+
+/* --- 游戏输入区域 --- */
+#cyoa-game-input-area {
+    display: none;
+    background: var(--bg-light);
+    border-top: 1px solid var(--border);
+    padding: 16px 28px 20px;
+    box-shadow: 0 -4px 15px rgba(0, 0, 0, 0.03);
+    flex-direction: column;
+    gap: 12px;
+}
+
+/* --- 游戏选项按钮区域 --- */
+#gameOptions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 12px;
+}
+
+#gameOptions button {
+    flex: 1 1 auto;
+    min-width: 120px;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    cursor: pointer;
+    transition: var(--transition);
+    font-size: 13px;
+    text-align: left;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+#gameOptions button:hover {
+    background: var(--primary-light);
+    border-color: var(--primary);
+    color: var(--primary-dark);
+}
+
+/* --- 游戏控制栏 --- */
+#gameModeBar {
+    background: var(--bg-light);
+    border-top: 1px solid var(--border);
+    padding: 16px 28px 20px;
+    position: relative;
+    z-index: 100;
+}
+
+/* --- 游戏内角色选择 --- */
+#gameRoleSelect {
+    min-width: 100px;
+    width: auto;
+    height: 36px;
+    background-color: var(--bg-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    padding: 0 10px;
+    outline: none;
+}
+
+#gameMsg {
+    flex: 1;
+    min-width: 200px;
+    height: 36px;
+    resize: none;
+    padding: 8px 12px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+#gameMsg:focus {
+    border-color: var(--primary);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+}
+
+/* --- 缩略表格样式 --- */
+.cyoa-summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+    gap: 10px;
+    margin: 10px 0;
+}
+
+.cyoa-summary-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px;
+    background: var(--bg-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    transition: var(--transition);
+}
+
+.cyoa-summary-item:hover {
+    border-color: var(--primary);
+    box-shadow: var(--shadow-sm);
+}
+
+.cyoa-item-preview {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 1;
+    overflow: hidden;
+}
+
+.cyoa-item-preview .item-icon {
+    font-size: 18px;
+    min-width: 24px;
+}
+
+.cyoa-item-preview .item-name {
+    font-weight: 600;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100px;
+}
+
+.cyoa-item-preview .item-type,
+.cyoa-item-preview .item-value,
+.cyoa-item-preview .item-slots,
+.cyoa-item-preview .item-count {
+    font-size: 12px;
+    color: var(--text-light);
+    background: var(--bg);
+    padding: 2px 6px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
+.cyoa-item-preview .item-locked {
+    color: var(--danger);
+    font-size: 14px;
+}
+
+.cyoa-item-preview .item-desc {
+    font-size: 11px;
+    color: var(--text-light);
+    max-width: 80px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.cyoa-item-actions {
+    display: flex;
+    gap: 4px;
+}
+
+.cyoa-item-actions button {
+    background: none;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    padding: 4px;
+    border-radius: 4px;
+    opacity: 0.6;
+    transition: var(--transition);
+}
+
+.cyoa-item-actions button:hover {
+    opacity: 1;
+    background: var(--bg);
+}
+
+.cyoa-item-actions .delete-item:hover {
+    color: var(--danger);
+}
+
+/* --- 空状态样式 --- */
+.cyoa-empty-state {
+    padding: 20px;
+    text-align: center;
+    color: var(--text-light);
+    background: var(--bg);
+    border-radius: var(--radius-md);
+    border: 1px dashed var(--border);
+}
+
+/* --- 模态框样式 --- */
+.cyoa-modal-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
+    opacity: 0;
+    visibility: hidden;
+    transition: all 0.3s ease;
+}
+
+.cyoa-modal-overlay.active {
+    opacity: 1;
+    visibility: visible;
+}
+
+.cyoa-modal {
+    background: var(--bg-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+}
+
+.cyoa-modal-header {
+    padding: 16px 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cyoa-modal-title {
+    margin: 0;
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.cyoa-modal-close {
+    background: none;
+    border: none;
+    font-size: 24px;
+    cursor: pointer;
+    color: var(--text-light);
+    padding: 0;
+    line-height: 1;
+}
+
+.cyoa-modal-body {
+    padding: 20px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.cyoa-modal-footer {
+    padding: 16px 20px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+}
+
+/* --- 编辑器样式 --- */
+.cyoa-editor-container {
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.cyoa-editor-section {
+    background: var(--bg-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    margin-bottom: 20px;
+    overflow: hidden;
+}
+
+.cyoa-section-header {
+    padding: 12px 16px;
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+    font-weight: 600;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cyoa-section-body {
+    padding: 16px;
+}
+
+.cyoa-grid-2, .cyoa-grid-3 {
+    display: grid;
+    gap: 12px;
+    margin-bottom: 12px;
+}
+
+.cyoa-grid-2 {
+    grid-template-columns: repeat(2, 1fr);
+}
+
+.cyoa-grid-3 {
+    grid-template-columns: repeat(3, 1fr);
+}
+
+.cyoa-form-group {
+    margin-bottom: 12px;
+}
+
+.cyoa-form-group label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.cyoa-input, .cyoa-select, .cyoa-textarea {
+    width: 100%;
+    padding: 8px 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    color: var(--text);
+    background: var(--bg-light);
+    transition: var(--transition);
+}
+
+.cyoa-input:focus, .cyoa-select:focus, .cyoa-textarea:focus {
+    border-color: var(--primary);
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(16, 185, 129, 0.1);
+}
+
+.cyoa-textarea {
+    resize: vertical;
+    min-height: 60px;
+}
+
+.cyoa-btn {
+    padding: 8px 16px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 14px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.cyoa-btn-primary {
+    background: var(--primary);
+    color: white;
+}
+
+.cyoa-btn-primary:hover {
+    background: var(--primary-dark);
+}
+
+.cyoa-btn-secondary {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+}
+
+.cyoa-btn-secondary:hover {
+    background: var(--border);
+}
+
+.cyoa-btn-sm {
+    padding: 4px 12px;
+    font-size: 12px;
+}
+
+.cyoa-btn-icon {
+    background: none;
+    border: none;
+    padding: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    border-radius: 4px;
+    transition: var(--transition);
+}
+
+.cyoa-btn-icon:hover {
+    background: var(--bg);
+}
+
+.cyoa-btn-icon.danger:hover {
+    color: var(--danger);
+    background: rgba(239, 68, 68, 0.1);
+}
+
+/* --- 编辑表单样式 --- */
+#editFormContainer {
+    position: fixed;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    background: var(--bg-light);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    padding: 20px;
+    max-width: 500px;
+    width: 90%;
+    max-height: 80vh;
+    overflow-y: auto;
+    z-index: 10000;
+}
+
+.cyoa-edit-form h4 {
+    margin-top: 0;
+    margin-bottom: 20px;
+    color: var(--text);
+    font-size: 18px;
+}
+
+.cyoa-form-row {
+    margin-bottom: 16px;
+}
+
+.cyoa-form-row label {
+    display: block;
+    margin-bottom: 4px;
+    font-size: 13px;
+    font-weight: 500;
+    color: var(--text);
+}
+
+.cyoa-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 20px;
+    padding-top: 16px;
+    border-top: 1px solid var(--border);
+}
+
+.cyoa-checkbox-row {
+    display: flex;
+    align-items: center;
+}
+
+.cyoa-checkbox-row label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 0;
+    cursor: pointer;
+}
+
+/* --- 部位选择器 --- */
+.cyoa-slot-selector {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(100px, 1fr));
+    gap: 8px;
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 10px;
+    background: var(--bg);
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+}
+
+.cyoa-slot-checkbox {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+/* --- 可交互设施列表 --- */
+.cyoa-interactable-row {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 8px;
+    align-items: center;
+}
+
+.cyoa-interactable-row input {
+    flex: 1;
+}
+
+/* --- 游戏卡片列表 --- */
+.cyoa-game-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+    margin-top: 20px;
+}
+
+.cyoa-game-card {
+    background: var(--bg-light);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 16px;
+    transition: var(--transition);
+}
+
+.cyoa-game-card:hover {
+    transform: translateY(-2px);
+    box-shadow: var(--shadow-md);
+    border-color: var(--primary);
+}
+
+.cyoa-card-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    margin-bottom: 10px;
+}
+
+.cyoa-card-title {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.cyoa-badge {
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 11px;
+    font-weight: 500;
+}
+
+.cyoa-badge-primary {
+    background: var(--primary-light);
+    color: var(--primary-dark);
+}
+
+.cyoa-card-meta {
+    font-size: 12px;
+    color: var(--text-light);
+    margin-bottom: 12px;
+}
+
+.cyoa-card-stats {
+    display: grid;
+    gap: 8px;
+    margin-bottom: 16px;
+}
+
+.cyoa-stat {
+    text-align: center;
+}
+
+.cyoa-stat-value {
+    display: block;
+    font-size: 16px;
+    font-weight: 600;
+    color: var(--primary);
+}
+
+.cyoa-stat-label {
+    font-size: 10px;
+    color: var(--text-light);
+    text-transform: uppercase;
+}
+
+.cyoa-card-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.cyoa-card-actions button {
+    flex: 1;
+    min-width: 60px;
+}
