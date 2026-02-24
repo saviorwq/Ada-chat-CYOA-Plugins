@@ -2520,6 +2520,255 @@
         if (save.keyEvents.length > max) save.keyEvents = save.keyEvents.slice(-max);
     };
 
+    // ========== AI 智能生成游戏 ==========
+    const AI_GENERATE_GAME_PROMPT = `你是一个文字冒险游戏设计师。根据用户的简短描述，生成一个完整的 CYOA 游戏配置 JSON。
+
+要求：
+1. 输出必须是合法的 JSON，且只输出 JSON，不要 markdown 包裹、不要解释。
+2. 结构必须包含以下字段（缺少的用空字符串或空数组）：
+   - name: 游戏名称（简短有吸引力）
+   - synopsis: 游戏简介（2-4句话）
+   - author: 作者可写 "AI生成"
+   - version: "1.0.0"
+   - worldSetting: { background, geography, factions, socialStructure, history, custom, ruleTags:[], isFusionWorld }
+   - coreMechanics: { type: "turn-based"|"real-time"|"exploration"|"puzzle"|"custom", description, custom }
+   - narrator: { enabled:true, model:"", style:"情感细腻"|"神秘"|"史诗"等, prompt: "叙述者行为指令，100-300字" }
+   - attributes: [{ name, value:0-100, min:0, max:100, description }] 至少2个
+   - characters: [{ name, roleType:"playable"|"npc"|"narrator", gender:"male"|"female", personality:[], background, goal, prompt }] 至少1个playable
+   - scenes: [{ name, location, description, interactables:[], quests:[] }] 至少2个
+   - chapters: [{ title, order:1, description, scenes:[], unlocked:true, unlockCondition:"", transitionConditions:[] }] 至少1个
+   - items: [{ name, itemType:"key"|"common"|"healing"|"quest"|"relic"等, quantity:1, description }] 0-5个
+   - quests: [{ name, questType:"main"|"side", description, objectives:[], rewards:[], status:"locked" }] 0-3个
+   - skills: [] 可选
+   - professions: [] 可选
+
+3. itemType 仅用: key, map, healing, damage, consumable, common, quest, relic, equipment
+4. 角色、场景、章节等数组元素不需要 id 字段，系统会自动补全。
+5. 创意优先，根据用户描述自由发挥，生成有特色、可玩的内容。`;
+
+    const AI_GENERATE_FROM_RULES_PROMPT = `你是一个文字冒险游戏配置转换器。用户会提供一份详细的规则说明书/设定文档，请将其解析并转换为 CYOA 游戏配置 JSON。
+
+要求：
+1. 输出必须是合法的 JSON，且只输出 JSON，不要 markdown 包裹、不要解释。
+2. 严格依据文档内容生成，不要添加文档中未出现的设定。若文档某部分缺失，用合理默认值补全。
+3. 输出结构与创意模式相同，必须包含：
+   - name, synopsis, author:"AI生成", version:"1.0.0"
+   - worldSetting: { background, geography, factions, socialStructure, history, custom, ruleTags:[], isFusionWorld }
+   - coreMechanics: { type, description, custom }
+   - narrator: { enabled:true, model:"", style, prompt }
+   - attributes: [{ name, value, min, max, description }] 至少2个
+   - characters: [{ name, roleType:"playable"|"npc"|"narrator", gender, personality:[], background, goal, prompt }] 至少1个 playable
+   - scenes: [{ name, location, description }]
+   - chapters: [{ title, order, description, scenes:[], unlocked, unlockCondition, transitionConditions:[] }]
+   - items: [{ name, itemType, quantity, description }]
+   - quests: [{ name, questType, description, objectives, rewards, status }]
+
+4. itemType 仅用: key, map, healing, damage, consumable, common, quest, relic, equipment
+5. 从文档中提取的设定要完整、准确地映射到对应字段。`;
+
+    const AI_CHUNK_MERGE_PROMPT = `你是游戏配置合并助手。用户会提供：
+1. 已生成的部分游戏配置 JSON
+2. 规则说明书的后续内容
+
+请将后续内容解析并合并到已有配置中：补充 scenes、chapters、items、quests 等，或扩展 worldSetting、characters。保留已有配置，只做增补与完善。输出合并后的完整 JSON，不要 markdown 包裹。`;
+
+    const MAX_RULES_INPUT_CHARS = 8000; // 超长时自动分两段，每段约 8k 字符以内
+
+    function splitRulesAtParagraph(text, maxLen) {
+        if (text.length <= maxLen) return [text];
+        const mid = Math.floor(text.length / 2);
+        let splitAt = text.indexOf('\n\n', Math.max(0, mid - 500));
+        if (splitAt < 0 || splitAt > mid + 1000) splitAt = text.lastIndexOf('\n', mid);
+        if (splitAt < 0) splitAt = mid;
+        return [text.substring(0, splitAt).trim(), text.substring(splitAt).trim()];
+    }
+
+    async function callAIForGame(body, onProgress) {
+        const r = await fetch('ai_proxy.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
+        });
+        if (!r.ok) throw new Error('API request failed');
+        const d = await r.json();
+        let raw = (d.choices?.[0]?.message?.content || '').trim();
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) raw = jsonMatch[0];
+        return JSON.parse(raw);
+    }
+
+    CYOA.generateGameWithAI = async function(userIdea, modelValue, useRulesMode, onProgress) {
+        const safeProgress = (msg) => { try { onProgress?.(msg); } catch (_) {} };
+        const makeRequest = (sysPrompt, userContent) => ({
+            model: modelValue,
+            task: 'chat',
+            messages: [{ role: 'system', content: sysPrompt }, { role: 'user', content: userContent }],
+            stream: false
+        });
+
+        try {
+            if (useRulesMode && userIdea.length > MAX_RULES_INPUT_CHARS) {
+                const parts = splitRulesAtParagraph(userIdea, MAX_RULES_INPUT_CHARS);
+                safeProgress(t('ui.msg.aiGenChunk1') || '第 1 段处理中…');
+                const baseContent = `以下是规则说明书的第一部分。请根据此部分生成游戏配置 JSON。\n\n---\n\n${parts[0]}\n\n---\n\n直接输出 JSON。`;
+                const baseJson = await callAIForGame(makeRequest(AI_GENERATE_FROM_RULES_PROMPT, baseContent));
+
+                safeProgress(t('ui.msg.aiGenChunk2') || '第 2 段处理中…');
+                const mergeContent = `【已有配置】\n${JSON.stringify(baseJson, null, 0)}\n\n【待合并的规则书第二部分】\n---\n\n${parts[1]}\n\n---\n\n请将第二部分内容合并进配置，输出完整 JSON。`;
+                const merged = await callAIForGame(makeRequest(AI_CHUNK_MERGE_PROMPT, mergeContent));
+                return CYOA.sanitizeGameFromAI(merged);
+            }
+
+            const systemPrompt = useRulesMode ? AI_GENERATE_FROM_RULES_PROMPT : AI_GENERATE_GAME_PROMPT;
+            const userContent = useRulesMode
+                ? `以下是用户提供的详细规则说明书，请将其解析并转换为 CYOA 游戏配置 JSON。严格按文档内容生成。\n\n---\n\n${userIdea}\n\n---\n\n直接输出 JSON。`
+                : `请根据以下描述生成一个文字冒险游戏配置：\n\n${userIdea}\n\n直接输出 JSON。`;
+            const parsed = await callAIForGame(makeRequest(systemPrompt, userContent));
+            return CYOA.sanitizeGameFromAI(parsed);
+        } catch (e) {
+            log('[CYOA] AI 生成游戏失败', e);
+            throw e;
+        }
+    };
+
+    CYOA.sanitizeGameFromAI = function(raw) {
+        const CONFIG = CYOA.CONFIG;
+        const def = JSON.parse(JSON.stringify(CONFIG.DEFAULT_GAME));
+        const ensureId = (o) => { if (!o.id) o.id = 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9); return o; };
+        const validItemTypes = ['key','map','healing','damage','consumable','fuel','repair','common','quest','relic','equipment'];
+        const validQuestTypes = ['main','side','daily','weekly','random','repeatable'];
+        const validRoleTypes = ['playable','npc','narrator'];
+        const validMechTypes = ['turn-based','real-time','exploration','puzzle','custom'];
+
+        const out = { ...def, ...raw };
+        out.id = raw.id || ('game_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+        out.updatedAt = new Date().toISOString();
+        out.createdAt = out.createdAt || out.updatedAt;
+
+        const safeMerge = (key, defaultArr) => {
+            const arr = Array.isArray(raw[key]) ? raw[key] : [];
+            out[key] = arr.map((item, i) => {
+                const merged = typeof defaultArr[0] === 'object' ? { ...(defaultArr[0] || {}), ...item } : item;
+                return ensureId(typeof merged === 'object' ? merged : { id: CYOA.generateId(), name: String(merged) });
+            });
+        };
+
+        if (raw.attributes?.length) {
+            out.attributes = raw.attributes.slice(0, 15).map(a => ensureId({
+                id: a.id, name: a.name || '属性', value: Math.max(0, Math.min(100, Number(a.value) || 10)),
+                min: Number(a.min) || 0, max: Number(a.max) || 100, description: a.description || ''
+            }));
+        }
+        if (raw.characters?.length) {
+            out.characters = raw.characters.slice(0, 10).map((c, i) => {
+                let roleType = validRoleTypes.includes(c.roleType) ? c.roleType : 'npc';
+                if (i === 0 && !raw.characters.some(x => x.roleType === 'playable')) roleType = 'playable';
+                return ensureId({
+                    id: c.id, name: c.name || '角色', roleType,
+                    gender: c.gender || '', personality: Array.isArray(c.personality) ? c.personality : (c.personality ? [c.personality] : []),
+                    background: c.background || '', goal: c.goal || '', prompt: c.prompt || '',
+                    professions: c.professions || [], skills: c.skills || []
+                });
+            });
+        }
+        if (raw.scenes?.length) {
+            out.scenes = raw.scenes.slice(0, 20).map(s => ensureId({
+                id: s.id, name: s.name || '场景', location: s.location || '', description: s.description || '',
+                interactables: s.interactables || [], quests: s.quests || []
+            }));
+        }
+        if (raw.chapters?.length) {
+            out.chapters = raw.chapters.slice(0, 15).map((ch, i) => ensureId({
+                id: ch.id, title: ch.title || '第' + (i+1) + '章', order: ch.order ?? (i+1),
+                description: ch.description || '', scenes: ch.scenes || [], unlocked: ch.unlocked !== false,
+                unlockCondition: ch.unlockCondition || '', transitionConditions: ch.transitionConditions || []
+            }));
+        }
+        if (raw.items?.length) {
+            out.items = raw.items.slice(0, 20).map(i => ensureId({
+                id: i.id, name: i.name || '物品', itemType: validItemTypes.includes(i.itemType) ? i.itemType : 'common',
+                quantity: Math.max(1, Math.min(99, Number(i.quantity) || 1)), description: i.description || ''
+            }));
+        }
+        if (raw.quests?.length) {
+            out.quests = raw.quests.slice(0, 10).map(q => ensureId({
+                id: q.id, name: q.name || '任务', questType: validQuestTypes.includes(q.questType) ? q.questType : 'side',
+                description: q.description || '', objectives: q.objectives || [], rewards: q.rewards || [],
+                status: q.status || 'locked'
+            }));
+        }
+
+        if (raw.worldSetting && typeof raw.worldSetting === 'object') {
+            out.worldSetting = { ...def.worldSetting, ...raw.worldSetting };
+            if (!Array.isArray(out.worldSetting.ruleTags)) out.worldSetting.ruleTags = [];
+        }
+        if (raw.coreMechanics && typeof raw.coreMechanics === 'object') {
+            out.coreMechanics = { ...def.coreMechanics, ...raw.coreMechanics };
+            if (!validMechTypes.includes(out.coreMechanics.type)) out.coreMechanics.type = 'turn-based';
+        }
+        if (raw.narrator && typeof raw.narrator === 'object') {
+            out.narrator = { ...def.narrator, ...raw.narrator };
+        }
+
+        const firstScene = out.scenes?.[0];
+        const firstChapter = out.chapters?.[0];
+        if (firstScene) out.initialScene = firstScene.name || firstScene.id || '';
+        if (firstChapter) out.initialChapter = firstChapter.id || '';
+
+        return out;
+    };
+
+    // AI 写作助手：扩展简短描述为详细段落（FictionLab 风格）
+    CYOA.requestAIExpand = async function(textareaId, hint) {
+        const el = document.getElementById(textareaId);
+        if (!el) return;
+        const input = (el.value || '').trim();
+        if (!input) {
+            alert(t('ui.msg.aiExpandEmpty'));
+            return;
+        }
+        const hints = {
+            world: '将以下世界观/设定的简短描述扩展为更详细、有氛围的段落，保持原有风格与基调。直接输出扩展后的中文内容，不要加标题或说明。',
+            narrator: '将以下叙述者指令的简短描述扩展为更完整、具体的 AI 行为指南。直接输出扩展后的中文内容，不要加标题或说明。'
+        };
+        const sysPrompt = hints[hint] || hints.world;
+        const origText = el.value;
+        el.disabled = true;
+        el.placeholder = t('ui.msg.aiExpanding') || 'AI 扩展中…';
+        try {
+            const model = window.gameModeModel || document.getElementById('model')?.value;
+            const m = (typeof MainApp !== 'undefined' && MainApp.getModels) ? MainApp.getModels('chat') : [];
+            const modelVal = model || (m?.length ? m[0]?.value : null);
+            if (!modelVal) {
+                alert(t('ui.msg.noSelectModel'));
+                return;
+            }
+            const r = await fetch('ai_proxy.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: modelVal,
+                    task: 'chat',
+                    messages: [
+                        { role: 'system', content: sysPrompt },
+                        { role: 'user', content: input }
+                    ],
+                    stream: false
+                })
+            });
+            if (!r.ok) throw new Error('Request failed');
+            const d = await r.json();
+            const result = (d.choices?.[0]?.message?.content || '').trim();
+            if (result) el.value = result;
+        } catch (e) {
+            console.error('[CYOA] AI 扩展失败', e);
+            alert((t('ui.msg.aiExpandFailed') || 'AI 扩展失败，请检查模型配置后重试。'));
+        } finally {
+            el.disabled = false;
+            el.placeholder = '';
+        }
+    };
+
     async function requestAISummary(text, sysPrompt, maxChars) {
         let model = window.gameModeModel;
         if (!model) {
@@ -3044,14 +3293,56 @@
         if (CYOA.currentSave) CYOA.currentSave._ragCache = null;
     };
 
+    // ========== Story Cards 触发与注入（FictionLab 风格） ==========
+    CYOA.getActiveStoryCards = function(userMessage) {
+        const game = CYOA.currentGame;
+        const save = CYOA.currentSave;
+        if (!game?.storyCards?.length) return '';
+
+        const path = getConversationPath();
+        const recentText = path.slice(-6).map(n => (n.userMessage || '') + ' ' + (n.assistantMessage || '')).join(' ');
+        const scanText = (recentText + ' ' + (userMessage || '')).toLowerCase();
+        const maxActive = CONFIG.STORY_CARD_MAX_ACTIVE || 3;
+
+        if (!save._activeStoryCards) save._activeStoryCards = [];
+        const active = save._activeStoryCards;
+
+        for (const card of game.storyCards) {
+            if (!card.triggerWords?.length || !card.content) continue;
+            const triggers = Array.isArray(card.triggerWords) ? card.triggerWords : [card.triggerWords];
+            const matched = triggers.some(w => {
+                const kw = String(w).trim().toLowerCase();
+                return kw && scanText.indexOf(kw) >= 0;
+            });
+            if (!matched) continue;
+            const existsIdx = active.findIndex(a => a.cardId === card.id);
+            if (existsIdx >= 0) {
+                active.splice(existsIdx, 1);
+            }
+            active.push({ cardId: card.id, order: Date.now() });
+            while (active.length > maxActive) active.shift();
+        }
+        save._activeStoryCards = active;
+
+        const toInject = [];
+        for (const { cardId } of active) {
+            const card = game.storyCards.find(c => c.id === cardId);
+            if (card?.content) toInject.push(`[${card.name || 'Lore'}] ${card.content}`);
+        }
+        if (toInject.length === 0) return '';
+        return '\n=== 【当前激活的 Lore】（触发词激活） ===\n' + toInject.join('\n\n') + '\n\n';
+    };
+
     CYOA.buildGamePrompt = function(targetRole, userMessage) {
         const currentGame = CYOA.currentGame;
         const currentSave = CYOA.currentSave;
         if (!currentGame || !currentSave) return t('ui.msg.gameStateError');
 
-        // RAG 架构：静态知识库（缓存） + 动态状态快照（每轮生成） + AI规则
+        // RAG 架构：静态知识库（缓存） + Story Cards（触发注入） + 动态状态快照 + AI规则
         let systemPrompt = t('prompt.opening') + '\n\n';
         systemPrompt += CYOA.getRAG() + '\n\n';
+        const storyCardBlock = CYOA.getActiveStoryCards(userMessage);
+        if (storyCardBlock) systemPrompt += storyCardBlock;
         
         // ===== 当前游戏状态（动态快照，每轮重新生成） =====
         systemPrompt += '=== 【当前游戏状态】 ===\n';

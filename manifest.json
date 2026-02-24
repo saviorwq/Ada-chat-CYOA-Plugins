@@ -1,7 +1,7 @@
 {
   "id": "cyoa_v2",
   "name": "CYOA 文字冒险游戏",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "author": "Ada Chat Team",
   "description": "创建并游玩你自己的 Choose Your Own Adventure 游戏 - 新增技能系统、任务系统、物品消耗系统",
   "entry": "cyoa-main.js",

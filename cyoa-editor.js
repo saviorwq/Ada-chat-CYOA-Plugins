@@ -181,6 +181,14 @@
                     html += `<span class="item-type">${t('ui.status.chapterN', {n: item.order || index + 1})}</span>`;
                     html += `<span class="item-count">📄 ${t('ui.status.nScenes', {n: item.scenes?.length || 0})}</span>`;
                     break;
+
+                case 'storyCards':
+                    const cardTypeDef = (CONFIG.STORY_CARD_TYPES || []).find(tp => tp.value === item.type);
+                    html += `<span class="item-icon">${cardTypeDef?.label?.charAt(0) || '📝'}</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
+                    const triggers = Array.isArray(item.triggerWords) ? item.triggerWords : (item.triggerWords || '').split(/[,，\s]+/).filter(Boolean);
+                    html += `<span class="item-desc">${escapeHtml((triggers.slice(0, 3).join(', ') + (triggers.length > 3 ? '...' : '')) || t('ui.storyCard.triggers')}</span>`;
+                    break;
             }
             
             html += `</div>`;
@@ -304,6 +312,9 @@
                 break;
             case 'outfitPresets':
                 html = renderPresetForm(item, index);
+                break;
+            case 'storyCards':
+                html = renderStoryCardForm(item, index);
                 break;
         }
         
@@ -2590,6 +2601,53 @@
         if (index >= CYOA.editorTempData.outfitPresets.length) CYOA.editorTempData.outfitPresets.push(item);
         else CYOA.editorTempData.outfitPresets[index] = item;
         CYOA.cancelEdit(); refreshList('outfitPresets');
+    };
+
+    // ========== Story Cards（FictionLab 风格 lore 触发卡） ==========
+    function renderStoryCardForm(card, index) {
+        const types = CONFIG.STORY_CARD_TYPES || [];
+        const typeOptions = types.map(tp =>
+            `<option value="${tp.value}" ${tp.value === (card.type || 'custom') ? 'selected' : ''}>${tp.label}</option>`
+        ).join('');
+        const triggersStr = Array.isArray(card.triggerWords) ? (card.triggerWords || []).join(', ') : (card.triggerWords || '');
+        return `<div class="cyoa-edit-form">
+            <h3>📝 ${t('ui.storyCard.editTitle')}</h3>
+            <div class="cyoa-form-row">
+                <label>${t('ui.storyCard.name')}</label>
+                <input type="text" id="editStoryCardName" class="cyoa-input" value="${escapeHtml(card.name || '')}" placeholder="${t('ui.storyCard.namePh')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>${t('ui.storyCard.type')}</label>
+                <select id="editStoryCardType" class="cyoa-select">${typeOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>${t('ui.storyCard.triggerWords')}</label>
+                <input type="text" id="editStoryCardTriggers" class="cyoa-input" value="${escapeHtml(triggersStr)}" placeholder="${t('ui.storyCard.triggerPh')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>${t('ui.storyCard.content')}</label>
+                <textarea id="editStoryCardContent" class="cyoa-textarea" rows="6" placeholder="${t('ui.storyCard.contentPh')}">${escapeHtml(card.content || '')}</textarea>
+            </div>
+            <div class="cyoa-form-actions">
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveStoryCard(${index})">${t('ui.btn.save')}</button>
+            </div>
+        </div>`;
+    }
+
+    CYOA.saveStoryCard = function(index) {
+        if (!CYOA.editorTempData) return;
+        if (!CYOA.editorTempData.storyCards) CYOA.editorTempData.storyCards = [];
+        const item = CYOA.editorTempData.storyCards[index] || { id: CYOA.generateId() };
+        item.name = CYOA.$('editStoryCardName')?.value.trim() || t('ui.default.newStoryCard');
+        item.type = CYOA.$('editStoryCardType')?.value || 'custom';
+        const triggerStr = CYOA.$('editStoryCardTriggers')?.value.trim() || '';
+        item.triggerWords = triggerStr.split(/[,，\s]+/).filter(Boolean);
+        item.content = CYOA.$('editStoryCardContent')?.value.trim() || '';
+        if (index >= CYOA.editorTempData.storyCards.length) CYOA.editorTempData.storyCards.push(item);
+        else CYOA.editorTempData.storyCards[index] = item;
+        CYOA.cancelEdit();
+        refreshList('storyCards');
     };
 
     // ========== 导出到全局 ==========

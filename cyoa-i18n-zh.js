@@ -13,6 +13,8 @@ window.CYOA_I18N_ZH = {
     'ui.btn.save': '保存',
     'ui.btn.saveAll': '保存全部',
     'ui.btn.newGame': '新建游戏',
+    'ui.btn.aiGenerateGame': 'AI 智能创建',
+    'ui.btn.aiGenerate': '生成游戏',
     'ui.btn.importGame': '导入游戏',
     'ui.btn.wordFilter': '敏感词过滤',
     'ui.btn.start': '开始',
@@ -28,6 +30,8 @@ window.CYOA_I18N_ZH = {
     'ui.btn.addChar': '➕ 添加角色',
     'ui.btn.addScene': '➕ 添加场景',
     'ui.btn.addChapter': '➕ 添加章节',
+    'ui.btn.addStoryCard': '添加 lore 卡',
+    'ui.btn.aiExpand': '由 AI 将简短描述扩展为详细段落',
     'ui.btn.addEntry': '➕ 添加条目',
     'ui.btn.addConsume': '➕ 添加消耗',
     'ui.btn.addAttach': '➕ 添加附件',
@@ -79,6 +83,7 @@ window.CYOA_I18N_ZH = {
     'ui.editor.charMgmt': '👤 角色管理',
     'ui.editor.sceneMgmt': '🗺️ 场景管理',
     'ui.editor.chapterMgmt': '📑 章节管理',
+    'ui.editor.storyCards': '📝 Story Cards（Lore 触发卡）',
     'ui.editor.judgeRules': '⚖️ 判定规则',
     'ui.editor.editItem': '编辑{{type}}',
     'ui.editor.newItem': '新建{{type}}',
@@ -92,6 +97,9 @@ window.CYOA_I18N_ZH = {
     'ui.label.synopsis': '游戏简介',
     'ui.label.aiModel': 'AI模型',
     'ui.label.selectModel': '选择模型…',
+    'ui.label.aiGenerateMode': '输入模式',
+    'ui.label.aiGenerateIdea': '游戏创意描述',
+    'ui.label.aiGenerateRules': '规则说明书',
     'ui.label.narratorStyle': '叙述风格',
     'ui.label.selectStyle': '选择风格…',
     'ui.label.narratorSetting': '叙述者设定',
@@ -202,6 +210,8 @@ window.CYOA_I18N_ZH = {
     'ui.ph.society': '例如：封建制度、魔法联盟、企业统治…',
     'ui.ph.history': '例如：远古战争、灭世灾难、神话传说…',
     'ui.ph.customSetting': '自定义世界设定补充…',
+    'ui.ph.aiGenerateIdea': '例如：修仙世界里的赛博朋克密室逃脱、维多利亚时代的蒸汽侦探…',
+    'ui.ph.aiGenerateRules': '粘贴完整规则说明书（世界观、角色、场景、物品、任务等），AI 将解析并转为游戏配置',
     'ui.ph.mechDesc': '描述核心玩法机制…',
     'ui.ph.customMech': '自定义机制补充…',
     'ui.ph.judgeMethod': '判定方式（如掷骰、属性对比、随机事件…）',
@@ -228,6 +238,8 @@ window.CYOA_I18N_ZH = {
     // ============================================================
     //  ui.opt.* — 下拉选项 / 选择项
     // ============================================================
+    'ui.opt.aiModeCreative': '创意一句话',
+    'ui.opt.aiModeRules': '粘贴规则说明书',
     'ui.opt.turnBased': '回合制',
     'ui.opt.realTime': '实时制',
     'ui.opt.exploration': '探索制',
@@ -271,6 +283,18 @@ window.CYOA_I18N_ZH = {
     'ui.type.professions': '职业',
     'ui.type.scenes': '场景',
     'ui.type.chapters': '章节',
+    'ui.type.storyCards': 'Story Cards',
+
+    // ui.storyCard.* — Story Card 表单
+    'ui.storyCard.editTitle': '编辑 Lore 触发卡',
+    'ui.storyCard.name': '卡片名称',
+    'ui.storyCard.namePh': '便于识别的名称（不传给 AI）',
+    'ui.storyCard.type': '类型',
+    'ui.storyCard.triggerWords': '触发词',
+    'ui.storyCard.triggerPh': '用逗号分隔，如：太虚宗、玄晶、遗物',
+    'ui.storyCard.content': 'Lore 内容',
+    'ui.storyCard.contentPh': '当触发词出现时，此内容会注入给 AI',
+    'ui.storyCard.triggers': '触发词',
 
     // ============================================================
     //  ui.status.* — 状态标签
@@ -330,6 +354,7 @@ window.CYOA_I18N_ZH = {
     'ui.default.newChar': '新角色',
     'ui.default.newScene': '新场景',
     'ui.default.newChapter': '新章节',
+    'ui.default.newStoryCard': '新 lore 卡',
 
     // ============================================================
     //  ui.msg.* — 消息 / 弹窗提示
@@ -387,6 +412,14 @@ window.CYOA_I18N_ZH = {
     'ui.msg.confirmDeleteItem': '确定要删除此项目吗？',
     'ui.msg.itemDeleted': '已删除',
     'ui.msg.confirmDeleteChapter': '确定要删除此章节吗？',
+    'ui.msg.storyCardLimit': 'Story Cards 已达上限（每游戏最多 {{max}} 张）',
+    'ui.msg.aiExpandEmpty': '请先输入要扩展的简短内容',
+    'ui.msg.aiExpanding': 'AI 扩展中…',
+    'ui.msg.aiExpandFailed': 'AI 扩展失败，请检查模型配置后重试。',
+    'ui.msg.aiGenerating': 'AI 生成中，请稍候…',
+    'ui.msg.aiGenerateFailed': 'AI 生成失败，请检查模型配置或缩短描述后重试。',
+    'ui.msg.aiGenChunk1': '第 1 段处理中…',
+    'ui.msg.aiGenChunk2': '第 2 段处理中…',
     'ui.msg.skillLevelUp': '🎉 {{name}} 升级到 {{level}}！',
     'ui.msg.importSaveSuccess': '存档导入成功！',
 
@@ -419,6 +452,9 @@ window.CYOA_I18N_ZH = {
     'ui.hint.conditionsLogic': '满足所有条件后才能推进到下一章节',
     'ui.hint.initPreset': '进入此章节时自动设置角色的初始状态',
     'ui.hint.permLock': '⛓️ 永久锁死——无法解开',
+    'ui.hint.storyCards': '当对话中出现触发词时，AI 会读取对应 lore 内容。最多同时激活 3 张。',
+    'ui.hint.aiGenerateGame': '输入你的游戏创意（如：修仙世界里的赛博朋克密室逃脱），AI 将生成完整游戏配置。',
+    'ui.hint.aiGenerateRules': '粘贴你已有的详细规则书，AI 会解析并转换为游戏 JSON，准确性更高。',
 
     // ============================================================
     //  ui.summary.* — 列表项摘要
@@ -435,6 +471,7 @@ window.CYOA_I18N_ZH = {
     // ============================================================
     //  ui.panel.* — 面板标题
     // ============================================================
+    'ui.aiGenerate.title': '✨ AI 智能创建游戏',
     'ui.panel.gameLib': '🎮 游戏库',
     'ui.panel.gameLibDesc': '管理和创建你的CYOA冒险游戏',
     'ui.panel.wordFilter': '🔒 敏感词过滤',

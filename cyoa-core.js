@@ -1775,6 +1775,8 @@
         MEMORY_CONFIG: {
             recentTurns: 6,
             summarizeTrigger: 8,
+            memoryCardTrigger: 50,       // 每 50 条消息可触发 Memory Card 生成（FictionLab 风格）
+            maxMemoryCards: 30,          // 存档最多保留 30 条记忆便签
             summarizeBatchSize: 6,
             summaryMaxChars: 500,
             chapterSummaryMaxChars: 250,
@@ -1785,6 +1787,18 @@
             summarizeSystemPrompt: '你是故事摘要助手。将下面的对话压缩为一段简短的第三人称叙述。保留：关键剧情、人名、重要决定、物品变化。省略重复描写。直接输出中文摘要。',
             chapterSummarizePrompt: '用一段话概括这个章节发生的关键事件。直接输出，不加标题。'
         },
+        // Story Cards（FictionLab 风格 lore 触发卡）
+        STORY_CARD_TYPES: [
+            { value: 'location', label: '📍 地点' },
+            { value: 'class', label: '⚔️ 职业/阶层' },
+            { value: 'race', label: '🧝 种族' },
+            { value: 'faction', label: '🏰 阵营' },
+            { value: 'item', label: '📦 物品/名词' },
+            { value: 'custom', label: '📝 自定义' }
+        ],
+        STORY_CARD_MAX_ACTIVE: 3,      // 最多同时激活 3 张
+        STORY_CARD_MAX_PER_GAME: 20,  // 每游戏最多 20 张
+
         KEY_EVENT_TYPES: {
             chapter_enter:     { icon: '📖', label: '进入章节' },
             chapter_complete:  { icon: '✅', label: '完成章节' },
@@ -2201,6 +2215,7 @@
                 style: '情感细腻',
                 prompt: '你是一位专业的游戏剧情叙述者...'
             },
+            storyCards: [],   // FictionLab 风格：{ id, name, type, triggerWords: [], content }
             createdAt: '',
             updatedAt: ''
         }

@@ -30,10 +30,16 @@
 
     // ========== 游戏编辑器模块（部分函数在editor中已定义，这里只包含编辑器入口） ==========
     const GameEditor = {
+        // 打开编辑器（支持直接传入数据，用于 AI 生成）
+        openWithData: function(gameData) {
+            if (!gameData) return;
+            this.open(null, gameData);
+        },
+
         // 打开编辑器
-        open: async function(gameId) {
-            let gameData = null;
-            if (gameId && gameId !== 'new') {
+        open: async function(gameId, preloadedData) {
+            let gameData = preloadedData ?? null;
+            if (!gameData && gameId && gameId !== 'new') {
                 gameData = await CYOA.loadGameFromFile(gameId);
             }
             
@@ -41,7 +47,7 @@
             CYOA.editorTempData.id = gameData ? gameData.id : 'game_' + CYOA.generateId();
             CYOA.editorTempData.updatedAt = CYOA.getCurrentTimestamp();
 
-            const title = gameData ? t('ui.editor.title.edit', {name: gameData.name}) : t('ui.editor.title.new');
+            const title = gameData ? (gameData.name ? t('ui.editor.title.edit', {name: gameData.name}) : t('ui.editor.title.new')) : t('ui.editor.title.new');
             const contentHtml = this.buildFormHTML(CYOA.editorTempData);
             const footerHtml = `
                 <button class="cyoa-btn cyoa-btn-secondary" id="modalCancelBtn">${t('ui.btn.cancel')}</button>
@@ -85,6 +91,7 @@
             const questsSummary = CYOA.renderSummaryTable(data.quests || [], 'quests');
             const charactersSummary = CYOA.renderSummaryTable(data.characters || [], 'characters');
             const scenesSummary = CYOA.renderSummaryTable(data.scenes || [], 'scenes');
+            const storyCardsSummary = CYOA.renderSummaryTable(data.storyCards || [], 'storyCards');
 
             return `
                 <div class="cyoa-editor-container">
@@ -120,7 +127,10 @@
                                 <input type="text" id="editWorldSocial" class="cyoa-input" value="${escapeHtml(ws.socialStructure || '')}" placeholder="${t('ui.ph.society')}">
                             </div>
                             <textarea id="editWorldHistory" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.history')}">${escapeHtml(ws.history || '')}</textarea>
-                            <textarea id="editWorldCustom" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.customSetting')}">${escapeHtml(ws.custom || '')}</textarea>
+                            <div class="cyoa-form-row" style="display:flex;gap:8px;align-items:flex-start;">
+                                <textarea id="editWorldCustom" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.customSetting')}" style="flex:1;">${escapeHtml(ws.custom || '')}</textarea>
+                                <button type="button" class="cyoa-btn cyoa-btn-sm" style="flex-shrink:0;font-size:11px;white-space:nowrap;" onclick="CYOA.requestAIExpand && CYOA.requestAIExpand('editWorldCustom','world')" title="${t('ui.btn.aiExpand')}">✨ AI 扩展</button>
+                            </div>
                             <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
                                 <label style="display:block; margin-bottom:6px;">${t('ui.label.worldRuleTags')}</label>
                                 <div id="editWorldRuleTags" class="cyoa-rule-tags" style="display:flex; flex-wrap:wrap; gap:6px;">
@@ -168,7 +178,25 @@
                                     <select id="narratorStyle" class="cyoa-select"><option value="">${t('ui.label.selectStyle')}</option>${styleOptions}</select>
                                 </div>
                             </div>
-                            <div><label>${t('ui.label.narratorSetting')}</label><textarea id="narratorPrompt" class="cyoa-textarea" rows="3">${escapeHtml(narrator.prompt || '')}</textarea></div>
+                            <div class="cyoa-form-row">
+                                <label>${t('ui.label.narratorSetting')}</label>
+                                <div style="display:flex;gap:8px;align-items:flex-start;">
+                                    <textarea id="narratorPrompt" class="cyoa-textarea" rows="3" style="flex:1;">${escapeHtml(narrator.prompt || '')}</textarea>
+                                    <button type="button" class="cyoa-btn cyoa-btn-sm" style="flex-shrink:0;font-size:11px;white-space:nowrap;" onclick="CYOA.requestAIExpand && CYOA.requestAIExpand('narratorPrompt','narrator')" title="${t('ui.btn.aiExpand')}">✨ AI 扩展</button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Story Cards（FictionLab 风格 lore 触发卡） -->
+                    <div class="cyoa-editor-section">
+                        <div class="cyoa-section-header">
+                            <span>${t('ui.editor.storyCards')}</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="storyCards">+ ${t('ui.btn.addStoryCard')}</button>
+                        </div>
+                        <div class="cyoa-section-body">
+                            <p class="cyoa-hint">${t('ui.hint.storyCards')}</p>
+                            <div id="storyCardsList" class="cyoa-summary-container">${storyCardsSummary}</div>
                         </div>
                     </div>
 
@@ -400,7 +428,15 @@
                             break;
                         case 'chapters':
                             newItem = { id: CYOA.generateId(), title: t('ui.default.newChapter'), order: (CYOA.editorTempData.chapters?.length || 0) + 1, description: '', scenes: [], unlocked: true, unlockCondition: '', transitionConditions: [] };
-                            break;    
+                            break;
+                        case 'storyCards':
+                            const maxCards = CONFIG.STORY_CARD_MAX_PER_GAME || 20;
+                            if ((CYOA.editorTempData.storyCards || []).length >= maxCards) {
+                                alert(t('ui.msg.storyCardLimit', { max: maxCards }));
+                                return;
+                            }
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newStoryCard'), type: 'custom', triggerWords: [], content: '' };
+                            break;
                     }
                     
                     CYOA.editorTempData[type].push(newItem);
@@ -409,7 +445,7 @@
             });
 
             // 初始化列表事件
-            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes'].forEach(type => {
+            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes', 'storyCards'].forEach(type => {
                 const container = CYOA.$(type + 'List');
                 if (container) CYOA.bindListEvents(container, type);
             });
@@ -530,6 +566,7 @@
                     </div>
                     <div style="display:flex; gap:12px; align-items:center;">
                         <button class="cyoa-btn cyoa-btn-primary" id="cyoaNewGameBtn">${t('ui.btn.newGame')}</button>
+                        <button class="cyoa-btn cyoa-btn-secondary" id="cyoaAIGenerateBtn" title="${t('ui.btn.aiGenerateGame')}">✨ ${t('ui.btn.aiGenerateGame')}</button>
                         <button class="cyoa-btn cyoa-btn-secondary" id="cyoaImportGameBtn">${t('ui.btn.importGame')}</button>
                         <button class="cyoa-btn cyoa-btn-secondary" id="cyoaWordFilterBtn" title="${t('ui.panel.wordFilter')}">${t('ui.btn.wordFilter')}</button>
                         ${CYOA.langSwitchHtml()}
@@ -540,6 +577,7 @@
         `;
         
         CYOA.$('cyoaNewGameBtn').onclick = () => GameEditor.open('new');
+        CYOA.$('cyoaAIGenerateBtn').onclick = () => openAIGenerateModal(container);
         CYOA.$('cyoaImportGameBtn').onclick = () => CYOA.importGame(container);
         CYOA.$('cyoaWordFilterBtn').onclick = () => openWordFilterEditor();
         
@@ -603,6 +641,108 @@
         });
     }
     CYOA.renderGameListItems = renderGameListItems;
+
+    // ========== AI 智能创建游戏 ==========
+    function openAIGenerateModal(container) {
+        const models = CYOA.getChatModels?.() || [];
+        const modelOptions = models.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('');
+        const defaultModel = (typeof MainApp !== 'undefined' && MainApp.getModels) ? (MainApp.getModels('chat')?.[0]?.value || '') : (models[0]?.value || '');
+
+        const contentHtml = `
+            <div class="cyoa-ai-generate-form" style="padding:16px;">
+                <div class="cyoa-form-row" style="margin-bottom:12px;">
+                    <label style="display:block;margin-bottom:6px;">${t('ui.label.aiGenerateMode')}</label>
+                    <div style="display:flex;gap:16px;">
+                        <label class="cyoa-radio"><input type="radio" name="aiGenMode" value="creative" checked> ${t('ui.opt.aiModeCreative')}</label>
+                        <label class="cyoa-radio"><input type="radio" name="aiGenMode" value="rules"> ${t('ui.opt.aiModeRules')}</label>
+                    </div>
+                </div>
+                <div class="cyoa-form-row" style="margin-bottom:12px;">
+                    <label id="aiGenInputLabel">${t('ui.label.aiGenerateIdea')}</label>
+                    <textarea id="aiGenerateIdea" class="cyoa-textarea" rows="3" placeholder="${t('ui.ph.aiGenerateIdea')}" style="width:100%;resize:vertical;"></textarea>
+                    <p id="aiGenModeHint" style="margin:4px 0 0;font-size:11px;color:var(--text-light);">${t('ui.hint.aiGenerateGame')}</p>
+                </div>
+                <div class="cyoa-form-row" style="margin-bottom:12px;">
+                    <label>${t('ui.label.aiModel')}</label>
+                    <select id="aiGenerateModel" class="cyoa-select" style="width:100%;">
+                        <option value="">${t('ui.label.selectModel')}</option>
+                        ${modelOptions}
+                    </select>
+                </div>
+                <div id="aiGenerateStatus" style="font-size:12px;color:var(--text-light);margin-top:8px;min-height:20px;"></div>
+            </div>
+        `;
+        const footerHtml = `
+            <button class="cyoa-btn cyoa-btn-secondary" id="aiGenerateCancel">${t('ui.btn.cancel')}</button>
+            <button class="cyoa-btn cyoa-btn-primary" id="aiGenerateBtn" disabled>✨ ${t('ui.btn.aiGenerate')}</button>
+        `;
+
+        const modal = CYOA.ModalSystem.open(t('ui.aiGenerate.title'), contentHtml, footerHtml, {
+            icon: '✨',
+            size: 'medium',
+            closeOnOverlay: true
+        });
+
+        const ideaEl = CYOA.$('aiGenerateIdea');
+        const modelEl = CYOA.$('aiGenerateModel');
+        const statusEl = CYOA.$('aiGenerateStatus');
+        const genBtn = CYOA.$('aiGenerateBtn');
+
+        if (modelEl && defaultModel) {
+            modelEl.value = defaultModel;
+        }
+        ideaEl?.addEventListener('input', () => {
+            if (genBtn) genBtn.disabled = !(ideaEl?.value?.trim());
+        });
+
+        const modeCreative = document.querySelector('input[name="aiGenMode"][value="creative"]');
+        const modeRules = document.querySelector('input[name="aiGenMode"][value="rules"]');
+        const inputLabel = document.getElementById('aiGenInputLabel');
+        const modeHint = document.getElementById('aiGenModeHint');
+        const updateModeUI = () => {
+            const isRules = modeRules?.checked;
+            if (ideaEl) ideaEl.rows = isRules ? 10 : 3;
+            if (ideaEl) ideaEl.placeholder = isRules ? (t('ui.ph.aiGenerateRules') || '粘贴完整规则说明书…') : t('ui.ph.aiGenerateIdea');
+            if (inputLabel) inputLabel.textContent = isRules ? (t('ui.label.aiGenerateRules') || '规则说明书') : t('ui.label.aiGenerateIdea');
+            if (modeHint) modeHint.textContent = isRules ? (t('ui.hint.aiGenerateRules') || '') : t('ui.hint.aiGenerateGame');
+        };
+        modeCreative?.addEventListener('change', updateModeUI);
+        modeRules?.addEventListener('change', updateModeUI);
+
+        CYOA.$('aiGenerateCancel').onclick = () => modal.close();
+        genBtn.onclick = async () => {
+            const idea = ideaEl?.value?.trim();
+            const modelVal = modelEl?.value;
+            const useRulesMode = modeRules?.checked || false;
+            if (!idea) {
+                alert(t('ui.msg.aiExpandEmpty'));
+                return;
+            }
+            if (!modelVal) {
+                alert(t('ui.msg.noSelectModel'));
+                return;
+            }
+            genBtn.disabled = true;
+            statusEl.textContent = t('ui.msg.aiGenerating') || 'AI 生成中，请稍候…';
+            try {
+                const gameData = await CYOA.generateGameWithAI(idea, modelVal, useRulesMode, (msg) => {
+                    if (statusEl) statusEl.textContent = msg;
+                });
+                if (gameData) {
+                    modal.close();
+                    GameEditor.openWithData(gameData);
+                    if (container) CYOA.renderSettings(container);
+                } else {
+                    statusEl.textContent = t('ui.msg.aiGenerateFailed') || '生成失败，请重试。';
+                    genBtn.disabled = false;
+                }
+            } catch (e) {
+                console.error('[CYOA] AI 生成失败', e);
+                statusEl.textContent = (e.message || t('ui.msg.aiGenerateFailed')) + '';
+                genBtn.disabled = false;
+            }
+        };
+    }
 
     // ========== 敏感词过滤编辑器 ==========
     function openWordFilterEditor() {
