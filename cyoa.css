@@ -17,6 +17,13 @@ body.game-mode-active #cyoa-game-input-area {
     display: flex !important; 
 }
 
+/* --- 侧边栏纵向可折叠 --- */
+.cyoa-accordion-header:hover,
+.cyoa-attr-header:hover {
+    background: var(--bg-light) !important;
+    border-color: var(--primary) !important;
+}
+
 /* --- 游戏侧边栏 --- */
 #cyoa-game-sidebar {
     display: none;
@@ -41,17 +48,37 @@ body.game-mode-active #cyoa-game-input-area {
     gap: 12px;
 }
 
-/* --- 游戏选项按钮区域 --- */
-#gameOptions {
+/* --- 游戏选项区域（可折叠列表） --- */
+#gameOptions.cyoa-options-panel {
     display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-bottom: 12px;
+    flex-direction: column;
+    margin-top: 4px;
+    margin-bottom: 4px;
 }
 
-#gameOptions button {
-    flex: 1 1 auto;
-    min-width: 120px;
+.cyoa-options-header:hover {
+    background: var(--bg-light) !important;
+    border-color: var(--primary) !important;
+}
+
+.cyoa-options-list {
+    padding-right: 4px;
+}
+
+.cyoa-options-list::-webkit-scrollbar {
+    width: 6px;
+}
+
+.cyoa-options-list::-webkit-scrollbar-thumb {
+    background: var(--border);
+    border-radius: 3px;
+}
+
+#gameOptions .cyoa-option-btn,
+.cyoa-options-list button {
+    width: 100%;
+    flex: none;
+    min-width: unset;
     padding: 8px 12px;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -66,7 +93,8 @@ body.game-mode-active #cyoa-game-input-area {
     text-overflow: ellipsis;
 }
 
-#gameOptions button:hover {
+#gameOptions .cyoa-option-btn:hover,
+.cyoa-options-list button:hover {
     background: var(--primary-light);
     border-color: var(--primary);
     color: var(--primary-dark);

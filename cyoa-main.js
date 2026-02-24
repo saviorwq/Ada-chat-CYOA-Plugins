@@ -76,6 +76,10 @@
             const attributesSummary = CYOA.renderSummaryTable(data.attributes || [], 'attributes');
             const itemsSummary = CYOA.renderSummaryTable(data.items || [], 'items');
             const equipmentSummary = CYOA.renderSummaryTable(data.equipment || [], 'equipment');
+            const locationsSummary = CYOA.renderSummaryTable(data.locations || [], 'locations');
+            const synergiesSummary = CYOA.renderSummaryTable(data.equipmentSynergies || [], 'equipmentSynergies');
+            const discoverySummary = CYOA.renderSummaryTable(data.discoveryRules || [], 'discoveryRules');
+            const presetsSummary = CYOA.renderSummaryTable(data.outfitPresets || [], 'outfitPresets');
             const professionsSummary = CYOA.renderSummaryTable(data.professions || [], 'professions');
             const skillsSummary = CYOA.renderSummaryTable(data.skills || [], 'skills');
             const questsSummary = CYOA.renderSummaryTable(data.quests || [], 'quests');
@@ -117,6 +121,14 @@
                             </div>
                             <textarea id="editWorldHistory" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.history')}">${escapeHtml(ws.history || '')}</textarea>
                             <textarea id="editWorldCustom" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.customSetting')}">${escapeHtml(ws.custom || '')}</textarea>
+                            <div style="margin-top:12px; padding-top:12px; border-top:1px solid var(--border);">
+                                <label style="display:block; margin-bottom:6px;">${t('ui.label.worldRuleTags')}</label>
+                                <div id="editWorldRuleTags" class="cyoa-rule-tags" style="display:flex; flex-wrap:wrap; gap:6px;">
+                                    ${(CONFIG.HEAVENLY_PATHS || []).map(p => `<label class="cyoa-tag-option"><input type="checkbox" value="${p.value}" ${(ws.ruleTags || []).includes(p.value) ? 'checked' : ''}> ${p.label}</label>`).join('')}
+                                </div>
+                                <label class="cyoa-checkbox-row" style="margin-top:8px; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="editWorldIsFusion" ${ws.isFusionWorld ? 'checked' : ''}> ${t('ui.label.isFusionWorld')}</label>
+                                <label class="cyoa-checkbox-row" style="margin-top:4px; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="editHumanityBalance" ${data.humanityBalanceEnabled ? 'checked' : ''}> ${t('ui.label.humanityBalance')}</label>
+                            </div>
                         </div>
                     </div>
 
@@ -190,6 +202,50 @@
                         </div>
                         <div class="cyoa-section-body">
                             <div id="equipmentList" class="cyoa-summary-container">${equipmentSummary}</div>
+                        </div>
+                    </div>
+
+                    <!-- 地点系统 -->
+                    <div class="cyoa-editor-section">
+                        <div class="cyoa-section-header">
+                            <span>📍 地点系统</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="locations">+ 添加地点</button>
+                        </div>
+                        <div class="cyoa-section-body">
+                            <div id="locationsList" class="cyoa-summary-container">${locationsSummary}</div>
+                        </div>
+                    </div>
+
+                    <!-- 装备联动 -->
+                    <div class="cyoa-editor-section">
+                        <div class="cyoa-section-header">
+                            <span>🔗 装备联动</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="equipmentSynergies">+ 添加联动</button>
+                        </div>
+                        <div class="cyoa-section-body">
+                            <div id="equipmentSynergiesList" class="cyoa-summary-container">${synergiesSummary}</div>
+                        </div>
+                    </div>
+
+                    <!-- 知识迷雾 -->
+                    <div class="cyoa-editor-section">
+                        <div class="cyoa-section-header">
+                            <span>🔮 知识迷雾 / 规则发现</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="discoveryRules">+ 添加规则</button>
+                        </div>
+                        <div class="cyoa-section-body">
+                            <div id="discoveryRulesList" class="cyoa-summary-container">${discoverySummary}</div>
+                        </div>
+                    </div>
+
+                    <!-- 服饰预设 -->
+                    <div class="cyoa-editor-section">
+                        <div class="cyoa-section-header">
+                            <span>👗 服饰预设</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="outfitPresets">+ 添加预设</button>
+                        </div>
+                        <div class="cyoa-section-body">
+                            <div id="outfitPresetsList" class="cyoa-summary-container">${presetsSummary}</div>
                         </div>
                     </div>
 
@@ -375,14 +431,18 @@
                     break;
                     
                 case 'world':
+                    const ruleTagInputs = (CYOA.$$('#editWorldRuleTags input[type=checkbox]') || []).filter((el) => el.checked);
                     CYOA.editorTempData.worldSetting = {
                         background: CYOA.$('editWorldBackground')?.value.trim() || '',
                         geography: CYOA.$('editWorldGeography')?.value.trim() || '',
                         factions: CYOA.$('editWorldFactions')?.value.trim() || '',
                         socialStructure: CYOA.$('editWorldSocial')?.value.trim() || '',
                         history: CYOA.$('editWorldHistory')?.value.trim() || '',
-                        custom: CYOA.$('editWorldCustom')?.value.trim() || ''
+                        custom: CYOA.$('editWorldCustom')?.value.trim() || '',
+                        ruleTags: ruleTagInputs.map(el => el.value) || [],
+                        isFusionWorld: !!CYOA.$('editWorldIsFusion')?.checked
                     };
+                    CYOA.editorTempData.humanityBalanceEnabled = !!CYOA.$('editHumanityBalance')?.checked;
                     break;
                     
                 case 'mechanics':
@@ -768,28 +828,33 @@
         sidebarContainer.style.overflow = 'hidden';
         sidebarContainer.style.flexShrink = '0';
         
-        sidebarContainer.innerHTML = `
-            <div class="cyoa-sidebar" style="display:flex; flex-direction:column; height:100%;">
-                <div class="cyoa-tabs" style="display:flex; border-bottom:1px solid var(--border); flex-shrink:0;">
-                    <button class="tab-btn active" data-tab="tree" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.storyTree')}</button>
-                    <button class="tab-btn" data-tab="attributes" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.attributes')}</button>
-                    <button class="tab-btn" data-tab="inventory" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.inventory')}</button>
-                    <button class="tab-btn" data-tab="skills" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.skills')}</button>
-                    <button class="tab-btn" data-tab="quests" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.quests')}</button>
-                    <button class="tab-btn" data-tab="chapters" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.chapters')}</button>
-                    <button class="tab-btn" data-tab="saves" style="flex:1; padding:12px 8px; background:none; border:none; cursor:pointer; font-size:14px;">${t('ui.panel.saves')}</button>
-                </div>
-                <div class="cyoa-tab-content" style="flex:1; overflow-y:auto; padding:16px;">
-                    <div class="cyoa-tab-panel active" id="cyoaTreePanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaAttributesPanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaInventoryPanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaSkillsPanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaQuestsPanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaChaptersPanel"></div>
-                    <div class="cyoa-tab-panel" id="cyoaSavesPanel"></div>
-                </div>
-            </div>
-        `;
+        // 纵向可折叠列表：各分区为独立折叠块
+        if (!CYOA._sidebarAccordion) CYOA._sidebarAccordion = { tree: true, attributes: false, inventory: false, skills: false, quests: false, chapters: false, saves: false };
+        const acc = CYOA._sidebarAccordion;
+        const sections = [
+            { tab: 'tree', label: t('ui.panel.storyTree'), defaultOpen: acc.tree },
+            { tab: 'attributes', label: t('ui.panel.attributes'), defaultOpen: acc.attributes },
+            { tab: 'inventory', label: t('ui.panel.inventory'), defaultOpen: acc.inventory },
+            { tab: 'skills', label: t('ui.panel.skills'), defaultOpen: acc.skills },
+            { tab: 'quests', label: t('ui.panel.quests'), defaultOpen: acc.quests },
+            { tab: 'chapters', label: t('ui.panel.chapters'), defaultOpen: acc.chapters },
+            { tab: 'saves', label: t('ui.panel.saves'), defaultOpen: acc.saves }
+        ];
+        let accordionHtml = '<div class="cyoa-sidebar" style="display:flex; flex-direction:column; height:100%; overflow:hidden;"><div class="cyoa-sidebar-accordion" style="flex:1; overflow-y:auto; padding:8px;">';
+        sections.forEach(s => {
+            const open = acc[s.tab];
+            const chevron = open ? '▼' : '▶';
+            accordionHtml += `
+                <div class="cyoa-accordion-section" data-tab="${s.tab}" style="margin-bottom:4px;">
+                    <div class="cyoa-accordion-header" data-tab="${s.tab}" style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-md); cursor:pointer; font-size:13px; font-weight:600; user-select:none;">
+                        <span>${s.label}</span>
+                        <span class="cyoa-accordion-chevron" style="font-size:11px; color:var(--text-light);">${chevron}</span>
+                    </div>
+                    <div class="cyoa-accordion-body" id="cyoa${s.tab.charAt(0).toUpperCase() + s.tab.slice(1)}Panel" style="display:${open ? 'block' : 'none'}; padding:10px 12px; background:var(--bg-light); border:1px solid var(--border); border-top:none; border-radius:0 0 var(--radius-md) var(--radius-md); max-height:280px; overflow-y:auto;"></div>
+                </div>`;
+        });
+        accordionHtml += '</div></div>';
+        sidebarContainer.innerHTML = accordionHtml;
         
         const appElement = document.querySelector('.app');
         if (appElement) {
@@ -817,21 +882,20 @@
         CYOA.renderChaptersPanel();
         CYOA.renderSavesPanel();
         
-        sidebarContainer.querySelectorAll('.tab-btn').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                const tab = e.target.dataset.tab;
-                // 缚手约束：禁用背包/物品栏与装备栏（二者同属 inventory 面板）
-                if ((tab === 'inventory') && CYOA.currentSave && CYOA.getActiveConstraints && CYOA.getActiveConstraints().has('no_hands')) {
+        sidebarContainer.querySelectorAll('.cyoa-accordion-header').forEach(header => {
+            header.addEventListener('click', (e) => {
+                const tab = e.currentTarget.dataset.tab;
+                if ((tab === 'inventory') && CYOA.currentSave && CYOA.getActiveConstraints?.()?.has('no_hands')) {
                     alert(t('ui.msg.handsRestricted'));
                     return;
                 }
-                sidebarContainer.querySelectorAll('.cyoa-tab-panel').forEach(p => p.classList.remove('active'));
-                sidebarContainer.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                
-                const panelId = 'cyoa' + tab.charAt(0).toUpperCase() + tab.slice(1) + 'Panel';
-                const panel = document.getElementById(panelId);
-                if (panel) panel.classList.add('active');
-                e.target.classList.add('active');
+                const section = header.closest('.cyoa-accordion-section');
+                const body = section?.querySelector('.cyoa-accordion-body');
+                const chevron = header?.querySelector('.cyoa-accordion-chevron');
+                const isOpen = body?.style.display !== 'none';
+                CYOA._sidebarAccordion[tab] = !isOpen;
+                if (body) body.style.display = isOpen ? 'none' : 'block';
+                if (chevron) chevron.textContent = isOpen ? '▶' : '▼';
             });
         });
     };
@@ -940,35 +1004,74 @@
             html += `</div>`;
         }
 
-        html += '<div class="cyoa-attributes-grid" style="display: grid; gap: 16px;">';
-        
+        // 人性平衡（当游戏启用时）
+        if (CYOA.currentGame?.humanityBalanceEnabled) {
+            const hi = CYOA.currentSave.humanityIndex ?? 70;
+            const dp = CYOA.currentSave.divinePermission ?? 20;
+            const lockLv = CYOA.currentSave.humanityBalanceLock ?? 0;
+            const hiColor = hi >= 60 ? '#22c55e' : hi >= 30 ? '#f59e0b' : '#ef4444';
+            const dpColor = dp <= 40 ? '#22c55e' : dp <= 80 ? '#f59e0b' : '#ef4444';
+            html += `<div style="background:linear-gradient(135deg,#1e293b,#0f172a); border-radius:var(--radius-md); padding:12px; border:1px solid var(--border); margin-bottom:12px;">`;
+            html += `<div style="font-weight:600; font-size:13px; margin-bottom:8px;">${t('ui.sidebar.humanityBalance')}</div>`;
+            html += `<div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;"><span>${t('ui.sidebar.humanityIndex')}</span><span style="color:${hiColor}; font-weight:600;">${hi}%</span></div>`;
+            html += `<div style="height:4px; background:#334155; border-radius:2px; overflow:hidden; margin-bottom:8px;"><div style="height:100%; width:${hi}%; background:${hiColor}; border-radius:2px;"></div></div>`;
+            html += `<div style="display:flex; justify-content:space-between; font-size:12px;"><span>${t('ui.sidebar.divinePermission')}</span><span style="color:${dpColor}; font-weight:600;">${dp}%</span></div>`;
+            html += `<div style="height:4px; background:#334155; border-radius:2px; overflow:hidden;">`;
+            html += `<div style="height:100%; width:${dp}%; background:${dpColor}; border-radius:2px;"></div></div>`;
+            if (lockLv > 0) {
+                const lockDef = (CONFIG.HUMANITY_BALANCE_CONFIG?.lockLevels || [])[lockLv];
+                html += `<div style="font-size:11px; color:#f59e0b; margin-top:8px;">${t('ui.sidebar.humanityLock')}：${lockDef?.label || lockLv}</div>`;
+            }
+            html += `</div>`;
+        }
+
         if (!CYOA.currentSave.attributes || CYOA.currentSave.attributes.length === 0) {
             html = `<div class="cyoa-empty-state">${t('ui.empty.noAttrs')}</div>`;
         } else {
-            (CYOA.currentSave.attributes || []).forEach(attr => {
+            if (!CYOA._attrExpand) CYOA._attrExpand = {};
+            (CYOA.currentSave.attributes || []).forEach((attr, idx) => {
                 const range = attr.max - attr.min;
                 const percent = range > 0 ? ((attr.value - attr.min) / range) * 100 : 0;
+                const expandId = 'attr_' + (attr.id || 'i' + idx);
+                const expanded = CYOA._attrExpand[expandId] !== false;
+                const chevron = expanded ? '▼' : '▶';
                 html += `
-                    <div class="cyoa-attribute-item" style="background: var(--bg); border-radius: var(--radius-md); padding: 12px; border: 1px solid var(--border);">
-                        <div style="display: flex; justify-content: space-between; margin-bottom: 8px;">
-                            <span style="font-weight: 600;">${escapeHtml(attr.name)}</span>
-                            <span style="color: var(--primary); font-weight: 600;">${attr.value}</span>
+                    <div class="cyoa-attr-card" data-attr-id="${escapeHtml(expandId)}" style="margin-bottom:8px; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">
+                        <div class="cyoa-attr-header" role="button" tabindex="0" style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:var(--bg); cursor:pointer; user-select:none; font-size:13px;">
+                            <span style="font-weight:600;">${escapeHtml(attr.name)}</span>
+                            <span style="display:flex; align-items:center; gap:6px;">
+                                <span style="color:var(--primary); font-weight:600;">${attr.value}</span>
+                                <span class="cyoa-attr-chevron" style="font-size:10px; color:var(--text-light);">${chevron}</span>
+                            </span>
                         </div>
-                        <div style="height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 4px;">
-                            <div style="height: 100%; width: ${percent}%; background: var(--primary); border-radius: 4px;"></div>
+                        <div class="cyoa-attr-body" style="display:${expanded ? 'block' : 'none'}; padding:10px 12px; background:var(--bg-light); border-top:1px solid var(--border);">
+                            <div style="height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 4px;">
+                                <div style="height: 100%; width: ${percent}%; background: var(--primary); border-radius: 4px;"></div>
+                            </div>
+                            <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-light);">
+                                <span>${attr.min}</span>
+                                <span>${attr.max}</span>
+                            </div>
+                            ${attr.description ? `<div style="font-size: 12px; color: var(--text-light); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);">${escapeHtml(attr.description)}</div>` : ''}
                         </div>
-                        <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-light);">
-                            <span>${attr.min}</span>
-                            <span>${attr.max}</span>
-                        </div>
-                        ${attr.description ? `<div style="font-size: 12px; color: var(--text-light); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);">${escapeHtml(attr.description)}</div>` : ''}
                     </div>
                 `;
             });
         }
         
-        html += '</div>';
         container.innerHTML = html;
+        container.querySelectorAll('.cyoa-attr-header').forEach(h => {
+            h.addEventListener('click', function() {
+                const card = this.closest('.cyoa-attr-card');
+                if (!card) return;
+                const id = card.dataset.attrId;
+                const body = card.querySelector('.cyoa-attr-body');
+                const ch = card.querySelector('.cyoa-attr-chevron');
+                CYOA._attrExpand[id] = body?.style.display === 'none';
+                if (body) body.style.display = CYOA._attrExpand[id] ? 'block' : 'none';
+                if (ch) ch.textContent = CYOA._attrExpand[id] ? '▼' : '▶';
+            });
+        });
     };
 
     // ========== 可折叠面板封装 ==========

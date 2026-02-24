@@ -15,9 +15,48 @@
             SETTINGS: 'cyoa_settings_v2',
             WORD_FILTER: 'cyoa_word_filter_v1'
         },
+        // ========== 八大天道 / 世界规则（道？道！设定） ==========
+        HEAVENLY_PATHS: [
+            { value: 'K', label: '🔬 K-科学', desc: '绝对理性，数学公式表达' },
+            { value: 'J', label: '⚙️ J-机械', desc: '蜂巢思维，效率唯一' },
+            { value: 'M', label: '✨ M-魔法', desc: '浪漫艺术家，诗歌规则' },
+            { value: 'Q', label: '💋 Q-情色', desc: '欲望炼金，感官体验' },
+            { value: 'C', label: '🐙 C-克系', desc: '宇宙癌变，混沌本能' },
+            { value: 'G', label: '🔄 G-诡异', desc: '悖论顽童，逻辑陷阱' },
+            { value: 'Z', label: '📐 Z-哲学', desc: '概念棋手，辩证对话' },
+            { value: 'X', label: '⚔️ X-仙侠', desc: '古老护道，因果平衡' }
+        ],
+        // 派系相容性 (path -> path -> percent)
+        HEAVENLY_PATH_COMPATIBILITY: {
+            'K-J': 65, 'K-M': 45, 'K-Q': 20, 'K-C': 0, 'K-G': 15, 'K-Z': 55, 'K-X': 40,
+            'J-M': 30, 'J-Q': 25, 'J-C': 0, 'J-G': 10, 'J-Z': 45, 'J-X': 35,
+            'M-Q': 60, 'M-C': 5, 'M-G': 50, 'M-Z': 40, 'M-X': 50,
+            'Q-C': 10, 'Q-G': 35, 'Q-Z': 30, 'Q-X': 35,
+            'C-G': 40, 'C-Z': 0, 'C-X': 0,
+            'G-Z': 45, 'G-X': 55,
+            'Z-X': 75
+        },
+        // 遗物等级（归零遗物）
+        RELIC_GRADES: [
+            { value: 'S', label: 'S级 稳定', risk: 'low', desc: '规则完整无副作用' },
+            { value: 'A', label: 'A级 活性', risk: 'medium', desc: '规则不稳定但可控' },
+            { value: 'EX', label: 'EX级 悖论', risk: 'high', desc: '存在即矛盾，接触有风险' }
+        ],
+        // 人性平衡协议
+        HUMANITY_BALANCE_CONFIG: {
+            humanityThreshold: 30,      // 人性指数低于此触发
+            divineThreshold: 80,        // 神性权限高于此触发
+            lockLevels: [
+                { level: 0, label: '无封锁', effects: [] },
+                { level: 1, label: '轻度', effects: ['禁用规则编写'] },
+                { level: 2, label: '中度', effects: ['主动解析减速70%', '无法修改核心道纹'] },
+                { level: 3, label: '重度', effects: ['仅保留本能视觉', '感官锚点放大'] }
+            ]
+        },
         // 物品类型（装备类型可携带 constraints 约束标志）
         ITEM_MAX_QUANTITY: 99,
         ITEM_TYPES: [
+            { value: 'relic', label: '📿 遗物' },
             { value: 'key', label: '🔑 钥匙' },
             { value: 'map', label: '🗺️ 地图' },
             { value: 'healing', label: '💊 治疗' },
@@ -2026,6 +2065,92 @@
             { sensitive: 'sodomy', safe: 'rear intimacy' },
             { sensitive: 'fornication', safe: 'carnal union' }
         ],
+        // ============================================================
+        // 新系统 CONFIG
+        // ============================================================
+
+        // ① 装备计时器系统
+        EQUIPMENT_TIMER_DEFAULTS: {
+            lockCountdownTurns: 5,      // 离开安全区后多少轮锁定（5轮≈15分钟）
+            escalationPeakTurns: 24,    // 达到最高等级所需轮数（24轮≈8小时）
+            escalationCurve: 'linear',  // linear / exponential / step
+            maxEscalationLevel: 10,     // 最高升级等级
+            resetOnUnlock: true         // 解锁后是否重置等级
+        },
+
+        // ② 地点图系统
+        LOCATION_DEFAULTS: {
+            defaultTravelTurns: 6,      // 默认两地之间旅行轮数
+            autoLockOnTravel: true      // 旅行期间自动触发计时器
+        },
+
+        // ③ 装备兼容性 — 体位组（同组内同类别不可叠穿）
+        SLOT_GROUPS: {
+            upper_body: { label: '上身', slots: ['chest', 'waist', 'upper_arm', 'elbow', 'forearm'], category: 'clothing' },
+            lower_body: { label: '下身', slots: ['hips', 'crotch', 'thigh', 'knee', 'calf', 'ankle'], category: 'clothing' },
+            head_wear:  { label: '头部', slots: ['head', 'eyes', 'ears', 'mouth', 'nose'], category: 'headgear' },
+            hands:      { label: '手部', slots: ['wrist', 'palm', 'fingers'], category: 'gloves' },
+            feet:       { label: '足部', slots: ['foot'], category: 'footwear' },
+            full_body:  { label: '全身', slots: ['chest', 'waist', 'hips', 'crotch', 'thigh', 'knee', 'calf', 'ankle'], category: 'bodysuit' }
+        },
+
+        // ④ 双层外观
+        APPEARANCE_PERSPECTIVES: [
+            { value: 'wearer', label: '穿戴者视角' },
+            { value: 'observer', label: '旁观者视角' },
+            { value: 'intimate', label: '亲密者视角' }
+        ],
+
+        // ⑤ 装备联动触发条件
+        SYNERGY_TRIGGER_CONDITIONS: [
+            { value: 'movement', label: '移动时' },
+            { value: 'speech', label: '说话时' },
+            { value: 'idle', label: '静止时' },
+            { value: 'stairs', label: '上下楼梯时' },
+            { value: 'vehicle', label: '上下车时' },
+            { value: 'sitting', label: '坐下时' },
+            { value: 'climbing', label: '攀爬时' },
+            { value: 'always', label: '始终' }
+        ],
+
+        // ⑥ 知识迷雾 — 发现条件类型
+        DISCOVERY_CONDITIONS: [
+            { value: 'first_lock', label: '首次被锁定' },
+            { value: 'first_unlock', label: '首次解锁' },
+            { value: 'wear_duration', label: '穿戴超过N轮' },
+            { value: 'reach_location', label: '到达特定地点' },
+            { value: 'equip_item', label: '穿戴特定装备' },
+            { value: 'escalation_max', label: '升级达到最高' },
+            { value: 'custom', label: '自定义条件' }
+        ],
+
+        // ⑦ 依赖度/沉沦阈值
+        DEPENDENCY_THRESHOLDS: [
+            { level: 0,  label: '无感', desc: '对束缚没有特别感觉' },
+            { level: 20, label: '好奇', desc: '开始对束缚感到好奇' },
+            { level: 40, label: '习惯', desc: '已经习惯束缚的存在，偶尔会主动选择' },
+            { level: 60, label: '偏好', desc: '明显偏好束缚状态，主动寻找机会', choiceBias: 0.7 },
+            { level: 80, label: '依赖', desc: '强烈依赖束缚带来的感觉，很难拒绝', choiceBias: 0.9 },
+            { level: 95, label: '沉沦', desc: '完全沉浸于束缚，失去客观判断力', choiceBias: 1.0 }
+        ],
+        DEPENDENCY_CONFIG: {
+            gainPerTurn: 0.3,           // 每轮穿戴束缚装备增加的依赖度
+            comfortMultiplier: 1.5,     // 舒适型束缚的依赖度倍率
+            decayPerTurn: 0.1,          // 未穿戴时每轮衰减
+            maxValue: 100
+        },
+
+        // ⑨ 行动类型关键词（用于检测用户行动类型）
+        ACTION_KEYWORDS: {
+            movement: ['走', '跑', '移动', '前进', '走向', '离开', '走过', '穿过', '迈步', '行走', '赶往', '步行', '散步', 'walk', 'move', 'go', 'run', 'step'],
+            speech: ['说', '问', '答', '喊', '叫', '回答', '告诉', '解释', '说道', '开口', 'say', 'speak', 'ask', 'tell', 'talk'],
+            stairs: ['楼梯', '上楼', '下楼', '台阶', '阶梯', 'stairs', 'climb'],
+            vehicle: ['上车', '下车', '开车', '出租车', '地铁', '公交', '飞机', '高铁', 'car', 'taxi', 'bus', 'train', 'plane'],
+            sitting: ['坐', '坐下', '落座', '就座', 'sit', 'seat'],
+            climbing: ['爬', '攀', '登', '爬山', 'climb', 'hike'],
+            idle: ['站', '等', '停', '静', '不动', '原地', 'stand', 'wait', 'idle', 'stay']
+        },
+
         // 默认游戏结构
         DEFAULT_GAME: {
             id: '',
@@ -2039,8 +2164,11 @@
                 factions: '',
                 socialStructure: '',
                 history: '',
-                custom: ''
+                custom: '',
+                ruleTags: [],           // 世界规则标签 [K,M,Q...]，空则不用天道规则
+                isFusionWorld: false    // 是否融合世界（多规则并存）
             },
+            humanityBalanceEnabled: false,  // 是否启用人性平衡协议（人性指数/神性权限）
             coreMechanics: {
                 type: 'turn-based',
                 description: '',
@@ -2055,6 +2183,11 @@
             professions: [],       // 职业定义列表
             skills: [],           // 技能列表
             quests: [],            // 任务列表
+            locations: [],         // ② 地点列表
+            locationEdges: [],     // ② 地点间路径
+            equipmentSynergies: [], // ⑤ 装备联动规则
+            discoveryRules: [],    // ⑥ 知识迷雾规则
+            outfitPresets: [],     // ⑧ 服饰预设
             initialScene: '',
             initialChapter: '',
             rules: {

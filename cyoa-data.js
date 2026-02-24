@@ -430,16 +430,41 @@
     // ========== 应用属性修饰符 ==========
     function applyStatModifiers(modifiers, add, targetSave = null) {
         const save = targetSave || CYOA.currentSave;
-        if (!save || !save.attributes) return;
+        if (!save) return;
         
-        save.attributes.forEach(attr => {
-            if (Object.prototype.hasOwnProperty.call(modifiers, attr.name)) {
-                const change = add ? modifiers[attr.name] : -modifiers[attr.name];
-                const minVal = typeof attr.min === 'number' ? attr.min : -Infinity;
-                const maxVal = typeof attr.max === 'number' ? attr.max : Infinity;
-                attr.value = Math.max(minVal, Math.min(maxVal, attr.value + change));
+        if (save.attributes) {
+            save.attributes.forEach(attr => {
+                if (Object.prototype.hasOwnProperty.call(modifiers, attr.name)) {
+                    const change = add ? modifiers[attr.name] : -modifiers[attr.name];
+                    const minVal = typeof attr.min === 'number' ? attr.min : -Infinity;
+                    const maxVal = typeof attr.max === 'number' ? attr.max : Infinity;
+                    attr.value = Math.max(minVal, Math.min(maxVal, attr.value + change));
+                }
+            });
+        }
+        
+        // 人性平衡协议：支持 humanityIndex、divinePermission 修饰
+        const game = CYOA.currentGame;
+        if (game?.humanityBalanceEnabled && save) {
+            const cfg = CONFIG.HUMANITY_BALANCE_CONFIG || {};
+            const hiThresh = cfg.humanityThreshold ?? 30;
+            const dpThresh = cfg.divineThreshold ?? 80;
+            if (Object.prototype.hasOwnProperty.call(modifiers, 'humanityIndex')) {
+                const change = add ? modifiers.humanityIndex : -modifiers.humanityIndex;
+                save.humanityIndex = Math.max(0, Math.min(100, (save.humanityIndex ?? 70) + change));
             }
-        });
+            if (Object.prototype.hasOwnProperty.call(modifiers, 'divinePermission')) {
+                const change = add ? modifiers.divinePermission : -modifiers.divinePermission;
+                save.divinePermission = Math.max(0, Math.min(100, (save.divinePermission ?? 20) + change));
+            }
+            const hi = save.humanityIndex ?? 70;
+            const dp = save.divinePermission ?? 20;
+            if (hi < hiThresh || dp > dpThresh) {
+                save.humanityBalanceLock = hi < 15 || dp > 90 ? 3 : (hi < 25 || dp > 85 ? 2 : 1);
+            } else {
+                save.humanityBalanceLock = 0;
+            }
+        }
     }
 
     // ========== 规则说明书解析 ==========

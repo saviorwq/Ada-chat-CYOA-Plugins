@@ -98,9 +98,10 @@
                     break;
                     
                 case 'items':
-                    html += `<span class="item-icon">${item.itemType === 'key' ? '🔑' : '📦'}</span>`;
+                    html += `<span class="item-icon">${item.itemType === 'relic' ? '📿' : item.itemType === 'key' ? '🔑' : '📦'}</span>`;
                     html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
                     html += `<span class="item-type">${getItemTypeLabel(item.itemType)}</span>`;
+                    if (item.itemType === 'relic' && item.relicGrade) html += `<span class="item-badge">${item.relicGrade}</span>`;
                     if (item.durability) html += `<span class="item-value">🔨${item.durability}</span>`;
                     if (item.locked) html += `<span class="item-locked">🔒</span>`;
                     break;
@@ -291,7 +292,19 @@
                 break;
             case 'chapters':
                 html = renderChapterForm(item, index);
-                break;   
+                break;
+            case 'locations':
+                html = renderLocationForm(item, index);
+                break;
+            case 'equipmentSynergies':
+                html = renderSynergyForm(item, index);
+                break;
+            case 'discoveryRules':
+                html = renderDiscoveryForm(item, index);
+                break;
+            case 'outfitPresets':
+                html = renderPresetForm(item, index);
+                break;
         }
         
         formContainer.innerHTML = html;
@@ -366,7 +379,7 @@
                 </div>
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.itemType')}</label>
-                    <select id="editItemType" class="cyoa-select">${typeOptions}</select>
+                    <select id="editItemType" class="cyoa-select" onchange="var r=document.getElementById('relicFields');if(r)r.style.display=this.value==='relic'?'block':'none'">${typeOptions}</select>
                 </div>
                 <div class="cyoa-form-row cyoa-grid-2">
                     <div>
@@ -413,6 +426,16 @@
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.description')}</label>
                     <input type="text" id="editItemDesc" class="cyoa-input" value="${escapeHtml(item.description || '')}">
+                </div>
+                <div id="relicFields" class="cyoa-form-row" style="display:${item.itemType === 'relic' ? 'block' : 'none'};">
+                    <label>${t('ui.label.relicGrade')}</label>
+                    <select id="editItemRelicGrade" class="cyoa-select">
+                        ${(CONFIG.RELIC_GRADES || []).map(g => `<option value="${g.value}" ${g.value === (item.relicGrade || 'S') ? 'selected' : ''}>${g.label}</option>`).join('')}
+                    </select>
+                    <label style="margin-top:6px;">${t('ui.label.sideEffects')}</label>
+                    <input type="text" id="editItemSideEffects" class="cyoa-input" value="${escapeHtml(item.sideEffects || '')}" placeholder="${t('ui.ph.sideEffects')}">
+                    <label style="margin-top:6px;">${t('ui.label.unlockCondition')}</label>
+                    <input type="text" id="editItemUnlockCond" class="cyoa-input" value="${escapeHtml(item.unlockCondition || '')}" placeholder="${t('ui.ph.unlockCondition')}">
                 </div>
                 <div class="cyoa-form-actions">
                     <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
@@ -617,6 +640,39 @@
                             return '<option value="' + tag.value + '" ' + checked + '>' + tag.label + ' — ' + escapeHtml(tag.desc) + '</option>';
                         }).join('')}
                     </select>
+                </div>
+                <div class="cyoa-form-row" style="background:#f0fdf4; padding:12px; border-radius:var(--radius-sm); border:1px solid #86efac;">
+                    <label style="font-weight:600; margin-bottom:8px; display:block;">⏱ 计时器/双层外观/兼容性</label>
+                    <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                        <label><input type="checkbox" id="editEquipTimerEnabled" ${equip.timerEnabled ? 'checked' : ''}> 启用计时器</label>
+                        <label><input type="checkbox" id="editEquipIsIntegrated" ${equip.isIntegrated ? 'checked' : ''}> 独立服装（占多槽组）</label>
+                        <label><input type="checkbox" id="editEquipComfort" ${equip.comfortType ? 'checked' : ''}> 舒适型束缚（加速依赖度）</label>
+                    </div>
+                    <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; margin-top:8px;">
+                        <div>
+                            <label style="font-size:12px;">锁定倒计时(轮)</label>
+                            <input type="number" id="editEquipLockCountdown" class="cyoa-input" value="${equip.lockCountdownTurns || 5}" min="1">
+                        </div>
+                        <div>
+                            <label style="font-size:12px;">升级峰值(轮)</label>
+                            <input type="number" id="editEquipEscPeak" class="cyoa-input" value="${equip.escalationPeakTurns || 24}" min="1">
+                        </div>
+                        <div>
+                            <label style="font-size:12px;">槽组</label>
+                            <select id="editEquipSlotGroup" class="cyoa-input">
+                                <option value="">无</option>
+                                ${Object.entries(CONFIG.SLOT_GROUPS || {}).map(([k, v]) => `<option value="${k}" ${equip.slotGroup === k ? 'selected' : ''}>${v.label}</option>`).join('')}
+                            </select>
+                        </div>
+                    </div>
+                    <div style="margin-top:8px;">
+                        <label style="font-size:12px;">外观名称（旁人看到的）</label>
+                        <input type="text" id="editEquipAppearanceName" class="cyoa-input" value="${escapeHtml(equip.appearanceName || '')}" placeholder="留空则使用装备名称">
+                    </div>
+                    <div style="margin-top:4px;">
+                        <label style="font-size:12px;">外观描述（旁人看到的）</label>
+                        <input type="text" id="editEquipAppearanceDesc" class="cyoa-input" value="${escapeHtml(equip.appearanceDesc || '')}" placeholder="留空则使用装备描述">
+                    </div>
                 </div>
                 <div class="cyoa-form-row" style="background:var(--bg); padding:12px; border-radius:var(--radius-sm); border:1px solid var(--border);">
                     <label style="font-weight:600; margin-bottom:8px; display:block;">${t('ui.label.attachmentSystem')}</label>
@@ -1837,7 +1893,15 @@
         
         item.statModifiers = CYOA.$('editItemStats')?.value.trim() || '';
         item.description = CYOA.$('editItemDesc')?.value.trim() || '';
-        
+        if (item.itemType === 'relic') {
+            item.relicGrade = CYOA.$('editItemRelicGrade')?.value || 'S';
+            item.sideEffects = CYOA.$('editItemSideEffects')?.value.trim() || '';
+            item.unlockCondition = CYOA.$('editItemUnlockCond')?.value.trim() || '';
+        } else {
+            delete item.relicGrade;
+            delete item.sideEffects;
+            delete item.unlockCondition;
+        }
         if (!CYOA.editorTempData.items[index]) {
             CYOA.editorTempData.items.push(item);
         } else {
@@ -1904,6 +1968,15 @@
         item.indestructible = CYOA.$('editEquipIndestructible')?.checked || false;
         item.startEquipped = CYOA.$('editEquipStartEquipped')?.checked || false;
         item.lockLevel = parseInt(CYOA.$('editEquipLockLevel')?.value) || 0;
+        // 新系统字段
+        item.timerEnabled = CYOA.$('editEquipTimerEnabled')?.checked || false;
+        item.isIntegrated = CYOA.$('editEquipIsIntegrated')?.checked || false;
+        item.comfortType = CYOA.$('editEquipComfort')?.checked || false;
+        item.lockCountdownTurns = parseInt(CYOA.$('editEquipLockCountdown')?.value) || 5;
+        item.escalationPeakTurns = parseInt(CYOA.$('editEquipEscPeak')?.value) || 24;
+        item.slotGroup = CYOA.$('editEquipSlotGroup')?.value || '';
+        item.appearanceName = CYOA.$('editEquipAppearanceName')?.value.trim() || '';
+        item.appearanceDesc = CYOA.$('editEquipAppearanceDesc')?.value.trim() || '';
         delete item.locked;
         item.unlockItemId = CYOA.$('editEquipUnlock')?.value || '';
         
@@ -2333,6 +2406,191 @@
             });
         });
     }
+
+    // ========== ② 地点编辑表单 ==========
+    function renderLocationForm(loc, index) {
+        return `<div class="cyoa-edit-form">
+            <h3>📍 编辑地点</h3>
+            <div class="cyoa-form-row">
+                <label>地点名称</label>
+                <input type="text" id="editLocName" class="cyoa-input" value="${escapeHtml(loc.name || '')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>描述</label>
+                <textarea id="editLocDesc" class="cyoa-textarea" rows="2">${escapeHtml(loc.description || '')}</textarea>
+            </div>
+            <div class="cyoa-form-row">
+                <label><input type="checkbox" id="editLocSafeRoom" ${loc.isSafeRoom ? 'checked' : ''}> 安全区（密室/解锁区）</label>
+            </div>
+            <div class="cyoa-form-row">
+                <label>特性标签（逗号分隔）</label>
+                <input type="text" id="editLocFeatures" class="cyoa-input" value="${escapeHtml((loc.features || []).join(', '))}">
+            </div>
+            <div class="cyoa-form-row" style="background:#eff6ff; padding:10px; border-radius:8px;">
+                <label style="font-weight:600;">到其他地点的旅行轮数</label>
+                <small>格式：地点ID:轮数，逗号分隔。例如 company:6,pool:8</small>
+                <input type="text" id="editLocEdges" class="cyoa-input" value="${escapeHtml(loc._edgesStr || '')}">
+            </div>
+            <div class="cyoa-form-actions">
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">取消</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveLocation(${index})">保存地点</button>
+            </div>
+        </div>`;
+    }
+
+    CYOA.saveLocation = function(index) {
+        if (!CYOA.editorTempData) return;
+        const item = CYOA.editorTempData.locations[index] || { id: CYOA.generateId() };
+        item.name = CYOA.$('editLocName')?.value.trim() || '';
+        item.description = CYOA.$('editLocDesc')?.value.trim() || '';
+        item.isSafeRoom = CYOA.$('editLocSafeRoom')?.checked || false;
+        item.features = (CYOA.$('editLocFeatures')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const edgesStr = CYOA.$('editLocEdges')?.value.trim() || '';
+        if (edgesStr) {
+            const game = CYOA.editorTempData;
+            game.locationEdges = (game.locationEdges || []).filter(e => e.from !== item.id && e.to !== item.id);
+            edgesStr.split(',').forEach(part => {
+                const [toId, turns] = part.trim().split(':');
+                if (toId && turns) game.locationEdges.push({ from: item.id, to: toId.trim(), travelTurns: parseInt(turns) || 6 });
+            });
+        }
+        if (index >= CYOA.editorTempData.locations.length) CYOA.editorTempData.locations.push(item);
+        else CYOA.editorTempData.locations[index] = item;
+        CYOA.cancelEdit(); refreshList('locations');
+    };
+
+    // ========== ⑤ 装备联动编辑表单 ==========
+    function renderSynergyForm(syn, index) {
+        const equipOptions = (CYOA.editorTempData?.equipment || []).map(e =>
+            `<option value="${e.id}" ${(syn.triggers || []).includes(e.id) ? 'selected' : ''}>${escapeHtml(e.name)}</option>`
+        ).join('');
+        const condOptions = (CONFIG.SYNERGY_TRIGGER_CONDITIONS || []).map(c =>
+            `<option value="${c.value}" ${syn.condition === c.value ? 'selected' : ''}>${c.label}</option>`
+        ).join('');
+        return `<div class="cyoa-edit-form">
+            <h3>🔗 编辑装备联动</h3>
+            <div class="cyoa-form-row">
+                <label>触发装备（需同时穿戴）</label>
+                <select id="editSynTriggers" class="cyoa-input" multiple size="5">${equipOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>触发条件</label>
+                <select id="editSynCondition" class="cyoa-input">${condOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>效果标识</label>
+                <input type="text" id="editSynEffect" class="cyoa-input" value="${escapeHtml(syn.effect || '')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>AI叙述描述</label>
+                <textarea id="editSynDesc" class="cyoa-textarea" rows="2">${escapeHtml(syn.description || '')}</textarea>
+            </div>
+            <div class="cyoa-form-actions">
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">取消</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveSynergy(${index})">保存联动</button>
+            </div>
+        </div>`;
+    }
+
+    CYOA.saveSynergy = function(index) {
+        if (!CYOA.editorTempData) return;
+        const item = CYOA.editorTempData.equipmentSynergies[index] || { id: CYOA.generateId() };
+        item.name = CYOA.$('editSynEffect')?.value.trim() || '联动';
+        item.triggers = Array.from(CYOA.$('editSynTriggers')?.selectedOptions || []).map(o => o.value);
+        item.condition = CYOA.$('editSynCondition')?.value || 'always';
+        item.effect = CYOA.$('editSynEffect')?.value.trim() || '';
+        item.description = CYOA.$('editSynDesc')?.value.trim() || '';
+        if (index >= CYOA.editorTempData.equipmentSynergies.length) CYOA.editorTempData.equipmentSynergies.push(item);
+        else CYOA.editorTempData.equipmentSynergies[index] = item;
+        CYOA.cancelEdit(); refreshList('equipmentSynergies');
+    };
+
+    // ========== ⑥ 知识迷雾编辑表单 ==========
+    function renderDiscoveryForm(rule, index) {
+        const condOptions = (CONFIG.DISCOVERY_CONDITIONS || []).map(c =>
+            `<option value="${c.value}" ${rule.discoverCondition === c.value ? 'selected' : ''}>${c.label}</option>`
+        ).join('');
+        return `<div class="cyoa-edit-form">
+            <h3>🔮 编辑发现规则</h3>
+            <div class="cyoa-form-row">
+                <label>规则名称</label>
+                <input type="text" id="editDiscName" class="cyoa-input" value="${escapeHtml(rule.name || '')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>规则描述（发现后显示给玩家）</label>
+                <textarea id="editDiscDesc" class="cyoa-textarea" rows="2">${escapeHtml(rule.description || '')}</textarea>
+            </div>
+            <div class="cyoa-form-row">
+                <label>发现条件</label>
+                <select id="editDiscCondition" class="cyoa-input">${condOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>条件值（如穿戴N轮的N，或地点/装备ID）</label>
+                <input type="text" id="editDiscCondValue" class="cyoa-input" value="${escapeHtml(rule.conditionValue || '')}">
+            </div>
+            <div class="cyoa-form-actions">
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">取消</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveDiscovery(${index})">保存规则</button>
+            </div>
+        </div>`;
+    }
+
+    CYOA.saveDiscovery = function(index) {
+        if (!CYOA.editorTempData) return;
+        const item = CYOA.editorTempData.discoveryRules[index] || { id: CYOA.generateId() };
+        item.name = CYOA.$('editDiscName')?.value.trim() || '';
+        item.description = CYOA.$('editDiscDesc')?.value.trim() || '';
+        item.discoverCondition = CYOA.$('editDiscCondition')?.value || 'custom';
+        item.conditionValue = CYOA.$('editDiscCondValue')?.value.trim() || '';
+        if (index >= CYOA.editorTempData.discoveryRules.length) CYOA.editorTempData.discoveryRules.push(item);
+        else CYOA.editorTempData.discoveryRules[index] = item;
+        CYOA.cancelEdit(); refreshList('discoveryRules');
+    };
+
+    // ========== ⑧ 服饰预设编辑表单 ==========
+    function renderPresetForm(preset, index) {
+        const equipOptions = (CYOA.editorTempData?.equipment || []).map(e =>
+            `<option value="${e.id}" ${(preset.items || []).includes(e.id) ? 'selected' : ''}>${escapeHtml(e.name)}</option>`
+        ).join('');
+        const chapterOptions = (CYOA.editorTempData?.chapters || []).map(c =>
+            `<option value="${c.id}" ${preset.chapter === c.id ? 'selected' : ''}>${escapeHtml(c.title || c.name || c.id)}</option>`
+        ).join('');
+        return `<div class="cyoa-edit-form">
+            <h3>👗 编辑服饰预设</h3>
+            <div class="cyoa-form-row">
+                <label>预设名称</label>
+                <input type="text" id="editPresetName" class="cyoa-input" value="${escapeHtml(preset.name || '')}">
+            </div>
+            <div class="cyoa-form-row">
+                <label>包含装备</label>
+                <select id="editPresetItems" class="cyoa-input" multiple size="6">${equipOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>关联章节（可选）</label>
+                <select id="editPresetChapter" class="cyoa-input"><option value="">无</option>${chapterOptions}</select>
+            </div>
+            <div class="cyoa-form-row">
+                <label>特殊规则（可选）</label>
+                <input type="text" id="editPresetRule" class="cyoa-input" value="${escapeHtml(preset.specialRule || '')}" placeholder="如：万圣节可外穿">
+            </div>
+            <div class="cyoa-form-actions">
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">取消</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.savePreset(${index})">保存预设</button>
+            </div>
+        </div>`;
+    }
+
+    CYOA.savePreset = function(index) {
+        if (!CYOA.editorTempData) return;
+        const item = CYOA.editorTempData.outfitPresets[index] || { id: CYOA.generateId() };
+        item.name = CYOA.$('editPresetName')?.value.trim() || '';
+        item.items = Array.from(CYOA.$('editPresetItems')?.selectedOptions || []).map(o => o.value);
+        item.chapter = CYOA.$('editPresetChapter')?.value || '';
+        item.specialRule = CYOA.$('editPresetRule')?.value.trim() || '';
+        if (index >= CYOA.editorTempData.outfitPresets.length) CYOA.editorTempData.outfitPresets.push(item);
+        else CYOA.editorTempData.outfitPresets[index] = item;
+        CYOA.cancelEdit(); refreshList('outfitPresets');
+    };
 
     // ========== 导出到全局 ==========
     CYOA.renderSummaryTable = renderSummaryTable;
