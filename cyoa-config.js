@@ -1,11 +1,8 @@
 /**
- * CYOA 插件核心模块 v2.1
- * 包含：配置常量、工具函数、全局对象
+ * CYOA 閰嶇疆甯搁噺妯″潡
  */
-
 (function() {
-    // ========== 配置常量 ==========
-    const CONFIG = {
+    window.CYOA_CONFIG = {
         DEBUG: true,
         MAX_IMAGE_SIZE: 2 * 1024 * 1024, // 2MB
         API_URL: 'api.php',
@@ -21,7 +18,7 @@
             { value: 'J', label: '⚙️ J-机械', desc: '蜂巢思维，效率唯一' },
             { value: 'M', label: '✨ M-魔法', desc: '浪漫艺术家，诗歌规则' },
             { value: 'Q', label: '💋 Q-情色', desc: '欲望炼金，感官体验' },
-            { value: 'C', label: '🐙 C-克系', desc: '宇宙癌变，混沌本能' },
+            { value: 'C', label: '🐙 C-克系', desc: '宇宙恐怖、禁忌知识、不可名状。理智侵蚀，谱系诅咒。适合个人跑团沙盘探索。' },
             { value: 'G', label: '🔄 G-诡异', desc: '悖论顽童，逻辑陷阱' },
             { value: 'Z', label: '📐 Z-哲学', desc: '概念棋手，辩证对话' },
             { value: 'X', label: '⚔️ X-仙侠', desc: '古老护道，因果平衡' }
@@ -96,17 +93,6 @@
             { value: 'calf', label: '🦶 小腿', group: 'common' },
             { value: 'ankle', label: '🦶 脚踝', group: 'common' },
             { value: 'foot', label: '👟 足部', group: 'common' }
-        ],
-        // 服装/装备层级：数字越大越外层
-        WEAR_LAYERS: [
-            { value: 0, label: 'LV0 皮肤层', immutable: true },
-            { value: 1, label: 'LV1 亲肤层' },
-            { value: 2, label: 'LV2 最内层' },
-            { value: 3, label: 'LV3 内层' },
-            { value: 4, label: 'LV4 里层' },
-            { value: 5, label: 'LV5 中间层' },
-            { value: 6, label: 'LV6 外层' },
-            { value: 7, label: 'LV7 最外层' }
         ],
         // 下体部位值集合（用于逻辑判断）
         INTIMATE_SLOTS: ['crotch', 'anal', 'vaginal', 'urethral_f', 'penis', 'urethral_m'],
@@ -2190,7 +2176,6 @@
                 socialStructure: '',
                 history: '',
                 custom: '',
-                lexiconMode: 'auto',   // auto | modern | ancient
                 ruleTags: [],           // 世界规则标签 [K,M,Q...]，空则不用天道规则
                 isFusionWorld: false    // 是否融合世界（多规则并存）
             },
@@ -2206,7 +2191,6 @@
             attributes: [],
             items: [],
             equipment: [],
-            contracts: [],         // 合同/契约条款定义（显示词由 worldSetting.lexiconMode 控制）
             professions: [],       // 职业定义列表
             skills: [],           // 技能列表
             quests: [],            // 任务列表
@@ -2235,227 +2219,4 @@
         }
     };
 
-    // ========== 全局对象 ==========
-    window.CYOA = window.CYOA || {};
-    const CYOA = window.CYOA;
-
-    // i18n: 必须用 window 访问避免 TDZ（t 会在 const CYOA 之前被 CONFIG 调用）
-    function t(key, params) {
-        var dict = window.CYOA_I18N_ZH || (window.CYOA && window.CYOA._i18n);
-        var text = (dict && dict[key]) || key;
-        if (params && typeof params === 'object') {
-            Object.keys(params).forEach(function(k) { text = text.replace(new RegExp('\\{\\{' + k + '\\}\\}', 'g'), params[k]); });
-        }
-        return text;
-    }
-    
-    // 内部状态
-    let games = [];
-    let saves = {};
-    let currentGame = null;
-    let currentSave = null;
-    let currentNodeId = null;
-    let currentEditingGameId = null;
-    let editorTempData = null;
-    let editingItem = { type: null, index: -1 };
-
-    // ========== 工具函数 ==========
-    function log(...args) { if (CONFIG.DEBUG) console.log('[CYOA]', ...args); }
-    function error(...args) { console.error('[CYOA]', ...args); }
-    
-    CYOA.$ = function(id) { return document.getElementById(id); };
-    CYOA.$$ = function(selector) { return document.querySelectorAll(selector); };
-    
-    const generateId = () => 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
-    const getCurrentTimestamp = () => new Date().toISOString();
-
-    // ========== HTML转义 ==========
-    function escapeHtml(unsafe) {
-        if (!unsafe) return '';
-        return String(unsafe)
-            .replace(/&/g, "&amp;")
-            .replace(/</g, "&lt;")
-            .replace(/>/g, "&gt;")
-            .replace(/"/g, "&quot;")
-            .replace(/'/g, "&#039;");
-    }
-    CYOA.escapeHtml = escapeHtml;
-
-    // ========== 类型标签转换 ==========
-    function findLabel(arr, val, fallback) {
-        const found = (arr || []).find(x => x.value === val || x.value === Number(val));
-        return found ? (t(found.label) || found.label) : (fallback || val);
-    }
-
-    function getTypeName(type) {
-        return t('ui.type.' + type) || type;
-    }
-
-    const getItemTypeLabel = v => findLabel(CONFIG.ITEM_TYPES, v);
-    const getConstraintLabel = v => findLabel(CONFIG.CONSTRAINTS, v);
-    const getVisionTypeLabel = v => findLabel(CONFIG.VISION_TYPES, v);
-    const getAttachmentTypeLabel = v => findLabel(CONFIG.ATTACHMENT_TYPES, v);
-    const getLockLevelLabel = v => findLabel(CONFIG.LOCK_LEVELS, v, `Lv${v}`);
-    const getWearLayerLabel = v => findLabel(CONFIG.WEAR_LAYERS, Number(v), `LV${v}`);
-    const getProfessionLabel = v => findLabel(CONFIG.PROFESSION_PRESETS, v);
-    const getSkillTypeLabel = v => findLabel(CONFIG.SKILL_TYPES, v);
-    const getQuestTypeLabel = v => findLabel(CONFIG.QUEST_TYPES, v);
-
-    function getRoleTypeLabel(type) {
-        return { playable: t('ui.opt.rolePlayable'), npc: t('ui.opt.roleNPC'), narrator: t('ui.opt.roleNarrator') }[type] || type;
-    }
-
-    // ========== 合同/契约词体系（现代/古代） ==========
-    function normalizeLexiconMode(mode) {
-        const m = String(mode || '').trim().toLowerCase();
-        if (m === 'modern' || m === 'ancient' || m === 'auto') return m;
-        return 'auto';
-    }
-
-    function detectLexiconModeByWorldText(worldSetting) {
-        const text = [
-            worldSetting?.background,
-            worldSetting?.history,
-            worldSetting?.factions,
-            worldSetting?.custom,
-            worldSetting?.socialStructure
-        ].join(' ').toLowerCase();
-
-        const modernKeywords = ['现代', '都市', '公司', '企业', '合同', '法律', '法院', '警察', '科技', '网络', '资本', '商业'];
-        const ancientKeywords = ['古代', '王朝', '宗门', '契约', '誓约', '神明', '召唤', '法阵', '骑士', '领主', '帝国', '诸侯'];
-
-        let modernScore = 0;
-        let ancientScore = 0;
-        modernKeywords.forEach(k => { if (text.includes(k)) modernScore++; });
-        ancientKeywords.forEach(k => { if (text.includes(k)) ancientScore++; });
-
-        return ancientScore > modernScore ? 'ancient' : 'modern';
-    }
-
-    function getWorldLexiconMode(game) {
-        const explicitMode = normalizeLexiconMode(game?.worldSetting?.lexiconMode);
-        if (explicitMode !== 'auto') return explicitMode;
-        return detectLexiconModeByWorldText(game?.worldSetting || {});
-    }
-
-    function getAgreementLexicon(game) {
-        const mode = getWorldLexiconMode(game);
-        if (mode === 'ancient') {
-            return {
-                mode: 'ancient',
-                noun: '契约',
-                verb: '缔结',
-                title: '契约系统'
-            };
-        }
-        return {
-            mode: 'modern',
-            noun: '合同',
-            verb: '签署',
-            title: '合同系统'
-        };
-    }
-
-    function getAgreementTerm(game, form) {
-        const lex = getAgreementLexicon(game);
-        if (form === 'verb') return lex.verb;
-        if (form === 'title') return lex.title;
-        return lex.noun;
-    }
-
-    // ========== 安全词设置 ==========
-    const SAFEWORD_STORAGE_KEY = 'cyoa_safeword_v1';
-
-    function getDefaultSafewordSettings() {
-        return {
-            enabled: true,
-            hardWords: ['红灯', 'safeword', '停止'],
-            softWords: ['黄灯', 'slow'],
-            notifyInChat: true
-        };
-    }
-
-    function loadSafewordSettings() {
-        try {
-            const raw = localStorage.getItem(SAFEWORD_STORAGE_KEY);
-            const parsed = raw ? JSON.parse(raw) : {};
-            const def = getDefaultSafewordSettings();
-            const hardWords = Array.isArray(parsed.hardWords) ? parsed.hardWords : def.hardWords;
-            const softWords = Array.isArray(parsed.softWords) ? parsed.softWords : def.softWords;
-            return {
-                enabled: parsed.enabled !== undefined ? !!parsed.enabled : def.enabled,
-                hardWords: hardWords.map(v => String(v || '').trim()).filter(Boolean),
-                softWords: softWords.map(v => String(v || '').trim()).filter(Boolean),
-                notifyInChat: parsed.notifyInChat !== undefined ? !!parsed.notifyInChat : def.notifyInChat
-            };
-        } catch (e) {
-            return getDefaultSafewordSettings();
-        }
-    }
-
-    function saveSafewordSettings(settings) {
-        const def = getDefaultSafewordSettings();
-        const normalized = {
-            enabled: settings?.enabled !== undefined ? !!settings.enabled : def.enabled,
-            hardWords: Array.isArray(settings?.hardWords) ? settings.hardWords.map(v => String(v || '').trim()).filter(Boolean) : def.hardWords,
-            softWords: Array.isArray(settings?.softWords) ? settings.softWords.map(v => String(v || '').trim()).filter(Boolean) : def.softWords,
-            notifyInChat: settings?.notifyInChat !== undefined ? !!settings.notifyInChat : def.notifyInChat
-        };
-        localStorage.setItem(SAFEWORD_STORAGE_KEY, JSON.stringify(normalized));
-        return normalized;
-    }
-
-    // post-init: 消除重复数据的引用赋值
-    CONFIG.CONSTRAINT_BODY_REACTIONS.blind = CONFIG.VISION_BODY_REACTIONS.full_blind;
-    CONFIG.CONSTRAINT_BODY_REACTIONS.limited_step = CONFIG.LIMITED_STEP_TIERS.moderate.bodyReactions;
-
-    // ========== i18n ==========
-    CYOA.t = t;
-    CYOA._i18n = window.CYOA_I18N_ZH || {};
-    if (!CYOA.tn) CYOA.tn = function(arr) { return Array.isArray(arr) ? arr : []; };
-    if (!CYOA.lang) CYOA.lang = 'zh';
-    if (!CYOA.langSwitchHtml) CYOA.langSwitchHtml = function() { return ''; };
-    if (!CYOA._onLangChange) CYOA._onLangChange = function() {};
-    if (!CYOA.getSlotLabel) {
-        CYOA.getSlotLabel = function(slot) {
-            const found = (CONFIG.EQUIPMENT_SLOTS || []).find(function(s) { return s.value === slot; });
-            return found ? found.label : slot;
-        };
-    }
-
-    // ========== 导出到全局 ==========
-    CYOA.CONFIG = CONFIG;
-    CYOA.log = log;
-    CYOA.error = error;
-    CYOA.generateId = generateId;
-    CYOA.getCurrentTimestamp = getCurrentTimestamp;
-    CYOA.getItemTypeLabel = getItemTypeLabel;
-    CYOA.getConstraintLabel = getConstraintLabel;
-    CYOA.getVisionTypeLabel = getVisionTypeLabel;
-    CYOA.getAttachmentTypeLabel = getAttachmentTypeLabel;
-    CYOA.getLockLevelLabel = getLockLevelLabel;
-    CYOA.getWearLayerLabel = getWearLayerLabel;
-    CYOA.getProfessionLabel = getProfessionLabel;
-    CYOA.getSkillTypeLabel = getSkillTypeLabel;
-    CYOA.getQuestTypeLabel = getQuestTypeLabel;
-    CYOA.getRoleTypeLabel = getRoleTypeLabel;
-    CYOA.getTypeName = getTypeName;
-    CYOA.getWorldLexiconMode = getWorldLexiconMode;
-    CYOA.getAgreementLexicon = getAgreementLexicon;
-    CYOA.getAgreementTerm = getAgreementTerm;
-    CYOA.getDefaultSafewordSettings = getDefaultSafewordSettings;
-    CYOA.loadSafewordSettings = loadSafewordSettings;
-    CYOA.saveSafewordSettings = saveSafewordSettings;
-
-    // 内部状态导出（只读访问）
-    Object.defineProperty(CYOA, 'games', { get: () => games, set: (val) => games = val });
-    Object.defineProperty(CYOA, 'saves', { get: () => saves, set: (val) => saves = val });
-    Object.defineProperty(CYOA, 'currentGame', { get: () => currentGame, set: (val) => currentGame = val });
-    Object.defineProperty(CYOA, 'currentSave', { get: () => currentSave, set: (val) => currentSave = val });
-    Object.defineProperty(CYOA, 'currentNodeId', { get: () => currentNodeId, set: (val) => currentNodeId = val });
-    Object.defineProperty(CYOA, 'currentEditingGameId', { get: () => currentEditingGameId, set: (val) => currentEditingGameId = val });
-    Object.defineProperty(CYOA, 'editorTempData', { get: () => editorTempData, set: (val) => editorTempData = val });
-    Object.defineProperty(CYOA, 'editingItem', { get: () => editingItem, set: (val) => editingItem = val });
-
-    log('CYOA core module loaded');
 })();

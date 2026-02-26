@@ -136,6 +136,14 @@
                                 <div id="editWorldRuleTags" class="cyoa-rule-tags" style="display:flex; flex-wrap:wrap; gap:6px;">
                                     ${(CONFIG.HEAVENLY_PATHS || []).map(p => `<label class="cyoa-tag-option"><input type="checkbox" value="${p.value}" ${(ws.ruleTags || []).includes(p.value) ? 'checked' : ''}> ${p.label}</label>`).join('')}
                                 </div>
+                                <div style="margin-top:10px;">
+                                    <label style="display:block; margin-bottom:6px;">合同/契约用词环境</label>
+                                    <select id="editWorldLexiconMode" class="cyoa-select">
+                                        <option value="auto" ${(ws.lexiconMode || 'auto') === 'auto' ? 'selected' : ''}>自动判定（推荐）</option>
+                                        <option value="modern" ${(ws.lexiconMode || 'auto') === 'modern' ? 'selected' : ''}>现代（合同）</option>
+                                        <option value="ancient" ${(ws.lexiconMode || 'auto') === 'ancient' ? 'selected' : ''}>古代/奇幻（契约）</option>
+                                    </select>
+                                </div>
                                 <label class="cyoa-checkbox-row" style="margin-top:8px; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="editWorldIsFusion" ${ws.isFusionWorld ? 'checked' : ''}> ${t('ui.label.isFusionWorld')}</label>
                                 <label class="cyoa-checkbox-row" style="margin-top:4px; display:flex; align-items:center; gap:8px;"><input type="checkbox" id="editHumanityBalance" ${data.humanityBalanceEnabled ? 'checked' : ''}> ${t('ui.label.humanityBalance')}</label>
                             </div>
@@ -233,14 +241,19 @@
                         </div>
                     </div>
 
-                    <!-- 地点系统 -->
+                    <!-- 大地图 / 小地图 / 地点 / 设施 -->
                     <div class="cyoa-editor-section">
                         <div class="cyoa-section-header">
-                            <span>📍 地点系统</span>
-                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="locations">+ 添加地点</button>
+                            <span>🗺️ ${t('ui.editor.worldMap')}</span>
+                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm" onclick="CYOA.showWorldMapEditor()">${t('ui.btn.editMap')}</button>
                         </div>
                         <div class="cyoa-section-body">
-                            <div id="locationsList" class="cyoa-summary-container">${locationsSummary}</div>
+                            <div id="worldMapSummary" style="font-size:13px; color:var(--text-light);">${(data.worldMap?.regions?.length || 0) > 0 ? t('ui.status.nRegions', {n: data.worldMap.regions.length}) : t('ui.empty.noWorldMap')}</div>
+                            <div style="margin-top:10px;">
+                                <span style="font-weight:600;">📍 ${t('ui.editor.locations')}</span>
+                                <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm add-item" data-type="locations" style="margin-left:8px;">+ ${t('ui.btn.addLocation')}</button>
+                            </div>
+                            <div id="locationsList" class="cyoa-summary-container" style="margin-top:8px;">${locationsSummary}</div>
                         </div>
                     </div>
 
@@ -467,7 +480,9 @@
                     break;
                     
                 case 'world':
-                    const ruleTagInputs = (CYOA.$$('#editWorldRuleTags input[type=checkbox]') || []).filter((el) => el.checked);
+                    const ruleTagInputs = Array.from(CYOA.$$('#editWorldRuleTags input[type=checkbox]') || []).filter((el) => el.checked);
+                    const lexiconModeRaw = CYOA.$('editWorldLexiconMode')?.value || 'auto';
+                    const lexiconMode = ['auto', 'modern', 'ancient'].includes(lexiconModeRaw) ? lexiconModeRaw : 'auto';
                     CYOA.editorTempData.worldSetting = {
                         background: CYOA.$('editWorldBackground')?.value.trim() || '',
                         geography: CYOA.$('editWorldGeography')?.value.trim() || '',
@@ -476,6 +491,7 @@
                         history: CYOA.$('editWorldHistory')?.value.trim() || '',
                         custom: CYOA.$('editWorldCustom')?.value.trim() || '',
                         ruleTags: ruleTagInputs.map(el => el.value) || [],
+                        lexiconMode: lexiconMode,
                         isFusionWorld: !!CYOA.$('editWorldIsFusion')?.checked
                     };
                     CYOA.editorTempData.humanityBalanceEnabled = !!CYOA.$('editHumanityBalance')?.checked;
@@ -595,6 +611,12 @@
             return;
         }
         
+        const countOf = (v) => {
+            if (Array.isArray(v)) return v.length;
+            if (typeof v === 'number' && Number.isFinite(v)) return v;
+            return 0;
+        };
+
         CYOA.games.forEach(game => {
             const item = document.createElement('div');
             item.className = 'cyoa-game-card';
@@ -602,14 +624,14 @@
             item.innerHTML = `
                 <div class="cyoa-card-header">
                     <h3 class="cyoa-card-title">${escapeHtml(game.name)}</h3>
-                    <span class="cyoa-badge cyoa-badge-primary">${game.characters?.length || 0} ${t('ui.type.characters')}</span>
+                    <span class="cyoa-badge cyoa-badge-primary">${countOf(game.characters)} ${t('ui.type.characters')}</span>
                 </div>
                 <div class="cyoa-card-meta">✍️ ${escapeHtml(game.author || t('ui.status.unknownAuthor'))} • v${game.version || '1.0'}</div>
                 <div class="cyoa-card-stats" style="grid-template-columns:repeat(4,1fr);">
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${game.attributes?.length || 0}</span><span class="cyoa-stat-label">${t('ui.type.attributes')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${game.items?.length || 0}</span><span class="cyoa-stat-label">${t('ui.type.items')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${game.skills?.length || 0}</span><span class="cyoa-stat-label">${t('ui.type.skills')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${game.quests?.length || 0}</span><span class="cyoa-stat-label">${t('ui.type.quests')}</span></div>
+                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.attributes)}</span><span class="cyoa-stat-label">${t('ui.type.attributes')}</span></div>
+                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.items)}</span><span class="cyoa-stat-label">${t('ui.type.items')}</span></div>
+                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.skills)}</span><span class="cyoa-stat-label">${t('ui.type.skills')}</span></div>
+                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.quests)}</span><span class="cyoa-stat-label">${t('ui.type.quests')}</span></div>
                 </div>
                 <div class="cyoa-card-actions">
                     <button class="cyoa-btn cyoa-btn-primary play-game" data-id="${game.id}">${t('ui.btn.start')}</button>
@@ -2199,7 +2221,7 @@
             sorted.forEach(chapter => {
                 const isCurrent = chapter.id === save.currentChapter;
                 const isDone = completedSet.has(chapter.id);
-                const isUnlocked = chapter.unlocked !== false || isDone || isCurrent;
+                const isUnlocked = CYOA.isChapterUnlocked ? CYOA.isChapterUnlocked(chapter, save) : (chapter.unlocked !== false || isDone || isCurrent);
                 const sceneCount = chapter.scenes?.length || 0;
                 
                 let icon = '🔒';

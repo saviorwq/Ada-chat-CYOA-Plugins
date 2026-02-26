@@ -23,6 +23,7 @@
             CYOA.DataManager.saveSaves();
         }
     }
+    CYOA.persistSave = persistSave;
     const escapeHtml = CYOA.escapeHtml;
     const getItemTypeLabel = CYOA.getItemTypeLabel;
     const getSkillTypeLabel = CYOA.getSkillTypeLabel;
@@ -33,81 +34,6 @@
 
     // 添加标志位防止重复退出
     let isExiting = false;
-
-    // ========== 敏感词过滤系统 ==========
-    // 加载用户自定义词表（合并默认词表）
-    function loadWordFilter() {
-        const defaults = CONFIG.DEFAULT_WORD_FILTER || [];
-        let userList = [];
-        try {
-            const stored = localStorage.getItem(CONFIG.STORAGE_KEYS.WORD_FILTER);
-            if (stored) userList = JSON.parse(stored);
-        } catch (e) {
-            console.warn('[CYOA] 加载用户词表失败', e);
-        }
-        if (!Array.isArray(userList)) userList = [];
-        const merged = new Map();
-        defaults.forEach(item => merged.set(item.sensitive, item.safe));
-        userList.forEach(item => {
-            if (item.sensitive && item.safe) merged.set(item.sensitive, item.safe);
-        });
-        return merged;
-    }
-
-    function saveWordFilter(list) {
-        try {
-            localStorage.setItem(CONFIG.STORAGE_KEYS.WORD_FILTER, JSON.stringify(list));
-        } catch (e) {
-            console.error('[CYOA] 保存用户词表失败', e);
-        }
-    }
-
-    // 缓存已排序的词表，避免每次调用都重新排序
-    let _filterCacheSorted = null;   // [sensitive, safe][] 按 sensitive 长度降序
-    let _filterCacheReverse = null;  // [safe, sensitive][] 按 safe 长度降序
-    let _filterCacheVer = 0;
-
-    function getSortedFilter() {
-        const ver = localStorage.getItem(CONFIG.STORAGE_KEYS.WORD_FILTER);
-        const verHash = ver ? ver.length : -1;
-        if (_filterCacheSorted && _filterCacheVer === verHash) {
-            return { forward: _filterCacheSorted, reverse: _filterCacheReverse };
-        }
-        const map = loadWordFilter();
-        const entries = [...map.entries()].filter(([s, r]) => s && r);
-        _filterCacheSorted = entries.sort((a, b) => b[0].length - a[0].length);
-        _filterCacheReverse = [...entries].sort((a, b) => b[1].length - a[1].length);
-        _filterCacheVer = verHash;
-        return { forward: _filterCacheSorted, reverse: _filterCacheReverse };
-    }
-
-    // 敏感词→安全词（发送给 AI 前 & RAG 预安全化）
-    function maskSensitiveWords(text) {
-        if (!text) return text;
-        const { forward } = getSortedFilter();
-        let result = text;
-        forward.forEach(([sensitive, safe]) => {
-            result = result.split(sensitive).join(safe);
-        });
-        return result;
-    }
-
-    // 安全词→敏感词（AI 回复后，还原给用户阅读）
-    // 纯文本反向替换：安全词本身足够独特（如"下体柱身""锁扣式腰封"），误伤概率极低
-    function unmaskSensitiveWords(text) {
-        if (!text) return text;
-        const { reverse } = getSortedFilter();
-        let result = text;
-        reverse.forEach(([sensitive, safe]) => {
-            result = result.split(safe).join(sensitive);
-        });
-        return result;
-    }
-
-    CYOA.loadWordFilter = loadWordFilter;
-    CYOA.saveWordFilter = saveWordFilter;
-    CYOA.maskSensitiveWords = maskSensitiveWords;
-    CYOA.unmaskSensitiveWords = unmaskSensitiveWords;
 
     // ========== 游戏阶段状态 ==========
     CYOA._gamePhase = 'idle'; // 'idle' | 'welcome' | 'playing'
@@ -370,10 +296,40 @@
         
         const playerChar = gameData.characters?.find(c => c.name === roleName);
         const playerCharId = playerChar?.id || '';
-        
-        // 按归属过滤物品：属于玩家角色的道具放入初始背包
         const allItems = gameData.items ? JSON.parse(JSON.stringify(gameData.items)) : [];
-        const playerItems = allItems.filter(item => item.ownerId && item.ownerId === playerCharId);
+        const allEquipment = gameData.equipment ? JSON.parse(JSON.stringify(gameData.equipment)) : [];
+        const itemById = new Map(allItems.map(it => [it.id, it]));
+        const equipById = new Map(allEquipment.map(eq => [eq.id, eq]));
+        const clone = (obj) => JSON.parse(JSON.stringify(obj));
+        const uniqById = (arr) => {
+            const seen = new Set();
+            return (arr || []).filter(it => {
+                if (!it?.id || seen.has(it.id)) return false;
+                seen.add(it.id);
+                return true;
+            });
+        };
+        const buildInitialInventory = (char) => {
+            if (!char?.id) return [];
+            const byOwner = allItems.filter(it => it.ownerId && it.ownerId === char.id).map(clone);
+            const bySelect = (char.initialInventoryItemIds || [])
+                .map(id => itemById.get(id))
+                .filter(Boolean)
+                .map(clone);
+            return uniqById(byOwner.concat(bySelect));
+        };
+        const buildInitialEquipmentList = (char) => {
+            if (!char?.id) return [];
+            const byFlag = allEquipment.filter(eq => eq.startEquipped && eq.ownerId === char.id).map(clone);
+            const bySelect = (char.initialEquipmentIds || [])
+                .map(id => equipById.get(id))
+                .filter(Boolean)
+                .map(clone);
+            return uniqById(byFlag.concat(bySelect));
+        };
+        
+        // 玩家开局背包（owner + 角色配置）
+        const playerItems = buildInitialInventory(playerChar);
         
         // 创建新存档
         const saveId = 'save_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
@@ -396,6 +352,9 @@
             inventory: playerItems,
             acquiredItemIds: playerItems.map(i => i.id),
             equipment: {},
+            npcInventories: {},       // { charId: Item[] }
+            npcEquipment: {},         // { charId: { slot: equip } }
+            agreements: gameData.contracts ? clone(gameData.contracts) : [],
             skills: gameData.skills ? JSON.parse(JSON.stringify(gameData.skills)) : [],
             quests: gameData.quests ? JSON.parse(JSON.stringify(gameData.quests)) : [],
             questProgress: {},
@@ -510,7 +469,7 @@
         
         // ===== 初始穿戴装备 =====
         if (gameData.equipment && playerCharId) {
-            const startEquips = gameData.equipment.filter(e => e.startEquipped && e.ownerId === playerCharId);
+            const startEquips = buildInitialEquipmentList(playerChar);
             startEquips.forEach(eqDef => {
                 const equipCopy = JSON.parse(JSON.stringify(eqDef));
                 const slots = equipCopy.slots || [];
@@ -528,6 +487,26 @@
                 }
             });
         }
+
+        // ===== NPC 初始背包与穿戴 =====
+        (gameData.characters || []).forEach(char => {
+            if (!char?.id || char.id === playerCharId) return;
+            const isNpc = char.roleType === 'npc' || char.role === 'npc';
+            if (!isNpc) return;
+            CYOA.currentSave.npcInventories[char.id] = buildInitialInventory(char);
+            const npcEquips = buildInitialEquipmentList(char);
+            const slotMap = {};
+            npcEquips.forEach(eqDef => {
+                const equipCopy = clone(eqDef);
+                (equipCopy.slots || []).forEach(slot => {
+                    slotMap[slot] = equipCopy;
+                });
+                if (!CYOA.currentSave.acquiredItemIds.includes(equipCopy.id)) {
+                    CYOA.currentSave.acquiredItemIds.push(equipCopy.id);
+                }
+            });
+            CYOA.currentSave.npcEquipment[char.id] = slotMap;
+        });
 
         // 保存存档
         if (!CYOA.saves) CYOA.saves = {};
@@ -735,6 +714,28 @@
         }
     };
 
+    CYOA.isChapterUnlocked = function(chapter, saveRef) {
+        const s = saveRef || CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!s || !chapter) return false;
+        const completedSet = new Set(s.completedChapters || []);
+        if (completedSet.has(chapter.id) || chapter.id === s.currentChapter) return true;
+        const ut = chapter.unlockType || (chapter.unlocked === false ? 'condition' : 'immediate');
+        if (ut === 'immediate') return true;
+        if (ut === 'time' && (chapter.unlockAfterMinutes || 0) > 0) {
+            const started = s.startedAt || s.createdAt || 0;
+            const elapsedMin = (Date.now() - started) / 60000;
+            return elapsedMin >= chapter.unlockAfterMinutes;
+        }
+        if (ut === 'condition') {
+            const sorted = [...(game?.chapters || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+            const idx = sorted.findIndex(ch => ch.id === chapter.id);
+            if (idx <= 0) return true;
+            return completedSet.has(sorted[idx - 1]?.id);
+        }
+        return chapter.unlocked !== false;
+    };
+
     CYOA.changeChapter = function(chapterId) {
         const save = CYOA.currentSave;
         const game = CYOA.currentGame;
@@ -899,385 +900,2368 @@
         return results;
     };
 
-    // ========== 兴奋度系统 API ==========
-    CYOA.modifyArousal = function(delta, source) {
+    CYOA.getEquipLockLevel = function(item, equipDef) {
+        if (typeof item.lockLevel === 'number') return item.lockLevel;
+        if (typeof equipDef?.lockLevel === 'number') return equipDef.lockLevel;
+        if (item.locked === true || equipDef?.locked === true) return 3;
+        if (item.locked === false || equipDef?.locked === false) return 0;
+        return 0;
+    };
+
+    // ========== ⑤ 装备联动系统 ==========
+    CYOA.getActiveSynergies = function(actionType) {
+        const game = CYOA.currentGame;
         const save = CYOA.currentSave;
-        if (!save) return;
-        const cfg = CONFIG.AROUSAL_CONFIG || { min: 0, max: 100 };
-        const oldVal = save.arousal || 0;
-        save.arousal = Math.max(cfg.min, Math.min(cfg.max, oldVal + delta));
-        log('兴奋度变化:', oldVal, '->', save.arousal, `(${delta >= 0 ? '+' : ''}${delta}, 来源: ${source || 'unknown'})`);
-        persistSave();
+        if (!game || !save) return [];
+        const synergies = game.equipmentSynergies || [];
+        const equippedIds = new Set(Object.values(save.equipment || {}).filter(e => e?.id).map(e => e.id));
+        const activeSynergies = [];
+
+        synergies.forEach(syn => {
+            const triggers = syn.triggers || [];
+            if (!triggers.every(tId => equippedIds.has(tId))) return;
+            const condition = syn.condition || 'always';
+            if (condition !== 'always' && condition !== actionType) return;
+            activeSynergies.push(syn);
+        });
+        return activeSynergies;
     };
 
-    // 通用 tier 查找：从高到低遍历，返回第一个 val >= min 的项
-    function findTier(val, configKey, fallback) {
-        const tiers = CONFIG[configKey] || [];
-        for (let i = tiers.length - 1; i >= 0; i--) {
-            if (val >= tiers[i].min) return tiers[i];
-        }
-        return tiers[0] || fallback || { value: 'unknown', label: '?' };
-    }
-
-    CYOA.getArousalTier = function() {
-        return findTier(CYOA.currentSave?.arousal || 0, 'AROUSAL_THRESHOLDS', { value: 'calm', label: '平静' });
-    };
-
-    CYOA.attemptRelease = function() {
-        const save = CYOA.currentSave;
-        if (!save) return { success: false, reason: 'no_save' };
-        const constraints = getActiveConstraints();
-        if (constraints.has('chastity')) {
-            return { success: false, reason: 'chastity', message: '贞操装置阻止了任何释放的可能——身体的渴望被无情地封锁。' };
-        }
-        if (constraints.has('no_hands')) {
-            return { success: false, reason: 'no_hands', message: '双手被束缚，无法触碰自己。' };
-        }
-        const cfg = CONFIG.AROUSAL_CONFIG || {};
-        const amount = cfg.releaseAmount || 50;
-        const oldVal = save.arousal || 0;
-        if (oldVal < 20) {
-            return { success: false, reason: 'too_low', message: '身体处于平静状态，没有需要释放的。' };
-        }
-        save.arousal = Math.max(0, oldVal - amount);
-        persistSave();
-        return { success: true, oldVal, newVal: save.arousal, message: '身体在释放后逐渐恢复平静……' };
-    };
-
-    CYOA.activateStimulator = function(equipSlot, attachmentId, mode, intensity) {
+    // ========== ⑥ 知识迷雾系统 ==========
+    CYOA.checkDiscoveries = function() {
         const save = CYOA.currentSave;
         const game = CYOA.currentGame;
         if (!save || !game) return;
-        if (!save.activeStimulators) save.activeStimulators = [];
-        const existing = save.activeStimulators.find(s => s.slot === equipSlot && s.attachmentId === attachmentId);
-        if (existing) {
-            existing.mode = mode || existing.mode;
-            existing.intensity = intensity || existing.intensity;
+        const rules = game.discoveryRules || [];
+        const discovered = save.discoveredRules || (save.discoveredRules = []);
+
+        rules.forEach(rule => {
+            if (discovered.includes(rule.id)) return;
+            let met = false;
+            switch (rule.discoverCondition) {
+                case 'first_lock': {
+                    const timers = save.equipmentTimers || {};
+                    met = Object.values(timers).some(t => t.locked);
+                    break;
+                }
+                case 'first_unlock': {
+                    const timers = save.equipmentTimers || {};
+                    met = Object.values(timers).some(t => t.turnsWorn > 0 && !t.locked);
+                    break;
+                }
+                case 'wear_duration': {
+                    const threshold = rule.conditionValue || 24;
+                    const timers = save.equipmentTimers || {};
+                    met = Object.values(timers).some(t => t.turnsWorn >= threshold);
+                    break;
+                }
+                case 'reach_location':
+                    met = save.currentLocation === rule.conditionValue;
+                    break;
+                case 'equip_item': {
+                    const equippedIds = Object.values(save.equipment || {}).filter(e => e?.id).map(e => e.id);
+                    met = equippedIds.includes(rule.conditionValue);
+                    break;
+                }
+                case 'escalation_max': {
+                    const timers = save.equipmentTimers || {};
+                    const maxLv = CONFIG.EQUIPMENT_TIMER_DEFAULTS?.maxEscalationLevel || 10;
+                    met = Object.values(timers).some(t => t.escalationLevel >= maxLv);
+                    break;
+                }
+                default: break;
+            }
+            if (met) discovered.push(rule.id);
+        });
+    };
+
+    CYOA.isRuleDiscovered = function(ruleId) {
+        return (CYOA.currentSave?.discoveredRules || []).includes(ruleId);
+    };
+
+    // ========== ⑦ 依赖度系统 ==========
+    CYOA.updateDependency = function() {
+        const save = CYOA.currentSave;
+        if (!save) return;
+        const cfg = CONFIG.DEPENDENCY_CONFIG || {};
+        const constraints = getActiveConstraints();
+        if (constraints.size > 0) {
+            let gain = cfg.gainPerTurn || 0.3;
+            const comfortEquip = Object.values(save.equipment || {}).filter(e => e?.id);
+            const game = CYOA.currentGame;
+            comfortEquip.forEach(item => {
+                const def = game?.equipment?.find(e => e.id === item.id);
+                if (def?.comfortType) gain *= (cfg.comfortMultiplier || 1.5);
+            });
+            gain *= Math.min(constraints.size, 3);
+            save.dependency = Math.min(cfg.maxValue || 100, (save.dependency || 0) + gain);
         } else {
-            const equipId = save.equipment?.[equipSlot]?.id;
-            const equipDef = equipId ? (game.equipment || []).find(e => e.id === equipId) : null;
-            const att = (equipDef?.attachments || []).find(a => a.id === attachmentId);
-            save.activeStimulators.push({
-                slot: equipSlot,
-                attachmentId,
-                stimType: att?.type || 'vibrator',
-                mode: mode || att?.stimMode || 'continuous',
-                intensity: intensity || att?.stimIntensity || 'medium',
-                equipName: equipDef?.name || equipSlot,
-                attachmentName: att?.name || '刺激器'
+            save.dependency = Math.max(0, (save.dependency || 0) - (cfg.decayPerTurn || 0.1));
+        }
+    };
+
+    CYOA.getDependencyTier = function() {
+        const val = CYOA.currentSave?.dependency || 0;
+        const thresholds = CONFIG.DEPENDENCY_THRESHOLDS || [];
+        let tier = thresholds[0] || { level: 0, label: '无感', desc: '' };
+        for (const t of thresholds) {
+            if (val >= t.level) tier = t;
+        }
+        return { ...tier, value: val };
+    };
+
+    // ========== ⑨ 行动类型检测 ==========
+    CYOA.detectActionType = function(userMessage) {
+        if (!userMessage) return 'idle';
+        const keywords = CONFIG.ACTION_KEYWORDS || {};
+        const scores = {};
+        Object.entries(keywords).forEach(([type, words]) => {
+            scores[type] = 0;
+            words.forEach(w => {
+                if (userMessage.includes(w)) scores[type]++;
             });
-        }
-        persistSave();
-        log('刺激器已激活:', equipSlot, attachmentId);
-    };
-
-    CYOA.deactivateStimulator = function(equipSlot, attachmentId) {
-        const save = CYOA.currentSave;
-        if (!save || !save.activeStimulators) return;
-        save.activeStimulators = save.activeStimulators.filter(
-            s => !(s.slot === equipSlot && s.attachmentId === attachmentId)
-        );
-        persistSave();
-        log('刺激器已停止:', equipSlot, attachmentId);
-    };
-
-    CYOA.calculateTurnArousal = function() {
-        const save = CYOA.currentSave;
-        if (!save) return 0;
-        let totalDelta = 0;
-
-        // 来自活跃刺激器
-        (save.activeStimulators || []).forEach(stim => {
-            if (stim.mode === 'off') return;
-            const stimDef = (CONFIG.STIMULATOR_TYPES || []).find(t => t.value === stim.stimType);
-            const modeDef = (CONFIG.STIMULATOR_MODES || []).find(m => m.value === stim.mode);
-            const intDef = (CONFIG.STIMULATOR_INTENSITIES || []).find(i => i.value === stim.intensity);
-            const base = stimDef?.arousalPerTurn || 5;
-            const modeMult = modeDef?.multiplier || 1.0;
-            const intMult = intDef?.multiplier || 1.0;
-            let delta = base * modeMult * intMult;
-            if (stim.mode === 'random' && Math.random() < 0.3) delta = 0;
-            totalDelta += Math.round(delta);
         });
-
-        // 来自装备被动摩擦（穿戴在私密部位的装备）
-        const intimateSlots = CONFIG.INTIMATE_SLOTS || [];
-        for (const slot of intimateSlots) {
-            if (save.equipment?.[slot]) totalDelta += 1;
-        }
-
-        // 来自特定姿势
-        const posture = save.posture || 'standing';
-        if (posture === 'bent_over' || posture === 'prone' || posture === 'supine') totalDelta += 1;
-
-        // 来自牵引拉扯
-        if (save.tether?.active) totalDelta += 1;
-
-        // 汗液敏感度加成：湿润皮肤放大所有触觉刺激
-        if ((save.latexSweat || 0) > 15 && totalDelta > 0) {
-            const swCfg = CONFIG.LATEX_SWEAT_CONFIG || {};
-            const sweatTiers = CONFIG.LATEX_SWEAT_TIERS || [];
-            const swVal = save.latexSweat || 0;
-            let tierIdx = 0;
-            for (let i = sweatTiers.length - 1; i >= 0; i--) {
-                if (swVal >= sweatTiers[i].min) { tierIdx = i; break; }
-            }
-            if (tierIdx > 0) {
-                const bonus = (swCfg.sensitivityBonusPerTier || 0.15) * tierIdx;
-                totalDelta = Math.round(totalDelta * (1 + bonus));
-            }
-        }
-
-        if (totalDelta > 0) {
-            CYOA.modifyArousal(totalDelta, 'turn_calc');
-        }
-        return totalDelta;
+        let best = 'idle';
+        let bestScore = 0;
+        Object.entries(scores).forEach(([type, score]) => {
+            if (score > bestScore) { best = type; bestScore = score; }
+        });
+        return best;
     };
 
-    // ========== 时长追踪系统 ==========
-    CYOA.updateDurations = function() {
+    // ========== 渲染游戏控制界面 ==========
+    CYOA.renderGameControls = function() {
+        // 欢迎阶段：只显示退出按钮
+        if (CYOA._gamePhase === 'welcome') {
+            return `
+                <div style="display:flex; justify-content:flex-end; width:100%; padding:4px 0;">
+                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.exitGame()" style="height:36px; padding:0 16px;">${t('ui.btn.back')}</button>
+                </div>
+            `;
+        }
+
+        if (!CYOA.currentGame || !CYOA.currentSave) return '<div>' + t('ui.msg.startGameFirst') + '</div>';
+        
+        const roles = CYOA.currentGame.characters ? CYOA.currentGame.characters.filter(c => c.roleType === 'playable').map(c => c.name) : [];
+        const currentRole = CYOA.currentSave.playerCharacter || roles[0] || '';
+        
+        return `
+            <div style="display:flex; flex-direction:column; width:100%;">
+                <div style="display:flex; gap:8px; align-items:center; width:100%; margin-bottom:8px;">
+                    <select id="gameRoleSelect" class="cyoa-select" style="min-width:90px; width:auto; height:36px;" onchange="CYOA.onRoleChange(this.value)">
+                        ${roles.map(r => `<option value="${escapeHtml(r)}" ${r === currentRole ? 'selected' : ''}>${escapeHtml(r)}</option>`).join('')}
+                    </select>
+                    <div style="display:flex; gap:6px; flex:1; align-items:center;">
+                        <div style="position:relative; flex:1;">
+                            <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); font-size:14px; pointer-events:none;">🎬</span>
+                            <textarea id="gameMsg" class="cyoa-input" placeholder="${t('ui.ph.action')}" autocomplete="off" rows="1" style="width:100%; height:36px; resize:none; padding:8px 12px 8px 30px; box-sizing:border-box;"></textarea>
+                        </div>
+                        <div style="position:relative; flex:1;">
+                            <span style="position:absolute; left:8px; top:50%; transform:translateY(-50%); font-size:14px; pointer-events:none;">💬</span>
+                            <textarea id="gameSpeech" class="cyoa-input" placeholder="${t('ui.ph.speech')}" autocomplete="off" rows="1" style="width:100%; height:36px; resize:none; padding:8px 12px 8px 30px; box-sizing:border-box;"></textarea>
+                        </div>
+                    </div>
+                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.sendGameMessage()" style="height:36px; padding:0 16px;">${t('ui.btn.send')}</button>
+                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.exitGame()" style="height:36px; padding:0 16px;">${t('ui.btn.exitGame')}</button>
+                </div>
+                <div id="gameOptions" class="cyoa-options-panel"></div>
+            </div>
+        `;
+    };
+
+    // ========== 绑定输入框键盘事件（Enter发送 / Ctrl+Enter换行） ==========
+    function _attachTextareaEvents(textarea) {
+        if (!textarea || textarea._cyoaKeyBound) return;
+        textarea._cyoaKeyBound = true;
+        textarea.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') {
+                if (!e.ctrlKey && !e.shiftKey && !e.metaKey) {
+                    e.preventDefault();
+                    CYOA.sendGameMessage();
+                } else {
+                    e.preventDefault();
+                    const start = this.selectionStart;
+                    const end = this.selectionEnd;
+                    this.value = this.value.substring(0, start) + '\n' + this.value.substring(end);
+                    this.selectionStart = this.selectionEnd = start + 1;
+                    this.style.height = 'auto';
+                    this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+                }
+            }
+        });
+        textarea.addEventListener('input', function() {
+            this.style.height = '36px';
+            this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+        });
+    }
+
+    CYOA._bindInputKeyHandler = function() {
+        requestAnimationFrame(() => {
+            _attachTextareaEvents(document.getElementById('gameMsg'));
+            _attachTextareaEvents(document.getElementById('gameSpeech'));
+        });
+    };
+
+    // ========== 多层记忆系统 ==========
+
+    function getConversationPath() {
+        const save = CYOA.currentSave;
+        if (!save || !save.nodes) return [];
+        const path = [];
+        let nId = save.currentNodeId;
+        while (nId && save.nodes[nId]) {
+            path.unshift(save.nodes[nId]);
+            nId = save.nodes[nId].parentId;
+        }
+        return path;
+    }
+    CYOA.getConversationPath = getConversationPath;
+
+    function buildRecentHistory(maxTurns) {
+        const path = getConversationPath();
+        const dialogTurns = path.filter(n => n.userMessage && n.assistantMessage);
+        const recent = dialogTurns.slice(-maxTurns);
+        const msgs = [];
+        for (const node of recent) {
+            msgs.push({ role: 'user', content: node.userMessage });
+            const txt = node.assistantMessage || node.rawAssistantMessage || '';
+            if (txt) msgs.push({ role: 'assistant', content: txt });
+        }
+        return msgs;
+    }
+
+    function buildStoryRecap() {
+        const save = CYOA.currentSave;
+        if (!save) return '';
+        const parts = [];
+        const chs = save.chapterSummaries || {};
+        const done = save.completedChapters || [];
+        if (done.length > 0) {
+            const game = CYOA.currentGame;
+            const sorted = [...(game?.chapters || [])].sort((a, b) => (a.order || 0) - (b.order || 0));
+            const lines = [];
+            for (const ch of sorted) {
+                if (!done.includes(ch.id)) continue;
+                lines.push(`【${ch.title}】${chs[ch.id] || '已完成'}`);
+            }
+            if (lines.length) parts.push(lines.join('\n'));
+        }
+        if (save.storySummary) parts.push('前情摘要：' + save.storySummary);
+        const events = save.keyEvents || [];
+        if (events.length > 0) {
+            const recent = events.slice(-12).map(e => {
+                const td = CONFIG.KEY_EVENT_TYPES?.[e.type] || { icon: '📝' };
+                return td.icon + ' ' + e.desc;
+            });
+            parts.push('近期事件：' + recent.join('；'));
+        }
+        return parts.join('\n');
+    }
+
+    CYOA.addKeyEvent = function(type, desc) {
         const save = CYOA.currentSave;
         if (!save) return;
-        // 姿势持续时长
-        save.postureDuration = (save.postureDuration || 0) + 1;
-        // 装备佩戴时长（按约束类型追踪）
-        if (!save.wearDurations) save.wearDurations = {};
-        const constraints = getActiveConstraints();
-        constraints.forEach(c => {
-            save.wearDurations[c] = (save.wearDurations[c] || 0) + 1;
+        if (!save.keyEvents) save.keyEvents = [];
+        save.keyEvents.push({ type, desc, time: Date.now() });
+        const max = CONFIG.MEMORY_CONFIG?.maxKeyEvents || 25;
+        if (save.keyEvents.length > max) save.keyEvents = save.keyEvents.slice(-max);
+    };
+
+    // ========== AI 智能生成游戏 ==========
+    const AI_GENERATE_GAME_PROMPT = `你是一个文字冒险游戏设计师。根据用户的简短描述，生成一个完整的 CYOA 游戏配置 JSON。
+
+要求：
+1. 输出必须是合法的 JSON，且只输出 JSON，不要 markdown 包裹、不要解释。
+2. 结构必须包含以下字段（缺少的用空字符串或空数组）：
+   - name: 游戏名称（简短有吸引力）
+   - synopsis: 游戏简介（2-4句话）
+   - author: 作者可写 "AI生成"
+   - version: "1.0.0"
+   - worldSetting: { background, geography, factions, socialStructure, history, custom, ruleTags:[], isFusionWorld }
+   - coreMechanics: { type: "turn-based"|"real-time"|"exploration"|"puzzle"|"custom", description, custom }
+   - narrator: { enabled:true, model:"", style:"情感细腻"|"神秘"|"史诗"等, prompt: "叙述者行为指令，100-300字" }
+   - attributes: [{ name, value:0-100, min:0, max:100, description }] 至少2个
+   - characters: [{ name, roleType:"playable"|"npc"|"narrator", gender:"male"|"female", personality:[], background, goal, prompt }] 至少1个playable
+   - scenes: [{ name, location, description, interactables:[], quests:[] }] 至少2个
+   - chapters: [{ title, order:1, description, scenes:[], unlocked:true, unlockCondition:"", transitionConditions:[] }] 至少1个
+   - items: [{ name, itemType:"key"|"common"|"healing"|"quest"|"relic"等, quantity:1, description }] 0-5个
+   - quests: [{ name, questType:"main"|"side", description, objectives:[], rewards:[], status:"locked" }] 0-3个
+   - skills: [] 可选
+   - professions: [] 可选
+
+3. itemType 仅用: key, map, healing, damage, consumable, common, quest, relic, equipment
+4. 角色、场景、章节等数组元素不需要 id 字段，系统会自动补全。
+5. 创意优先，根据用户描述自由发挥，生成有特色、可玩的内容。`;
+
+    const AI_GENERATE_FROM_RULES_PROMPT = `你是一个文字冒险游戏配置转换器。用户会提供一份详细的规则说明书/设定文档，请将其解析并转换为 CYOA 游戏配置 JSON。
+
+要求：
+1. 输出必须是合法的 JSON，且只输出 JSON，不要 markdown 包裹、不要解释。
+2. 严格依据文档内容生成，不要添加文档中未出现的设定。若文档某部分缺失，用合理默认值补全。
+3. 输出结构与创意模式相同，必须包含：
+   - name, synopsis, author:"AI生成", version:"1.0.0"
+   - worldSetting: { background, geography, factions, socialStructure, history, custom, ruleTags:[], isFusionWorld }
+   - coreMechanics: { type, description, custom }
+   - narrator: { enabled:true, model:"", style, prompt }
+   - attributes: [{ name, value, min, max, description }] 至少2个
+   - characters: [{ name, roleType:"playable"|"npc"|"narrator", gender, personality:[], background, goal, prompt }] 至少1个 playable
+   - scenes: [{ name, location, description }]
+   - chapters: [{ title, order, description, scenes:[], unlocked, unlockCondition, transitionConditions:[] }]
+   - items: [{ name, itemType, quantity, description }]
+   - quests: [{ name, questType, description, objectives, rewards, status }]
+
+4. itemType 仅用: key, map, healing, damage, consumable, common, quest, relic, equipment
+5. 从文档中提取的设定要完整、准确地映射到对应字段。`;
+
+    const AI_CHUNK_MERGE_PROMPT = `你是游戏配置合并助手。用户会提供：
+1. 已生成的部分游戏配置 JSON
+2. 规则说明书的后续内容
+
+请将后续内容解析并合并到已有配置中：补充 scenes、chapters、items、quests 等，或扩展 worldSetting、characters。保留已有配置，只做增补与完善。输出合并后的完整 JSON，不要 markdown 包裹。`;
+
+    const MAX_RULES_INPUT_CHARS = 8000; // 超长时自动分两段，每段约 8k 字符以内
+
+    function splitRulesAtParagraph(text, maxLen) {
+        if (text.length <= maxLen) return [text];
+        const mid = Math.floor(text.length / 2);
+        let splitAt = text.indexOf('\n\n', Math.max(0, mid - 500));
+        if (splitAt < 0 || splitAt > mid + 1000) splitAt = text.lastIndexOf('\n', mid);
+        if (splitAt < 0) splitAt = mid;
+        return [text.substring(0, splitAt).trim(), text.substring(splitAt).trim()];
+    }
+
+    async function callAIForGame(body, onProgress) {
+        const r = await fetch('ai_proxy.php', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body)
         });
-        // 戒断效应自然衰减
-        if (save.withdrawalEffects && save.withdrawalEffects.length > 0) {
-            const decayRate = CONFIG.HABITUATION_CONFIG?.withdrawalDecayPerTurn || 5;
-            save.withdrawalEffects = save.withdrawalEffects.filter(w => {
-                w.turnsRemaining = (w.turnsRemaining || 0) - 1;
-                return w.turnsRemaining > 0;
-            });
+        if (!r.ok) throw new Error('API request failed');
+        const d = await r.json();
+        let raw = (d.choices?.[0]?.message?.content || '').trim();
+        const jsonMatch = raw.match(/\{[\s\S]*\}/);
+        if (jsonMatch) raw = jsonMatch[0];
+        return JSON.parse(raw);
+    }
+
+    CYOA.generateGameWithAI = async function(userIdea, modelValue, useRulesMode, onProgress) {
+        const safeProgress = (msg) => { try { onProgress?.(msg); } catch (_) {} };
+        const makeRequest = (sysPrompt, userContent) => ({
+            model: modelValue,
+            task: 'chat',
+            messages: [{ role: 'system', content: sysPrompt }, { role: 'user', content: userContent }],
+            stream: false
+        });
+
+        try {
+            if (useRulesMode && userIdea.length > MAX_RULES_INPUT_CHARS) {
+                const parts = splitRulesAtParagraph(userIdea, MAX_RULES_INPUT_CHARS);
+                safeProgress(t('ui.msg.aiGenChunk1') || '第 1 段处理中…');
+                const baseContent = `以下是规则说明书的第一部分。请根据此部分生成游戏配置 JSON。\n\n---\n\n${parts[0]}\n\n---\n\n直接输出 JSON。`;
+                const baseJson = await callAIForGame(makeRequest(AI_GENERATE_FROM_RULES_PROMPT, baseContent));
+
+                safeProgress(t('ui.msg.aiGenChunk2') || '第 2 段处理中…');
+                const mergeContent = `【已有配置】\n${JSON.stringify(baseJson, null, 0)}\n\n【待合并的规则书第二部分】\n---\n\n${parts[1]}\n\n---\n\n请将第二部分内容合并进配置，输出完整 JSON。`;
+                const merged = await callAIForGame(makeRequest(AI_CHUNK_MERGE_PROMPT, mergeContent));
+                return CYOA.sanitizeGameFromAI(merged);
+            }
+
+            const systemPrompt = useRulesMode ? AI_GENERATE_FROM_RULES_PROMPT : AI_GENERATE_GAME_PROMPT;
+            const userContent = useRulesMode
+                ? `以下是用户提供的详细规则说明书，请将其解析并转换为 CYOA 游戏配置 JSON。严格按文档内容生成。\n\n---\n\n${userIdea}\n\n---\n\n直接输出 JSON。`
+                : `请根据以下描述生成一个文字冒险游戏配置：\n\n${userIdea}\n\n直接输出 JSON。`;
+            const parsed = await callAIForGame(makeRequest(systemPrompt, userContent));
+            return CYOA.sanitizeGameFromAI(parsed);
+        } catch (e) {
+            log('[CYOA] AI 生成游戏失败', e);
+            throw e;
         }
     };
 
-    // ========== 习惯度系统 ==========
-    CYOA.updateHabituation = function() {
-        const save = CYOA.currentSave;
-        if (!save) return;
-        if (!save.habituation) save.habituation = {};
-        const cfg = CONFIG.HABITUATION_CONFIG || {};
-        const gain = cfg.gainPerTurn || 2;
-        const maxLv = cfg.maxLevel || 100;
-        const constraints = getActiveConstraints();
-        constraints.forEach(c => {
-            const old = save.habituation[c] || 0;
-            save.habituation[c] = Math.min(maxLv, old + gain);
-        });
-    };
+    CYOA.sanitizeGameFromAI = function(raw) {
+        const CONFIG = CYOA.CONFIG;
+        const def = JSON.parse(JSON.stringify(CONFIG.DEFAULT_GAME));
+        const ensureId = (o) => { if (!o.id) o.id = 'id_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9); return o; };
+        const validItemTypes = ['key','map','healing','damage','consumable','fuel','repair','common','quest','relic','equipment'];
+        const validQuestTypes = ['main','side','daily','weekly','random','repeatable'];
+        const validRoleTypes = ['playable','npc','narrator'];
+        const validMechTypes = ['turn-based','real-time','exploration','puzzle','custom'];
 
-    CYOA.getHabituationTier = function(constraintType) {
-        return findTier(CYOA.currentSave?.habituation?.[constraintType] || 0, 'HABITUATION_TIERS', { value: 'none', label: '未适应' });
-    };
+        const out = { ...def, ...raw };
+        out.id = raw.id || ('game_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9));
+        out.updatedAt = new Date().toISOString();
+        out.createdAt = out.createdAt || out.updatedAt;
 
-    CYOA.getWithdrawalEffects = function(constraintType) {
-        const save = CYOA.currentSave;
-        if (!save) return null;
-        const hab = save.habituation?.[constraintType] || 0;
-        const cfg = CONFIG.HABITUATION_CONFIG || {};
-        const threshold = cfg.withdrawalThreshold || 40;
-        if (hab < threshold) return null;
-        const severity = hab >= 86 ? 'severe' : hab >= 61 ? 'moderate' : 'mild';
-        return {
-            severity,
-            arousalSpike: severity === 'severe' ? (cfg.withdrawalArousalSpike || 20) : severity === 'moderate' ? 10 : 5,
-            attrPenalty: severity === 'severe' ? (cfg.withdrawalAttrPenalty || { alert: -15 }) : severity === 'moderate' ? { alert: -8 } : {},
-            phantomTurns: severity === 'severe' ? (cfg.phantomDurationTurns || 10) : severity === 'moderate' ? 6 : 3,
-            habLevel: hab
+        const safeMerge = (key, defaultArr) => {
+            const arr = Array.isArray(raw[key]) ? raw[key] : [];
+            out[key] = arr.map((item, i) => {
+                const merged = typeof defaultArr[0] === 'object' ? { ...(defaultArr[0] || {}), ...item } : item;
+                return ensureId(typeof merged === 'object' ? merged : { id: CYOA.generateId(), name: String(merged) });
+            });
         };
+
+        if (raw.attributes?.length) {
+            out.attributes = raw.attributes.slice(0, 15).map(a => ensureId({
+                id: a.id, name: a.name || '属性', value: Math.max(0, Math.min(100, Number(a.value) || 10)),
+                min: Number(a.min) || 0, max: Number(a.max) || 100, description: a.description || ''
+            }));
+        }
+        if (raw.characters?.length) {
+            out.characters = raw.characters.slice(0, 10).map((c, i) => {
+                let roleType = validRoleTypes.includes(c.roleType) ? c.roleType : 'npc';
+                if (i === 0 && !raw.characters.some(x => x.roleType === 'playable')) roleType = 'playable';
+                return ensureId({
+                    id: c.id, name: c.name || '角色', roleType,
+                    gender: c.gender || '', personality: Array.isArray(c.personality) ? c.personality : (c.personality ? [c.personality] : []),
+                    background: c.background || '', goal: c.goal || '', prompt: c.prompt || '',
+                    professions: c.professions || [], skills: c.skills || []
+                });
+            });
+        }
+        if (raw.scenes?.length) {
+            out.scenes = raw.scenes.slice(0, 20).map(s => ensureId({
+                id: s.id, name: s.name || '场景', location: s.location || '', description: s.description || '',
+                interactables: s.interactables || [], quests: s.quests || []
+            }));
+        }
+        if (raw.chapters?.length) {
+            out.chapters = raw.chapters.slice(0, 15).map((ch, i) => ensureId({
+                id: ch.id, title: ch.title || '第' + (i+1) + '章', order: ch.order ?? (i+1),
+                description: ch.description || '', scenes: ch.scenes || [], unlocked: ch.unlocked !== false,
+                unlockCondition: ch.unlockCondition || '', transitionConditions: ch.transitionConditions || []
+            }));
+        }
+        if (raw.items?.length) {
+            out.items = raw.items.slice(0, 20).map(i => ensureId({
+                id: i.id, name: i.name || '物品', itemType: validItemTypes.includes(i.itemType) ? i.itemType : 'common',
+                quantity: Math.max(1, Math.min(99, Number(i.quantity) || 1)), description: i.description || ''
+            }));
+        }
+        if (raw.quests?.length) {
+            out.quests = raw.quests.slice(0, 10).map(q => ensureId({
+                id: q.id, name: q.name || '任务', questType: validQuestTypes.includes(q.questType) ? q.questType : 'side',
+                description: q.description || '', objectives: q.objectives || [], rewards: q.rewards || [],
+                status: q.status || 'locked'
+            }));
+        }
+
+        if (raw.worldSetting && typeof raw.worldSetting === 'object') {
+            out.worldSetting = { ...def.worldSetting, ...raw.worldSetting };
+            if (!Array.isArray(out.worldSetting.ruleTags)) out.worldSetting.ruleTags = [];
+        }
+        if (raw.coreMechanics && typeof raw.coreMechanics === 'object') {
+            out.coreMechanics = { ...def.coreMechanics, ...raw.coreMechanics };
+            if (!validMechTypes.includes(out.coreMechanics.type)) out.coreMechanics.type = 'turn-based';
+        }
+        if (raw.narrator && typeof raw.narrator === 'object') {
+            out.narrator = { ...def.narrator, ...raw.narrator };
+        }
+
+        const firstScene = out.scenes?.[0];
+        const firstChapter = out.chapters?.[0];
+        if (firstScene) out.initialScene = firstScene.name || firstScene.id || '';
+        if (firstChapter) out.initialChapter = firstChapter.id || '';
+
+        return out;
     };
 
-    CYOA.triggerWithdrawal = function(constraintType) {
+    // AI 写作助手：扩展简短描述为详细段落（FictionLab 风格）
+    CYOA.requestAIExpand = async function(textareaId, hint) {
+        const el = document.getElementById(textareaId);
+        if (!el) return;
+        const input = (el.value || '').trim();
+        if (!input) {
+            alert(t('ui.msg.aiExpandEmpty'));
+            return;
+        }
+        const hints = {
+            world: '将以下世界观/设定的简短描述扩展为更详细、有氛围的段落，保持原有风格与基调。直接输出扩展后的中文内容，不要加标题或说明。',
+            narrator: '将以下叙述者指令的简短描述扩展为更完整、具体的 AI 行为指南。直接输出扩展后的中文内容，不要加标题或说明。'
+        };
+        const sysPrompt = hints[hint] || hints.world;
+        const origText = el.value;
+        el.disabled = true;
+        el.placeholder = t('ui.msg.aiExpanding') || 'AI 扩展中…';
+        try {
+            const model = window.gameModeModel || document.getElementById('model')?.value;
+            const m = (typeof MainApp !== 'undefined' && MainApp.getModels) ? MainApp.getModels('chat') : [];
+            const modelVal = model || (m?.length ? m[0]?.value : null);
+            if (!modelVal) {
+                alert(t('ui.msg.noSelectModel'));
+                return;
+            }
+            const r = await fetch('ai_proxy.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    model: modelVal,
+                    task: 'chat',
+                    messages: [
+                        { role: 'system', content: sysPrompt },
+                        { role: 'user', content: input }
+                    ],
+                    stream: false
+                })
+            });
+            if (!r.ok) throw new Error('Request failed');
+            const d = await r.json();
+            const result = (d.choices?.[0]?.message?.content || '').trim();
+            if (result) el.value = result;
+        } catch (e) {
+            console.error('[CYOA] AI 扩展失败', e);
+            alert((t('ui.msg.aiExpandFailed') || 'AI 扩展失败，请检查模型配置后重试。'));
+        } finally {
+            el.disabled = false;
+            el.placeholder = '';
+        }
+    };
+
+    async function requestAISummary(text, sysPrompt, maxChars) {
+        let model = window.gameModeModel;
+        if (!model) {
+            const sel = document.getElementById('model');
+            if (sel?.value && !sel.value.startsWith('请先')) model = sel.value;
+        }
+        if (!model && typeof MainApp !== 'undefined' && MainApp.getModels) {
+            const m = MainApp.getModels('chat');
+            if (m?.length) model = m[0].value;
+        }
+        if (!model) return null;
+        try {
+            const r = await fetch('ai_proxy.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ model, task: 'chat', messages: [
+                    { role: 'system', content: sysPrompt },
+                    { role: 'user', content: text }
+                ], stream: false })
+            });
+            if (!r.ok) return null;
+            const d = await r.json();
+            let res = d.choices?.[0]?.message?.content || '';
+            return res.length > maxChars ? res.substring(0, maxChars) + '…' : res;
+        } catch (e) { return null; }
+    }
+
+    function localCompressTurns(nodes) {
+        return nodes.map(n => {
+            let s = '';
+            if (n.userMessage) s += '玩家：' + n.userMessage.substring(0, 40);
+            if (n.assistantMessage) s += ' → ' + n.assistantMessage.substring(0, 60);
+            return s;
+        }).join('\n');
+    }
+
+    async function triggerRollingSummary() {
         const save = CYOA.currentSave;
         if (!save) return;
-        const effects = CYOA.getWithdrawalEffects(constraintType);
-        if (!effects) return;
-        // 兴奋度飙升
-        CYOA.modifyArousal(effects.arousalSpike, 'withdrawal_' + constraintType);
-        // 属性惩罚
-        if (effects.attrPenalty) {
-            for (const [attr, delta] of Object.entries(effects.attrPenalty)) {
-                const attrObj = save.attributes?.find(a => a.name === attr);
-                if (attrObj) {
-                    attrObj.value = Math.max(attrObj.min || 0, Math.min(attrObj.max || 100, attrObj.value + delta));
+        const cfg = CONFIG.MEMORY_CONFIG || {};
+        const path = getConversationPath();
+        const dialogs = path.filter(n => n.userMessage && n.assistantMessage);
+        const keep = cfg.recentTurns || 6;
+        if (dialogs.length < (cfg.summarizeTrigger || 8)) return;
+        const old = dialogs.slice(0, dialogs.length - keep);
+        if (old.length === 0) return;
+        const lastIdx = save._lastSummarizedTurn || 0;
+        const newer = old.filter((_, i) => i >= lastIdx);
+        if (newer.length < (cfg.summarizeBatchSize || 6) && save.storySummary) return;
+        const toCompress = newer.length > 0 ? newer : old;
+        const parts = [];
+        if (save.storySummary) parts.push('【之前摘要】' + save.storySummary);
+        parts.push('【新对话】');
+        for (const n of toCompress) {
+            if (n.userMessage) parts.push('[玩家] ' + n.userMessage);
+            if (n.assistantMessage) parts.push('[剧情] ' + n.assistantMessage.substring(0, 300));
+        }
+        const maxC = cfg.summaryMaxChars || 500;
+        const sp = cfg.summarizeSystemPrompt || '压缩以下对话为简短摘要。';
+        const summary = await requestAISummary(parts.join('\n'), sp, maxC);
+        if (summary) {
+            save.storySummary = summary;
+        } else {
+            const local = localCompressTurns(toCompress);
+            save.storySummary = save.storySummary
+                ? (save.storySummary + '\n' + local).slice(-maxC)
+                : local.slice(-maxC);
+        }
+        save._lastSummarizedTurn = old.length;
+        persistSave();
+    }
+
+    CYOA._generateChapterSummary = async function(chapterId) {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !game) return;
+        if (!save.chapterSummaries) save.chapterSummaries = {};
+        if (save.chapterSummaries[chapterId]) return;
+        const ch = (game.chapters || []).find(c => c.id === chapterId);
+        if (!ch) return;
+        const path = getConversationPath().filter(n => n.userMessage && n.assistantMessage).slice(-8);
+        if (!path.length) { save.chapterSummaries[chapterId] = ch.description || '已完成'; return; }
+        const parts = [`章节：${ch.title}`];
+        for (const n of path) {
+            if (n.userMessage) parts.push('[玩家] ' + n.userMessage);
+            if (n.assistantMessage) parts.push('[剧情] ' + n.assistantMessage.substring(0, 150));
+        }
+        const cfg = CONFIG.MEMORY_CONFIG || {};
+        const result = await requestAISummary(parts.join('\n'), cfg.chapterSummarizePrompt || '概括章节事件。', cfg.chapterSummaryMaxChars || 250);
+        save.chapterSummaries[chapterId] = result || ch.description || localCompressTurns(path.slice(-3));
+        CYOA.addKeyEvent('chapter_complete', '完成：' + ch.title);
+        persistSave();
+    };
+
+    function applyTokenBudget(sysPrompt, histMsgs) {
+        const cfg = CONFIG.MEMORY_CONFIG || {};
+        const maxP = cfg.maxPromptChars || 4200;
+        const maxH = cfg.maxHistoryChars || 2800;
+        const maxSingle = cfg.maxSingleMsgChars || 400;
+        let p = sysPrompt;
+        if (p.length > maxP) {
+            // 保留头部（RAG知识库+叙述者指令）和尾部（AI规则），裁剪中间动态状态
+            const aiRulesMarker = t('prompt.section.aiRules');
+            const aiIdx = p.lastIndexOf(aiRulesMarker);
+            if (aiIdx > 0) {
+                const tail = p.substring(aiIdx);
+                let head = p.substring(0, aiIdx);
+                const budget = maxP - tail.length - 30;
+                if (head.length > budget && budget > 500) {
+                    head = head.substring(0, budget) + '\n…[部分游戏状态已省略]…\n';
+                }
+                p = head + tail;
+            } else {
+                const head = Math.floor(maxP * 0.55);
+                const tail = Math.floor(maxP * 0.4);
+                p = p.substring(0, head) + '\n…[部分内容已省略]…\n' + p.substring(p.length - tail);
+            }
+        }
+        const trimmed = [...histMsgs];
+        let total = trimmed.reduce((s, m) => s + (m.content?.length || 0), 0);
+        while (total > maxH && trimmed.length > 2) {
+            total -= (trimmed.shift().content?.length || 0);
+        }
+        for (const m of trimmed) {
+            if (m.role === 'assistant' && m.content && m.content.length > maxSingle) {
+                m.content = m.content.substring(0, maxSingle) + '…';
+            }
+        }
+        return { systemPrompt: p, historyMessages: trimmed };
+    }
+
+    // ========== 发送消息（调用真实AI模型） ==========
+    let _isSending = false;
+    CYOA.sendGameMessage = async function() {
+        if (_isSending) return;
+        const actionInput = document.getElementById('gameMsg');
+        const speechInput = document.getElementById('gameSpeech');
+        const roleSelect = document.getElementById('gameRoleSelect');
+        if (!roleSelect) return;
+
+        const actionText = actionInput ? actionInput.value.trim() : '';
+        const speechText = speechInput ? speechInput.value.trim() : '';
+        if (!actionText && !speechText) return;
+        _isSending = true;
+
+        const targetRole = roleSelect.value;
+
+        // 组合用户消息：行动用 *动作*，说话用 "对话"
+        let parts = [];
+        if (actionText) parts.push(actionText);
+        if (speechText) {
+            let speech = speechText;
+            // 约束检查：禁言约束仅影响说话部分
+            if (CYOA.currentSave && targetRole === CYOA.currentSave.playerCharacter) {
+                const equipment = CYOA.currentSave.equipment || {};
+                const currentGame = CYOA.currentGame;
+                const muteConstraints = getActiveConstraints();
+                if (muteConstraints.has('forced_open_mouth')) {
+                    speech = t('ui.constraint.gaggedSpeech');
+                } else if (muteConstraints.has('mute')) {
+                    speech = t('ui.constraint.mutedSpeech');
+                }
+            }
+            parts.push(`说："${speech}"`);
+        }
+        let userMessage = parts.join('，');
+
+        if (actionInput) { actionInput.value = ''; actionInput.style.height = '36px'; }
+        if (speechInput) { speechInput.value = ''; speechInput.style.height = '36px'; }
+        
+        const logEl = document.getElementById('log');
+        if (!logEl) {
+            console.error('[CYOA] 找不到log元素');
+            return;
+        }
+        
+        // 显示用户消息
+        const userDiv = document.createElement('div');
+        userDiv.className = 'user';
+        userDiv.textContent = `[${targetRole}] ${userMessage}`;
+        logEl.appendChild(userDiv);
+        
+        // 创建AI消息容器
+        const aiDiv = document.createElement('div');
+        aiDiv.className = 'ai streaming';
+        aiDiv.textContent = '';
+        logEl.appendChild(aiDiv);
+        logEl.scrollTop = logEl.scrollHeight;
+        
+        // 获取当前选中的模型（多级回退策略）
+        let modelValue = null;
+        // 1) DOM 直接读取（即使 display:none 也能取到 value）
+        const modelSelect = document.getElementById('model');
+        if (modelSelect && modelSelect.value && !modelSelect.value.startsWith('请先')) {
+            modelValue = modelSelect.value;
+        }
+        // 2) setGameMode 进入时保存的副本
+        if (!modelValue && window.gameModeModel) {
+            modelValue = window.gameModeModel;
+        }
+        // 3) 通过 MainApp API 获取第一个可用 chat 模型
+        if (!modelValue && typeof MainApp !== 'undefined' && MainApp.getModels) {
+            const chatModels = MainApp.getModels('chat');
+            if (Array.isArray(chatModels) && chatModels.length > 0) {
+                modelValue = chatModels[0].value;
+            }
+        }
+        
+        if (!modelValue) {
+            aiDiv.textContent = t('ui.msg.noSelectModel');
+            aiDiv.classList.remove('streaming');
+            return;
+        }
+        
+        try {
+            // ===== 构建游戏知识库 =====
+            let systemPrompt = CYOA.buildGamePrompt(targetRole, userMessage);
+
+            // ===== 注入故事回顾 =====
+            const recap = buildStoryRecap();
+            if (recap) {
+                const anchor = '=== 【当前游戏状态】 ===';
+                const idx = systemPrompt.indexOf(anchor);
+                const recapBlock = '=== 【故事回顾】 ===\n' + recap + '\n\n';
+                systemPrompt = idx > 0
+                    ? systemPrompt.substring(0, idx) + recapBlock + systemPrompt.substring(idx)
+                    : systemPrompt + '\n\n' + recapBlock;
+            }
+
+            // ===== 构建近期对话历史 =====
+            const memCfg = CONFIG.MEMORY_CONFIG || {};
+            const recentHistory = buildRecentHistory(memCfg.recentTurns || 6);
+            const budgeted = applyTokenBudget(systemPrompt, recentHistory);
+
+            // 敏感词过滤
+            const maskedPrompt = CYOA.maskSensitiveWords(budgeted.systemPrompt);
+            const maskedUserMessage = CYOA.maskSensitiveWords(userMessage);
+            const maskedHistory = budgeted.historyMessages.map(m => ({
+                role: m.role, content: CYOA.maskSensitiveWords(m.content)
+            }));
+
+            // 构建请求体：system + 历史 + 当前消息
+            const messages = [{ role: 'system', content: maskedPrompt }];
+            messages.push(...maskedHistory);
+            messages.push({ role: 'user', content: maskedUserMessage });
+
+            const requestBody = {
+                model: modelValue,
+                task: 'chat',
+                messages: messages,
+                stream: true
+            };
+            
+            log(`发送AI请求（RAG ${CYOA.getRAG().length}字 + 动态状态，${maskedHistory.length / 2}轮历史，prompt ${maskedPrompt.length}字）`);
+            
+            // 调用AI接口
+            const response = await fetch('ai_proxy.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(requestBody)
+            });
+            
+            if (!response.ok) {
+                throw new Error(`HTTP error ${response.status}`);
+            }
+            
+            // 处理流式响应
+            const reader = response.body.getReader();
+            const decoder = new TextDecoder('utf-8');
+            let buffer = '';
+            let fullResponse = '';
+            
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || '';
+                
+                for (const line of lines) {
+                    const trimmed = line.trim();
+                    if (trimmed.startsWith('data: ')) {
+                        const data = trimmed.substring(6);
+                        if (data === '[DONE]') continue;
+                        
+                        try {
+                            const parsed = JSON.parse(data);
+                            const delta = parsed.choices?.[0]?.delta;
+                            if (delta) {
+                                let textChunk = delta.content || '';
+                                if (textChunk) {
+                                    fullResponse += textChunk;
+                                    aiDiv.textContent = fullResponse;
+                                    logEl.scrollTop = logEl.scrollHeight;
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('解析流数据失败:', e);
+                        }
+                    }
+                }
+            }
+            
+            aiDiv.classList.remove('streaming');
+            
+            // 流式结束后检查游戏是否仍在运行（防止退出后崩溃）
+            if (!CYOA.currentSave || !CYOA.currentGame) {
+                _isSending = false;
+                return;
+            }
+            
+            // 敏感词回转：将 AI 回复中的安全替代词还原为原始敏感词
+            fullResponse = CYOA.unmaskSensitiveWords(fullResponse);
+            aiDiv.textContent = fullResponse;
+
+            // 视觉/听觉过滤：根据当前装备的 blind/deaf 约束过滤 AI 回复后再显示与保存
+            const filteredResponse = applySensoryFilters(fullResponse);
+            if (filteredResponse !== fullResponse) {
+                aiDiv.textContent = filteredResponse;
+            }
+            
+            // 处理AI响应：传入过滤后文本用于显示，原文用于选项提取和任务检测
+            if (fullResponse) {
+                await CYOA.processAIResponse(fullResponse, userMessage, targetRole, filteredResponse);
+            }
+            
+        } catch (e) {
+            console.error('AI请求失败:', e);
+            aiDiv.textContent = `[错误] ${e.message}`;
+            aiDiv.classList.remove('streaming');
+        } finally {
+            _isSending = false;
+        }
+    };
+
+    // ========== 装备感官过滤（目盲/耳聋） ==========
+    // 从当前已穿戴装备收集约束列表（含附件递归叠加）
+    function getActiveConstraints() {
+        const constraints = new Set();
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !save.equipment) return constraints;
+        // 单次遍历装备：收集主约束、附件约束、口塞/耳部/手指设备
+        for (const slot in save.equipment) {
+            const item = save.equipment[slot];
+            if (!item) continue;
+            const equipDef = game?.equipment?.find(e => e.id === item.id);
+            const cList = item.constraints || equipDef?.constraints;
+            if (Array.isArray(cList)) cList.forEach(x => constraints.add(x));
+            const attachments = item.attachments || equipDef?.attachments || [];
+            for (const att of attachments) {
+                if (att.type === 'constraint_modifier' && Array.isArray(att.constraints)) att.constraints.forEach(x => constraints.add(x));
+                if (att.type === 'vision_modifier' && att.visionType) constraints.add(att.visionType === 'full_blind' ? 'blind' : 'vision_restricted');
+            }
+            // 口塞
+            const gagType = item.gagType || equipDef?.gagType;
+            if (gagType) {
+                const gagDef = (CONFIG.GAG_TYPES || []).find(g => g.value === gagType);
+                if (gagDef) { constraints.add('mute'); if (gagDef.forcedOpen) constraints.add('forced_open_mouth'); }
+            }
+            // 耳部装置
+            const earType = item.earDeviceType || equipDef?.earDeviceType;
+            if (earType) {
+                const earDef = (CONFIG.EAR_DEVICE_TYPES || []).find(e => e.value === earType);
+                if (earDef) { const modeDef = (CONFIG.EAR_DEVICE_MODES || {})[earDef.mode]; if (modeDef?.deaf) constraints.add('deaf'); }
+            }
+            // 手指约束
+            const fingerType = item.fingerRestraintType || equipDef?.fingerRestraintType;
+            if (fingerType) {
+                const fingerDef = (CONFIG.FINGER_RESTRAINT_TYPES || []).find(f => f.value === fingerType);
+                if (fingerDef) {
+                    constraints.add('no_fingers');
                 }
             }
         }
-        // 添加幻触效应
-        if (!save.withdrawalEffects) save.withdrawalEffects = [];
-        save.withdrawalEffects.push({
-            constraintType,
-            severity: effects.severity,
-            turnsRemaining: effects.phantomTurns,
-            habLevel: effects.habLevel
-        });
-        log('戒断效应触发:', constraintType, effects);
-        persistSave();
-    };
+        return constraints;
+    }
+    CYOA.getActiveConstraints = getActiveConstraints;
 
-    // ========== 纪律系统 API ==========
-    CYOA.recordViolation = function(ruleValue, npcId) {
+    // 获取当前生效的限步参数（取所有带 limited_step 装备中最严格的值）
+    function getLimitedStepParams() {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        const defaults = CONFIG.LIMITED_STEP_DEFAULTS || { stepLimitCm: 20, speedModifierPct: -50 };
+        if (!save || !save.equipment) return null;
+
+        let minCm = Infinity;
+        let totalSpeedPct = 0;
+        let found = false;
+
+        for (const slot in save.equipment) {
+            const item = save.equipment[slot];
+            if (!item) continue;
+            const equipDef = game?.equipment?.find(e => e.id === item.id);
+            const cList = item.constraints || equipDef?.constraints;
+            if (!Array.isArray(cList) || !cList.includes('limited_step')) continue;
+
+            found = true;
+            const cm = item.stepLimitCm ?? equipDef?.stepLimitCm ?? defaults.stepLimitCm;
+            const pct = item.speedModifierPct ?? equipDef?.speedModifierPct ?? defaults.speedModifierPct;
+            if (cm < minCm) minCm = cm;
+            totalSpeedPct += pct;
+        }
+
+        if (!found) return null;
+        return {
+            stepLimitCm: minCm === Infinity ? defaults.stepLimitCm : minCm,
+            speedModifierPct: Math.max(-100, Math.min(100, totalSpeedPct))
+        };
+    }
+    CYOA.getLimitedStepParams = getLimitedStepParams;
+
+    // 获取当前生效的视野类型（综合扫描所有已装备物品的 blind 约束和 vision_modifier 附件）
+    // 返回: null（视觉正常）| 视野类型字符串（如 'full_blind', 'pinhole' 等）
+    function getActiveVisionType() {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !save.equipment) return null;
+
+        let hasVisionEffect = false;
+        let bestVision = null;
+        let bestSeverity = -1;
+        const visionTypes = CONFIG.VISION_TYPES || [];
+
+        for (const slot in save.equipment) {
+            const item = save.equipment[slot];
+            if (!item) continue;
+            const equipDef = game?.equipment?.find(e => e.id === item.id);
+            const cList = item.constraints || equipDef?.constraints;
+
+            // 情况1：主装备带 blind 约束 → 至少是 full_blind
+            if (Array.isArray(cList) && cList.includes('blind')) {
+                hasVisionEffect = true;
+            }
+
+            // 情况2：扫描所有附件中的 vision_modifier，取最高严重度
+            const attachments = item.attachments || equipDef?.attachments || [];
+            for (const att of attachments) {
+                if (att.type === 'vision_modifier' && att.visionType) {
+                    hasVisionEffect = true;
+                    const vt = visionTypes.find(v => v.value === att.visionType);
+                    const sev = vt?.severity ?? 0;
+                    if (sev > bestSeverity) {
+                        bestSeverity = sev;
+                        bestVision = att.visionType;
+                    }
+                }
+            }
+        }
+
+        if (!hasVisionEffect) return null;
+        return bestVision || 'full_blind';
+    }
+    CYOA.getActiveVisionType = getActiveVisionType;
+
+    // ========== 监控视野 (CCTV) 系统 ==========
+
+    function isChapterMonitored() {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !game) return false;
+        const chId = save.currentChapter;
+        if (!chId) return false;
+        const ch = game.chapters?.find(c => c.id === chId);
+        return ch?.monitored === true;
+    }
+    CYOA.isChapterMonitored = isChapterMonitored;
+
+    function getObserverAlert() {
+        const save = CYOA.currentSave;
+        if (!save) return 0;
+        return save.observerAlert || 0;
+    }
+    CYOA.getObserverAlert = getObserverAlert;
+
+    function setObserverAlert(value) {
         const save = CYOA.currentSave;
         if (!save) return;
-        if (!save.violations) save.violations = [];
-        save.violations.push({ rule: ruleValue, npcId, turn: save.violations.length, timestamp: Date.now() });
-        const ruleDef = (CONFIG.DISCIPLINE_RULES || []).find(r => r.value === ruleValue);
-        const sevDef = CONFIG.DISCIPLINE_SEVERITY?.[ruleDef?.severity || 'light'] || {};
-        const obLoss = sevDef.obedienceLoss || 5;
-        const obAttr = save.attributes?.find(a => a.name === 'obedience');
-        if (obAttr) {
-            obAttr.value = Math.max(obAttr.min || 0, obAttr.value - obLoss);
-        }
-        log('违规记录:', ruleValue, '顺从度 -' + obLoss);
+        save.observerAlert = Math.max(0, Math.min(150, value));
+    }
 
-        // 重度违规自动执行惩罚
-        const npc = CYOA.currentGame?.characters?.find(c => c.id === npcId);
-        const punishType = npc?.defaultPunishment || '';
-        const punishDef = (CONFIG.PUNISHMENT_TYPES || []).find(p => p.value === punishType);
-        if (ruleDef?.severity === 'severe' && punishDef?.auto) {
-            CYOA.applyPunishment(punishType);
+    function getObserverAlertLevel() {
+        const alert = getObserverAlert();
+        const thresholds = CONFIG.OBSERVER_ALERT_CONFIG?.thresholds || [];
+        let best = null;
+        for (const t of thresholds) {
+            if (alert >= t.value) best = t;
         }
-        persistSave();
-    };
+        return best;
+    }
+    CYOA.getObserverAlertLevel = getObserverAlertLevel;
 
-    CYOA.applyPunishment = function(punishmentValue) {
+    function generateCCTVPrefix() {
+        const templates = CYOA.tn(CONFIG.CCTV_NARRATIVES?.cctv_perspective || [], 'cctv.cctvPerspective');
+        if (!templates.length) return '';
+        const tpl = templates[Math.floor(Math.random() * templates.length)];
+        const camId = String(Math.floor(Math.random() * 20) + 1).padStart(2, '0');
+        const now = new Date();
+        const timestamp = `${String(now.getHours()).padStart(2,'0')}:${String(now.getMinutes()).padStart(2,'0')}:${String(now.getSeconds()).padStart(2,'0')}`;
+        return tpl.replace('{camId}', camId).replace('{timestamp}', timestamp);
+    }
+
+    // 获取当前各约束对应的装备材质（用于融合旁白）；返回 Map<约束名, 材质key>
+    function getConstraintsWithMaterials() {
+        const out = new Map();
         const save = CYOA.currentSave;
-        if (!save) return;
-        const pDef = (CONFIG.PUNISHMENT_TYPES || []).find(p => p.value === punishmentValue);
-        if (!pDef) return;
-        switch (pDef.action) {
-            case 'setPosture':
-                if (pDef.params?.posture) CYOA.setPosture(pDef.params.posture);
-                break;
-            case 'increaseLock': {
-                const slots = Object.keys(save.equipment || {});
-                if (slots.length > 0) {
-                    const slot = slots[Math.floor(Math.random() * slots.length)];
-                    const item = save.equipment[slot];
-                    if (item) {
-                        const curLock = item.lockLevel || 0;
-                        if (curLock < 5) item.lockLevel = curLock + 1;
+        const game = CYOA.currentGame;
+        if (!save || !save.equipment || !game?.equipment) return out;
+        for (const slot in save.equipment) {
+            const item = save.equipment[slot];
+            if (!item) continue;
+            const equipDef = game.equipment.find(e => e.id === item.id);
+            const material = (item.material || equipDef?.material || '').trim() || null;
+            const cList = item.constraints || equipDef?.constraints;
+            if (!Array.isArray(cList)) continue;
+            for (const c of cList) {
+                if (!out.has(c) && material && CONFIG.MATERIAL_TEMPLATES && CONFIG.MATERIAL_TEMPLATES[material]) {
+                    out.set(c, material);
+                }
+            }
+        }
+        return out;
+    }
+
+    // 根据 stepLimitCm 确定限步分级（light / moderate / severe）
+    function getLimitedStepTier(stepLimitCm) {
+        const tiers = CONFIG.LIMITED_STEP_TIERS;
+        if (!tiers) return null;
+        if (stepLimitCm > 50) return tiers.light;
+        if (stepLimitCm >= 20) return tiers.moderate;
+        return tiers.severe;
+    }
+    CYOA.getLimitedStepTier = getLimitedStepTier;
+
+    // ========== 挣扎系统核心 ==========
+
+    function isSlotOccupied(slot) {
+        const save = CYOA.currentSave;
+        if (!save || !save.equipment) return false;
+        return !!save.equipment[slot];
+    }
+
+    function areHandsBound() {
+        return isSlotOccupied('palm') || isSlotOccupied('wrist');
+    }
+
+    function getEquipLockLevel(item, equipDef) {
+        return CYOA.getEquipLockLevel(item, equipDef);
+    }
+
+    function getEquipDurability(item, equipDef) {
+        const indestructible = item.indestructible ?? equipDef?.indestructible ?? false;
+        if (indestructible) return { current: Infinity, max: Infinity, indestructible: true };
+        const max = item.maxDurability ?? equipDef?.maxDurability ?? 100;
+        const cur = item.durability ?? equipDef?.durability ?? max;
+        return { current: cur, max, indestructible: false };
+    }
+    CYOA.getEquipDurability = getEquipDurability;
+
+    function checkSlotDependency(targetSlot) {
+        const deps = CONFIG.SLOT_DEPENDENCY[targetSlot];
+        if (!deps || deps.length === 0) return { canStruggle: true, blocked: [] };
+        const blocked = deps.filter(depSlot => isSlotOccupied(depSlot));
+        return { canStruggle: blocked.length === 0, blocked };
+    }
+
+    function applyDegradation(item, equipDef) {
+        const dura = getEquipDurability(item, equipDef);
+        if (dura.indestructible || dura.max <= 0) return [];
+        const duraPct = (dura.current / dura.max) * 100;
+        const effects = [];
+
+        for (const rule of (CONFIG.DEGRADATION_RULES || [])) {
+            const cList = item.constraints || equipDef?.constraints || [];
+            if (!cList.includes(rule.constraint)) continue;
+
+            for (const threshold of rule.thresholds) {
+                if (duraPct > threshold.duraPct) continue;
+
+                if (rule.constraint === 'limited_step' && threshold.effect) {
+                    const baseCm = item.stepLimitCm ?? equipDef?.stepLimitCm ?? 20;
+                    const basePct = item.speedModifierPct ?? equipDef?.speedModifierPct ?? -50;
+                    item._degradedStepLimitCm = baseCm + (threshold.effect.stepLimitCmBonus || 0);
+                    item._degradedSpeedModifierPct = Math.min(100, basePct + (threshold.effect.speedModifierPctBonus || 0));
+                    effects.push({ type: 'limited_step_weaken', duraPct: threshold.duraPct, bonus: threshold.effect });
+                }
+
+                if (rule.type === 'attachment_degrade' && threshold.visionShift) {
+                    const attachments = item.attachments || [];
+                    for (const att of attachments) {
+                        if (att.type === 'vision_modifier' && att.visionType === threshold.visionShift.from) {
+                            att.visionType = threshold.visionShift.to;
+                            effects.push({ type: 'vision_shift', from: threshold.visionShift.from, to: threshold.visionShift.to });
+                        }
                     }
                 }
                 break;
             }
-            case 'shock': {
-                const stims = save.activeStimulators || [];
-                const shockDev = stims.find(s => s.stimType === 'shock');
-                if (shockDev) {
-                    CYOA.modifyArousal(5, 'punishment_shock');
-                }
-                break;
+        }
+        return effects;
+    }
+
+    function attemptStruggle(slot) {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !save.equipment || !game) return null;
+
+        const item = save.equipment[slot];
+        if (!item) return { success: false, narrative: '该部位没有装备任何束缚。' };
+
+        const equipDef = game.equipment?.find(e => e.id === item.id);
+        const lockLevel = getEquipLockLevel(item, equipDef);
+        const dura = getEquipDurability(item, equipDef);
+        const material = item.material || equipDef?.material || 'leather';
+        const cfg = CONFIG.STRUGGLE_CONFIG;
+        const narr = CONFIG.STRUGGLE_NARRATIVES;
+        const pick = (arr) => arr[Math.floor(Math.random() * arr.length)];
+
+        if (lockLevel >= 5) {
+            return { success: false, duraDmg: 0, degraded: false, broken: false, narrative: pick(CYOA.tn(narr.permanent_lock, 'struggle.permanentLock')) };
+        }
+
+        const depCheck = checkSlotDependency(slot);
+        const isSelfSlot = (CONFIG.TOOL_BYPASS_SLOTS || []).includes(slot);
+
+        if (!depCheck.canStruggle && !isSelfSlot) {
+            return { success: false, duraDmg: 0, degraded: false, broken: false, narrative: pick(CYOA.tn(narr.blocked_by_hands, 'struggle.blockedByHands')), blockedBy: depCheck.blocked };
+        }
+
+        let successRate = cfg.baseSuccessRate;
+        successRate *= (1 - lockLevel * cfg.lockLevelMultiplier);
+        const matMod = cfg.materialModifiers[material] || { resistMult: 1, duraDmgMult: 1 };
+        successRate /= matMod.resistMult;
+
+        // 液态乳胶额外抗性
+        if (material === 'latex') {
+            const eqItem = save.equipment?.[slot];
+            const eDef = CYOA.currentGame?.equipment?.find(e => e.id === eqItem?.id);
+            const atts = eDef?.attachments || eqItem?.attachments || [];
+            const hasLiquid = atts.some(a => a.type === 'latex_layer' && (CONFIG.LATEX_THICKNESS || []).find(t => t.value === a.latexThickness)?.isLiquid);
+            if (hasLiquid) {
+                const llCfg = CONFIG.LIQUID_LATEX_CONFIG || {};
+                successRate *= llCfg.struggleResistMult || 0.1;
             }
-            case 'shortenTether':
-                if (save.tether?.active) {
-                    const chains = CONFIG.TETHER_CHAIN_LENGTHS || [];
-                    const curIdx = chains.findIndex(c => c.value === save.tether.chainLength);
-                    if (curIdx > 0) save.tether.chainLength = chains[curIdx - 1].value;
-                }
-                break;
-            case 'arousalSpike':
-                CYOA.modifyArousal(pDef.params?.delta || 15, 'punishment');
-                break;
-        }
-        log('惩罚已执行:', punishmentValue);
-        persistSave();
-    };
-
-    CYOA.applyReward = function(rewardValue) {
-        const save = CYOA.currentSave;
-        if (!save) return;
-        const rDef = (CONFIG.REWARD_TYPES || []).find(r => r.value === rewardValue);
-        if (!rDef) return;
-        const fondAttr = save.attributes?.find(a => a.name === 'fondness');
-        if (fondAttr) {
-            fondAttr.value = Math.min(fondAttr.max || 100, fondAttr.value + (rDef.fondnessGain || 3));
-        }
-        switch (rDef.action) {
-            case 'setPosture':
-                if (rDef.params?.posture) CYOA.setPosture(rDef.params.posture);
-                break;
-            case 'tempUnlock': {
-                const slots = Object.keys(save.equipment || {});
-                const lockedSlot = slots.find(s => (save.equipment[s]?.lockLevel || 0) > 0 && (save.equipment[s]?.lockLevel || 0) < 5);
-                if (lockedSlot) save.equipment[lockedSlot].lockLevel = 0;
-                break;
+            // 汗液滑脱加成
+            const sweatTier = CYOA.getLatexSweatTier?.();
+            if (sweatTier && sweatTier.value !== 'dry') {
+                const swCfg = CONFIG.LATEX_SWEAT_CONFIG || {};
+                const tierIdx = (CONFIG.LATEX_SWEAT_TIERS || []).findIndex(t => t.value === sweatTier.value);
+                successRate *= (1 + (swCfg.struggleSlipBonus || 0.08) * tierIdx);
             }
-            case 'stimOff':
-                save.activeStimulators = (save.activeStimulators || []).map(s => ({ ...s, mode: 'off' }));
-                break;
-            case 'lengthenTether':
-                if (save.tether?.active) {
-                    const chains = CONFIG.TETHER_CHAIN_LENGTHS || [];
-                    const curIdx = chains.findIndex(c => c.value === save.tether.chainLength);
-                    if (curIdx < chains.length - 1 && curIdx >= 0) save.tether.chainLength = chains[curIdx + 1].value;
+        }
+
+        if (isSelfSlot && areHandsBound()) {
+            successRate *= (1 - cfg.handBoundPenalty);
+        }
+
+        // 恐慌状态下挣扎加成（肾上腺素爆发）
+        if ((save.panic || 0) > 40) {
+            const pCfg = CONFIG.PANIC_CONFIG || {};
+            successRate *= (1 + (pCfg.panicStruggleBonus || 0.2));
+        }
+
+        successRate = Math.max(0, Math.min(1, successRate));
+
+        let duraDmg = 0;
+        if (!dura.indestructible) {
+            duraDmg = Math.round(cfg.baseDurabilityDamage * matMod.duraDmgMult);
+            item.durability = Math.max(0, (item.durability ?? dura.current) - duraDmg);
+        }
+
+        const roll = Math.random();
+        const success = roll < successRate;
+
+        let degraded = false;
+        let broken = false;
+        let degradeEffects = [];
+        let narrative = '';
+
+        if (!dura.indestructible && item.durability <= 0) {
+            broken = true;
+            delete save.equipment[slot];
+            narrative = pick(CYOA.tn(narr.broken, 'struggle.broken'));
+        } else if (success && lockLevel === 0) {
+            delete save.equipment[slot];
+            narrative = pick(CYOA.tn(narr.success, 'struggle.success'));
+        } else if (success && lockLevel <= 1) {
+            delete save.equipment[slot];
+            narrative = pick(CYOA.tn(narr.success, 'struggle.success'));
+        } else if (success) {
+            narrative = pick(CYOA.tn(narr.fail, 'struggle.fail')) + '\n' + CYOA.t('narr.struggle.lockTooHigh');
+        } else {
+            degradeEffects = applyDegradation(item, equipDef);
+            if (degradeEffects.length > 0) {
+                degraded = true;
+                narrative = pick(CYOA.tn(narr.degrade, 'struggle.degrade'));
+            } else {
+                narrative = pick(CYOA.tn(narr.fail, 'struggle.fail'));
+            }
+        }
+
+        // 监控区域：挣扎会累加观测者警觉度
+        let cctvAlert = false;
+        let interventionTriggered = false;
+        if (isChapterMonitored()) {
+            const alertCfg = CONFIG.OBSERVER_ALERT_CONFIG;
+            const increment = alertCfg?.struggleIncrement || 8;
+            const oldVal = getObserverAlert();
+            setObserverAlert(oldVal + increment);
+            const newVal = getObserverAlert();
+            cctvAlert = true;
+
+            const cctvNarr0 = CYOA.tn(CONFIG.CCTV_NARRATIVES?.struggle_watched, 'cctv.struggleWatched');
+            if (cctvNarr0?.length) {
+                narrative += '\n' + cctvNarr0[Math.floor(Math.random() * cctvNarr0.length)];
+            }
+
+            if (newVal >= (alertCfg?.interventionThreshold || 100) && oldVal < (alertCfg?.interventionThreshold || 100)) {
+                interventionTriggered = true;
+                const imminent = CYOA.tn(CONFIG.CCTV_NARRATIVES?.intervention_imminent, 'cctv.interventionImminent');
+                if (imminent?.length) {
+                    narrative += '\n\n⚠️ ' + imminent[Math.floor(Math.random() * imminent.length)];
                 }
-                break;
+            }
         }
-        log('奖励已执行:', rewardValue);
+
+        return {
+            success: broken || (success && lockLevel <= 1),
+            duraDmg,
+            degraded,
+            broken,
+            degradeEffects,
+            narrative,
+            slot,
+            itemName: item.name || equipDef?.name || '装备',
+            remainingDurability: dura.indestructible ? '♾️' : (item.durability ?? 0),
+            maxDurability: dura.indestructible ? '♾️' : dura.max,
+            cctvAlert,
+            interventionTriggered,
+            observerAlert: isChapterMonitored() ? getObserverAlert() : 0
+        };
+    }
+    CYOA.attemptStruggle = attemptStruggle;
+
+    CYOA.handleStruggle = function(slot) {
+        const save = CYOA.currentSave;
+        if (!save || !save.equipment?.[slot]) return;
+        const itemRef = save.equipment[slot];
+        const eqDef = CYOA.currentGame?.equipment?.find(e => e.id === itemRef.id);
+
+        const result = attemptStruggle(slot);
+        if (!result) return;
+
+        if (result.success && !result.broken) {
+            if (eqDef?.statModifiers) {
+                const mods = parseStatModifiers(eqDef.statModifiers);
+                applyStatModifiers(mods, false);
+            }
+            const already = save.inventory.some(i => i.id === itemRef.id);
+            if (!already) save.inventory.push(itemRef);
+        } else if (result.broken && eqDef?.statModifiers) {
+            const mods = parseStatModifiers(eqDef.statModifiers);
+            applyStatModifiers(mods, false);
+        }
+
+        const logEl = document.getElementById('log');
+        if (logEl) {
+            const sysDiv = document.createElement('div');
+            sysDiv.className = 'cyoa-struggle-msg';
+            sysDiv.style.cssText = 'text-align:center; padding:10px 14px; margin:6px 0; border-radius:8px; font-size:13px; line-height:1.6; ' +
+                (result.success ? 'background:linear-gradient(135deg,#dcfce7,#bbf7d0); color:#16a34a; font-weight:600; border:1px solid #86efac;' :
+                 result.broken ? 'background:linear-gradient(135deg,#fef3c7,#fde68a); color:#d97706; font-weight:600; border:1px solid #fcd34d;' :
+                 result.degraded ? 'background:linear-gradient(135deg,#fef3c7,#fde68a); color:#d97706; border:1px solid #fcd34d;' :
+                 'background:linear-gradient(135deg,#fee2e2,#fecaca); color:#dc2626; border:1px solid #fca5a5;');
+            let msg = `[${result.itemName} - ${CONFIG.EQUIPMENT_SLOTS.find(s => s.value === slot)?.label || slot}] ` + result.narrative;
+            if (result.duraDmg > 0) msg += `\n${t('ui.struggle.durDown', {n: result.duraDmg})} → ${result.remainingDurability}/${result.maxDurability}`;
+            if (result.degradeEffects?.length) {
+                result.degradeEffects.forEach(e => {
+                    if (e.type === 'limited_step_weaken') msg += `\n⚡ ${t('ui.struggle.constraintDegrade')} +${e.bonus.stepLimitCmBonus}cm`;
+                    if (e.type === 'vision_shift') msg += `\n⚡ ${t('ui.struggle.visionChange')}${CYOA.getVisionTypeLabel?.(e.from) || e.from} → ${e.to ? (CYOA.getVisionTypeLabel?.(e.to) || e.to) : '解除'}`;
+                });
+            }
+            if (result.cctvAlert) {
+                msg += `\n📹 ${t('ui.struggle.observerAlert')} ${result.observerAlert}/100`;
+            }
+            sysDiv.textContent = msg;
+            logEl.appendChild(sysDiv);
+            sysDiv.scrollIntoView({ behavior: 'smooth' });
+        }
+
         persistSave();
+        CYOA.renderInventoryPanel();
+        CYOA.renderAttributesPanel?.();
+        CYOA.renderGameOptions?.();
     };
 
-    // ========== 羞耻/暴露系统 ==========
-    CYOA.modifyShame = function(delta, source) {
-        const save = CYOA.currentSave;
-        if (!save) return;
-        const cfg = CONFIG.SHAME_CONFIG || {};
-        const desensRate = cfg.desensitizeRate || 0.5;
-        const desensThreshold = cfg.desensitizeThreshold || 60;
-        let actualDelta = delta;
-        if (delta > 0 && (save.shame || 0) >= desensThreshold) {
-            const highHab = Object.values(save.habituation || {}).some(v => v >= 60);
-            if (highHab) actualDelta = Math.round(delta * desensRate);
+    // 根据目盲/耳聋约束过滤 AI 回复文本（视觉与听觉过滤），并在概率下注入约束描写
+    // NOTE: 内部 `t` 变量遮蔽了模块级的 i18n `t` 函数，此函数内所有 i18n 调用均使用 CYOA.t()
+    function applySensoryFilters(text) {
+        if (!text || !CYOA.currentSave) return text;
+        const constraints = getActiveConstraints();
+        const constraintToMaterial = getConstraintsWithMaterials();
+        let t = text;
+
+        // 从 MATERIAL_TEMPLATES 获取指定约束对应装备的材质模板
+        function getMaterialFor(constraintName) {
+            const key = constraintToMaterial.get(constraintName);
+            if (!key || !CONFIG.MATERIAL_TEMPLATES?.[key]) return null;
+            const tpl = CONFIG.MATERIAL_TEMPLATES[key];
+            return { key, label: tpl.label || key, sf: tpl.sensory_feedback || {} };
         }
-        save.shame = Math.max(cfg.min || 0, Math.min(cfg.max || 100, (save.shame || 0) + actualDelta));
-        log('羞耻度变化:', actualDelta, '来源:', source, '当前:', save.shame);
-    };
 
-    CYOA.getShameTier = function() {
-        return findTier(CYOA.currentSave?.shame || 0, 'SHAME_THRESHOLDS', { value: 'composed', label: '镇定' });
-    };
+        // 视觉过滤：blind（完全目盲）或 vision_restricted（视野受限）均触发
+        const hasVisionConstraint = constraints.has('blind') || constraints.has('vision_restricted');
+        if (hasVisionConstraint) {
+            const visionType = getActiveVisionType() || (constraints.has('blind') ? 'full_blind' : 'pinhole');
+            const mt = getMaterialFor(constraints.has('blind') ? 'blind' : 'vision_restricted');
+            const visualRe = /[^。！？\n]*(?:看见|眼前|颜色|光线|映入|视线|望见|目光|看到|望去|注视|凝视|瞥见)[^。！？\n]*[。！？\n]?/g;
 
-    // ========== 呼吸控制系统 ==========
-    CYOA.modifyOxygen = function(delta) {
-        const save = CYOA.currentSave;
-        if (!save) return;
-        const cfg = CONFIG.OXYGEN_CONFIG || {};
-        save.oxygen = Math.max(cfg.min || 0, Math.min(cfg.max || 100, (save.oxygen ?? 100) + delta));
-    };
+            // 视觉动词——用于句内逐词替换（动态模糊）
+            const visualVerbRe = /(看见|看到|望见|瞥见|注视|凝视|望去|观察|打量|环顾|发现|辨认|目睹|审视)/g;
+            const pinholeLeads = CYOA.tn([
+                '艰难地透过狭缝，',
+                '在破碎的视野中尝试捕捉——',
+                '将眼球凑向微孔，勉强',
+                '从针尖大小的孔洞中，',
+                '在黑暗的缝隙中隐约',
+                '拼命聚焦于那一点光——'
+            ], 'filter.pinhole.leads');
+            const pinholeTails = CYOA.tn([
+                '——但画面转瞬即逝，被黑暗重新吞没。',
+                '——随即一切又缩回那个微小的光点中。',
+                '——碎片般的画面让人无法确定是否真的看清了。',
+                '——视野立刻被孔洞的边缘裁断。'
+            ], 'filter.pinhole.tails');
+            const translucentLeads = CYOA.tn([
+                '透过朦胧的遮蔽，隐约感知到',
+                '在模糊的色块间，似乎',
+                '雾般的视野中，你勉强辨别出',
+                '半透明的遮蔽将一切化为重影——',
+                '模糊的光影流动间，依稀'
+            ], 'filter.translucent.leads');
+            const translucentTails = CYOA.tn([
+                '——但细节已完全溶解在朦胧之中。',
+                '——轮廓在色块与光斑中摇摆不定，无法确认。',
+                '——一切都像隔着水面般模糊失真。',
+                '——你无法分辨那究竟是什么。'
+            ], 'filter.translucent.tails');
+            const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
-    CYOA.getOxygenTier = function() {
-        const val = CYOA.currentSave?.oxygen ?? 100;
-        const tiers = CONFIG.OXYGEN_THRESHOLDS || [];
-        for (let i = tiers.length - 1; i >= 0; i--) {
-            if (val <= tiers[i].max && val >= tiers[i].min) return tiers[i];
+            switch (visionType) {
+                case 'full_blind':
+                    t = t.replace(visualRe, '');
+                    break;
+                case 'pinhole':
+                    // 70% 的视觉动词被改写，30% 完全吞掉（模拟只能偶尔捕捉到碎片）
+                    t = t.replace(visualRe, (match) => {
+                        const core = match.replace(/[。！？\n]+$/, '').trim();
+                        if (!core) return '';
+                        return core.replace(visualVerbRe, (verb) => {
+                            if (Math.random() < 0.7) {
+                                return pick(pinholeLeads) + verb;
+                            }
+                            return verb;
+                        }) + pick(pinholeTails);
+                    });
+                    break;
+                case 'translucent':
+                    // 70% 的视觉动词被模糊前置，30% 保留原文但补模糊尾缀
+                    t = t.replace(visualRe, (match) => {
+                        const core = match.replace(/[。！？\n]+$/, '').trim();
+                        if (!core) return '';
+                        return core.replace(visualVerbRe, (verb) => {
+                            if (Math.random() < 0.7) {
+                                return pick(translucentLeads) + verb;
+                            }
+                            return verb;
+                        }) + pick(translucentTails);
+                    });
+                    break;
+                case 'fixed_gaze':
+                    t = t.replace(/[^。！？\n]*(?:余光|身后|侧面|背后|回头|转头|环顾|扭头|侧目)[^。！？\n]*[。！？\n]?/g, '');
+                    break;
+                case 'multiphole':
+                    t = t.replace(visualRe, (match) => {
+                        const core = match.replace(/[。！？\n]+$/, '').trim();
+                        if (!core) return '';
+                        return CYOA.t('narr.filter.multiphole', {core});
+                    });
+                    break;
+            }
         }
-        return tiers[0] || { value: 'normal', label: '正常' };
-    };
 
-    CYOA.calculateBreath = function() {
+        // 耳聋：去掉含声音描写的句子（controller_only模式保留控制者的话语）
+        if (constraints.has('deaf')) {
+            const earDev = CYOA.getActiveEarDevice?.();
+            if (earDev?.hearController) {
+                t = t.replace(/[^。！？\n]*(?:听见|响声|听到|声音|声响|一声|喧哗|嘈杂|呼喊|叫声)[^。！？\n]*[。！？\n]?/g, match => {
+                    if (/主人|控制者|耳机|传来|命令|指令/.test(match)) return match;
+                    return '';
+                });
+            } else {
+                t = t.replace(/[^。！？\n]*(?:听见|响声|听到|声音|声响|一声|喧哗|嘈杂|呼喊|叫声)[^。！？\n]*[。！？\n]?/g, '');
+            }
+        }
+
+        // 禁言：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
+
+        // 限步：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
+
+        // 贞操：由 buildGamePrompt 系统提示处理，此处不再注入可见文本
+
+        t = t.replace(/\n{3,}/g, '\n\n').trim();
+
+        // ========== 加权竞争叙事注入 ==========
+        // 所有候选旁白先入池（带权重），然后按权重随机抽 1-2 条
+        // 权重越高 = 状态越活跃/越强烈 → 越可能被选中
+        // 已由系统提示覆盖的（呼吸、耳聋等）权重极低，避免重复
+        const _pool = [];
+        const pick = arr => arr.length > 0 ? arr[Math.floor(Math.random() * arr.length)] : '';
         const save = CYOA.currentSave;
-        if (!save) return;
-        const cfg = CONFIG.OXYGEN_CONFIG || {};
-        let totalDrain = 0;
-        const breathDevs = save.breathDevices || [];
-        if (breathDevs.length > 0) {
-            breathDevs.forEach(d => {
-                const def = (CONFIG.BREATH_DEVICE_TYPES || []).find(b => b.value === d.type);
-                totalDrain += def?.drainRate || 5;
+
+        // ⑨ 行动感知权重调整：根据当前行动类型提升/降低不同类型旁白的权重
+        const _actionType = save?.lastActionType || 'idle';
+        const _actionMods = {
+            movement: { gait: 3.0, limitedStep: 3.0, tether: 2.0, posture: 1.5, latex: 1.2, arousal: 0.5, oral: 0.3, ear: 0.2, oxygen: 0.3 },
+            speech:   { oral: 3.0, drool: 2.5, gag: 2.5, ear: 0.3, gait: 0.2, limitedStep: 0.2, arousal: 0.5 },
+            stairs:   { gait: 2.5, limitedStep: 2.0, posture: 2.0, tether: 1.5, latex: 1.0 },
+            vehicle:  { posture: 2.0, limitedStep: 1.5, latex: 1.5, gait: 1.0 },
+            sitting:  { arousal: 2.0, posture: 2.0, latex: 1.5, gait: 0.2, limitedStep: 0.2 },
+            climbing: { gait: 2.5, limitedStep: 2.5, posture: 2.0, oxygen: 1.5 },
+            idle:     { arousal: 0.5, gait: 0.1, limitedStep: 0.1, oral: 0.3, ear: 0.2, tether: 0.3, latex: 0.5 }
+        };
+        const _curMods = _actionMods[_actionType] || {};
+        const _addToPool = (weight, text, category) => {
+            if (weight > 0 && text) {
+                const mod = _curMods[category] ?? 1.0;
+                _pool.push({ w: weight * mod, t: text });
+            }
+        };
+
+        // ① 约束描写池（材质旁白 + 感官描写 + 身体反应）
+        const descs = CONFIG.CONSTRAINT_DESCRIPTIONS;
+        const materialNarratives = CONFIG.CONSTRAINT_MATERIAL_NARRATIVES;
+        const bodyReactions = CONFIG.CONSTRAINT_BODY_REACTIONS;
+        if (descs || materialNarratives || bodyReactions) {
+            const sentences = [];
+            constraints.forEach(c => {
+                const candidates = [];
+                const material = constraintToMaterial.get(c);
+                const _tnKey = { full_blind: 'vision.fullBlind', pinhole: 'vision.pinhole', translucent: 'vision.translucent', fixed_gaze: 'vision.fixedGaze', multiphole: 'vision.multiphole' };
+                const _cKey = { limited_step: 'constraint.limitedStep', no_hands: 'constraint.noHands', blind: 'constraint.blind', mute: 'constraint.mute', forced_open_mouth: 'constraint.forcedOpenMouth', oral_sheath: 'constraint.oralSheath', deaf: 'constraint.deaf', chastity: 'constraint.chastity', tethered: 'constraint.tethered', no_fingers: 'constraint.noFingers' };
+                const _splitDesc = (str) => {
+                    const splitRe = /[.。！？；!?;]/;
+                    const end = CYOA.lang === 'en' ? '.' : '。';
+                    str.split(splitRe).map(p => p.trim()).filter(Boolean)
+                        .forEach(p => candidates.push(p + (p.match(/[.。！？!?]$/) ? '' : end)));
+                };
+                if (c === 'blind' || c === 'vision_restricted') {
+                    const vt = getActiveVisionType() || (c === 'blind' ? 'full_blind' : 'pinhole');
+                    if (material && CONFIG.VISION_MATERIAL_NARRATIVES?.[vt]?.[material]) {
+                        candidates.push(CYOA.t(CONFIG.VISION_MATERIAL_NARRATIVES[vt][material]));
+                    } else if (material && materialNarratives?.['blind']?.[material]) {
+                        candidates.push(CYOA.t(materialNarratives['blind'][material]));
+                    }
+                    const vtDesc = CONFIG.VISION_DESCRIPTIONS?.[vt];
+                    if (vtDesc) _splitDesc(CYOA.t(vtDesc));
+                    const vtReactions = CYOA.tn(CONFIG.VISION_BODY_REACTIONS?.[vt], _tnKey[vt] || 'vision.fullBlind');
+                    if (Array.isArray(vtReactions)) {
+                        vtReactions.forEach(r => candidates.push(r));
+                    } else {
+                        const blindFb = CYOA.tn(bodyReactions?.['blind'], 'constraint.blind');
+                        if (Array.isArray(blindFb)) blindFb.forEach(r => candidates.push(r));
+                    }
+                } else {
+                    if (material && materialNarratives?.[c]?.[material]) {
+                        candidates.push(CYOA.t(materialNarratives[c][material]));
+                    }
+                    if (descs && typeof descs[c] === 'string') _splitDesc(CYOA.t(descs[c]));
+                    if (c === 'limited_step') {
+                        const lsP = getLimitedStepParams();
+                        const cm = lsP?.stepLimitCm ?? (CONFIG.LIMITED_STEP_DEFAULTS?.stepLimitCm || 20);
+                        const tier = getLimitedStepTier(cm);
+                        const lsKey = tier?.min > 50 ? 'limitedStep.light.bodyReactions' : tier?.min >= 20 ? 'limitedStep.moderate.bodyReactions' : 'limitedStep.severe.bodyReactions';
+                        if (tier && Array.isArray(tier.bodyReactions)) {
+                            CYOA.tn(tier.bodyReactions, lsKey).forEach(r => candidates.push(r));
+                        } else {
+                            const fb = CYOA.tn(bodyReactions?.[c], _cKey[c] || c);
+                            if (Array.isArray(fb)) fb.forEach(r => candidates.push(r));
+                        }
+                    } else {
+                        const fb = CYOA.tn(bodyReactions?.[c], _cKey[c] || c);
+                        if (Array.isArray(fb)) fb.forEach(r => candidates.push(r));
+                    }
+                }
+                if (candidates.length) {
+                    sentences.push(candidates[Math.floor(Math.random() * candidates.length)]);
+                }
+            });
+            if (sentences.length) {
+                _addToPool(0.15 + constraints.size * 0.05, sentences.join(' '), 'constraint');
+            }
+        }
+
+        // ② 监控视角（CCTV 属于场景框架，独立低概率处理）
+        if (isChapterMonitored()) {
+            const alertVal = getObserverAlert();
+            const alertCfg = CONFIG.OBSERVER_ALERT_CONFIG;
+            let cctvLine = '';
+            if (alertVal >= (alertCfg?.interventionThreshold || 100)) {
+                cctvLine = pick(CYOA.tn(CONFIG.CCTV_NARRATIVES?.intervention_imminent, 'cctv.interventionImminent') || []);
+            } else if (alertVal >= 50) {
+                cctvLine = pick(CYOA.tn(CONFIG.CCTV_NARRATIVES?.alert_rising, 'cctv.alertRising') || []);
+            } else {
+                cctvLine = pick(CYOA.tn(CONFIG.CCTV_NARRATIVES?.ambient, 'cctv.ambient') || []);
+            }
+            _addToPool(alertVal >= 50 ? 0.25 : 0.08, cctvLine, 'cctv');
+            if (alertVal > 0) {
+                setObserverAlert(alertVal - (alertCfg?.decayPerTurn || 2));
+            }
+        }
+
+        // ③-㉝ 各状态叙事入池（权重 = 活跃度 / 强度）
+        if (save) {
+            // 牵引（主动束缚 → 中等权重）
+            if (save.tether?.active) {
+                const tetherReactions = CYOA.tn(CONFIG.CONSTRAINT_BODY_REACTIONS?.tethered, 'constraint.tethered');
+                if (Array.isArray(tetherReactions) && tetherReactions.length > 0) {
+                    _addToPool(0.25, pick(tetherReactions), 'tether');
+                }
+            }
+
+            // 姿势（非站立，权重随持续时间升高）
+            if (save.posture && save.posture !== 'standing') {
+                const postureDesc = CYOA.t(CONFIG.POSTURE_DESCRIPTIONS?.[save.posture] || '');
+                const pDur = save.postureDuration || 0;
+                if (postureDesc) _addToPool(0.1 + Math.min(0.3, pDur / 30), postureDesc, 'posture');
+            }
+
+            // 兴奋度（权重随等级大幅攀升 — 值越高越优先）
+            const aTier = CYOA.getArousalTier();
+            const arousalW = { calm: 0, warm: 0.1, aroused: 0.3, heated: 0.55, critical: 0.8 };
+            if (arousalW[aTier.value] > 0) {
+                const _arousalKey = { warm: 'arousal.warm', aroused: 'arousal.aroused', heated: 'arousal.heated', critical: 'arousal.critical' };
+                const reactions = CYOA.tn(CONFIG.AROUSAL_BODY_REACTIONS?.[aTier.value], _arousalKey[aTier.value] || aTier.value);
+                if (Array.isArray(reactions) && reactions.length > 0) {
+                    _addToPool(arousalW[aTier.value], pick(reactions), 'arousal');
+                }
+            }
+
+            // 刺激器（正在运作 → 高权重）
+            const stims = save.activeStimulators || [];
+            const activeStim = stims.find(s => s.mode !== 'off');
+            if (activeStim) {
+                const stimNarrs = CYOA.tn(CONFIG.STIMULATOR_NARRATIVES?.[activeStim.stimType], 'stimulator.' + activeStim.stimType);
+                if (Array.isArray(stimNarrs) && stimNarrs.length > 0) {
+                    _addToPool(0.5, pick(stimNarrs), 'arousal');
+                }
+            }
+
+            // 戒断幻触
+            if (save.withdrawalEffects?.length > 0) {
+                const narrs = CYOA.tn(CONFIG.WITHDRAWAL_NARRATIVES || [], 'withdrawal');
+                if (narrs.length > 0) _addToPool(0.2, pick(narrs), 'constraint');
+            }
+
+            // 姿势不适（权重随持续回合升高）
+            {
+                const pos = save.posture || 'standing';
+                const pDur = save.postureDuration || 0;
+                const dEff = CONFIG.DURATION_EFFECTS?.postureDiscomfort?.[pos];
+                if (dEff && pDur >= dEff.startTurn) {
+                    const posNarrs = CYOA.tn(CONFIG.DISCOMFORT_NARRATIVES?.[pos], 'discomfort.' + pos) || CYOA.tn(CONFIG.DISCOMFORT_NARRATIVES?.general, 'discomfort.general') || [];
+                    if (posNarrs.length > 0) _addToPool(Math.min(0.4, pDur / 25), pick(posNarrs), 'posture');
+                }
+            }
+
+            // 佩戴疲劳（被动低权重）
+            {
+                const wearFat = CONFIG.DURATION_EFFECTS?.wearFatigue;
+                if (wearFat) {
+                    const maxWear = Math.max(0, ...Object.values(save.wearDurations || {}));
+                    if (maxWear >= wearFat.startTurn) {
+                        const genNarrs = CYOA.tn(CONFIG.DISCOMFORT_NARRATIVES?.general, 'discomfort.general') || [];
+                        if (genNarrs.length > 0) _addToPool(0.08, pick(genNarrs), 'posture');
+                    }
+                }
+            }
+
+            // 羞耻（权重随值增长）
+            if ((save.shame || 0) > 20) {
+                const narrs = CYOA.tn(CONFIG.SHAME_NARRATIVES || [], 'shame');
+                if (narrs.length > 0) _addToPool(Math.min(0.35, save.shame / 200), pick(narrs), 'shame');
+            }
+
+            // 呼吸/氧气（已在系统提示强制约束 → 极低权重）
+            if ((save.oxygen ?? 100) < 70) {
+                const narrs = CYOA.tn(CONFIG.OXYGEN_NARRATIVES || [], 'oxygen');
+                if (narrs.length > 0) _addToPool(0.04, pick(narrs), 'oxygen');
+            }
+
+            // 打击痕迹（被动）
+            if (save.marks?.length > 0) {
+                const narrs = CYOA.tn(CONFIG.IMPACT_NARRATIVES?.medium, 'impact.medium') || CYOA.tn(CONFIG.IMPACT_NARRATIVES?.light, 'impact.light') || [];
+                if (narrs.length > 0) _addToPool(0.08, pick(narrs), 'marks');
+            }
+
+            // 温度（环境氛围）
+            {
+                const temps = Object.entries(save.bodyTemp || {}).filter(([, v]) => v !== 0);
+                if (temps.length > 0) {
+                    const hasHot = temps.some(([, v]) => v > 0);
+                    const hasCold = temps.some(([, v]) => v < 0);
+                    const key = (hasHot && hasCold) ? 'contrast' : hasHot ? 'hot' : 'cold';
+                    const narrs = CYOA.tn(CONFIG.TEMP_NARRATIVES?.[key], 'temp.' + key) || [];
+                    if (narrs.length > 0) _addToPool(0.12, pick(narrs), 'temp');
+                }
+            }
+
+            // 困境（权重随痛苦累积升高）
+            if (save.predicament) {
+                const pType = save.predicament.type;
+                const narrs = CYOA.tn(CONFIG.PREDICAMENT_NARRATIVES?.[pType], 'predicament.' + pType) || [];
+                const painAccum = save.predicament.painAccum || 0;
+                if (narrs.length > 0) _addToPool(0.15 + Math.min(0.35, painAccum / 150), pick(narrs), 'predicament');
+            }
+
+            // 感官剥夺（权重随持续时间升高）
+            {
+                const depLvl = CYOA.getDeprivationLevel?.();
+                if (depLvl) {
+                    const depDur = save.deprivationDuration || 0;
+                    const depCfg = CONFIG.DEPRIVATION_CONFIG || {};
+                    let depKey = 'touch_amplify';
+                    if (depDur >= (depCfg.timeDistortionStart || 8)) depKey = 'time_distort';
+                    else if (depDur >= (depCfg.spaceDisorientStart || 5)) depKey = 'space_lost';
+                    const narrs = CYOA.tn(CONFIG.DEPRIVATION_NARRATIVES?.[depKey], 'deprivation.' + depKey) || [];
+                    if (narrs.length > 0) _addToPool(Math.min(0.4, 0.1 + depDur / 20), pick(narrs), 'deprivation');
+                }
+            }
+
+            // 感官过载（权重随过载值升高）
+            if ((save.sensoryOverload || 0) > 0) {
+                const narrs = CYOA.tn(CONFIG.DEPRIVATION_NARRATIVES?.sensory_overload, 'deprivation.sensoryOverload') || [];
+                if (narrs.length > 0) _addToPool(Math.min(0.45, save.sensoryOverload / 120), pick(narrs), 'deprivation');
+            }
+
+            // 乳胶（权重随覆盖率升高）
+            if ((save.latexCoverage || 0) > 20) {
+                const latexHeat = save.latexHeat || 0;
+                const cfg = CONFIG.LATEX_ENCLOSURE_CONFIG || {};
+                let narKey = 'squeak';
+                if (save.latexCoverage >= 91) narKey = 'sealed';
+                else if (latexHeat >= (cfg.sweatStartThreshold || 15)) narKey = 'heat';
+                if (narKey === 'squeak' && (save.latexSweat || 0) > 30) {
+                    const swCfg = CONFIG.LATEX_SWEAT_CONFIG || {};
+                    if (Math.random() < (swCfg.squeakDampening || 0.3)) {
+                        narKey = (save.latexHeat || 0) >= 15 ? 'heat' : 'touch_amplify';
+                    }
+                }
+                const narrs = CYOA.tn(CONFIG.LATEX_NARRATIVES?.[narKey], 'latex.' + narKey) || [];
+                if (narrs.length > 0) _addToPool(Math.min(0.3, save.latexCoverage / 250), pick(narrs), 'latex');
+            }
+
+            // 汗液（权重随汗液值升高）
+            if ((save.latexSweat || 0) > 30) {
+                const narrs = CYOA.tn(CONFIG.LATEX_SWEAT_NARRATIVES || [], 'latexSweat');
+                if (narrs.length > 0) _addToPool(Math.min(0.2, save.latexSweat / 300), pick(narrs), 'latex');
+            }
+
+            // 乳胶气味（被动低权重，目盲时略高）
+            if ((save.latexCoverage || 0) > 30) {
+                const scents = CONFIG.LATEX_SCENT_NARRATIVES || {};
+                const isBlind = constraints.has('blind');
+                let scentKey = 'fresh';
+                if ((save.latexSweat || 0) > 40) scentKey = 'sweat_mixed';
+                else if (save.latexCoverage >= 91) scentKey = 'sealed';
+                else if ((save.latexHeat || 0) >= 20) scentKey = 'warm';
+                if ((save.latexCondition ?? 100) < 30) scentKey = 'degraded';
+                const snarrs = CYOA.tn(scents[scentKey], 'latexScent.' + scentKey) || CYOA.tn(scents.fresh, 'latexScent.fresh') || [];
+                if (snarrs.length > 0) _addToPool(isBlind ? 0.08 : 0.04, pick(snarrs), 'latex');
+            }
+
+            // 乳胶颜色（非常被动）
+            if (save.latexColor) {
+                const colorNarrs = CYOA.tn(CONFIG.LATEX_COLOR_NARRATIVES?.[save.latexColor], 'latexColor.' + save.latexColor) || [];
+                if (colorNarrs.length > 0) _addToPool(0.03, pick(colorNarrs), 'latex');
+            }
+
+            // 恐慌（权重随恐慌值升高）
+            if ((save.panic || 0) > 30) {
+                const narrs = CYOA.tn(CONFIG.PANIC_NARRATIVES || [], 'panic');
+                if (narrs.length > 0) _addToPool(Math.min(0.5, save.panic / 150), pick(narrs), 'panic');
+            }
+
+            // 液态乳胶
+            if (save.latexCoverage > 0) {
+                const equipment = save.equipment || {};
+                const game = CYOA.currentGame;
+                let hasLiquid = false;
+                Object.values(equipment).forEach(item => {
+                    if (!item) return;
+                    const eDef = game?.equipment?.find(e => e.id === item.id);
+                    (eDef?.attachments || item.attachments || []).forEach(att => {
+                        if (att.type === 'latex_layer') {
+                            const thickDef = (CONFIG.LATEX_THICKNESS || []).find(td => td.value === att.latexThickness);
+                            if (thickDef?.isLiquid) hasLiquid = true;
+                        }
+                    });
+                });
+                if (hasLiquid) {
+                    const narrs = CYOA.tn(CONFIG.LIQUID_LATEX_NARRATIVES || [], 'liquidLatex');
+                    if (narrs.length > 0) _addToPool(0.1, pick(narrs), 'latex');
+                }
+            }
+
+            // PetPlay
+            if (save.petplayRole) {
+                const narrs = CYOA.tn(CONFIG.PETPLAY_NARRATIVES?.[save.petplayRole], 'petplay.' + save.petplayRole) || [];
+                if (narrs.length > 0) _addToPool(0.15, pick(narrs), 'petplay');
+            }
+
+            // 身份侵蚀（权重随值升高）
+            if ((save.identityErosion || 0) > 30) {
+                const narrs = CYOA.tn(CONFIG.IDENTITY_NARRATIVES || [], 'identity');
+                if (narrs.length > 0) _addToPool(Math.min(0.35, save.identityErosion / 200), pick(narrs), 'identity');
+            }
+
+            // 自紧乳胶（权重随紧度升高）
+            if ((save.latexTightness || 0) > 30) {
+                const tTier = CYOA.getTightnessTier?.();
+                if (tTier?.desc) _addToPool(Math.min(0.4, save.latexTightness / 200), tTier.desc, 'latex');
+            }
+
+            // 导电乳胶（正在放电 → 高权重）
+            const electroSave = save.electroLatex;
+            if (electroSave?.active && electroSave.zones?.length > 0) {
+                const activeZone = electroSave.zones[Math.floor(Math.random() * electroSave.zones.length)];
+                const narrs = CYOA.tn(CONFIG.ELECTRO_NARRATIVES?.[activeZone.intensity], 'electro.' + activeZone.intensity) || CYOA.tn(CONFIG.ELECTRO_NARRATIVES?.tingle, 'electro.tingle') || [];
+                if (narrs.length > 0) _addToPool(0.45, pick(narrs), 'electro');
+            }
+
+            // 呼吸管（已在系统提示 → 极低权重）
+            const tubeSave = save.breathingTube;
+            if (tubeSave?.active && tubeSave.flowLevel !== 'full') {
+                const narrs = CYOA.tn(CONFIG.TUBE_NARRATIVES?.[tubeSave.flowLevel], 'tube.' + tubeSave.flowLevel) || [];
+                if (narrs.length > 0) _addToPool(0.04, pick(narrs), 'oxygen');
+            }
+
+            // 护理状态（被动低权重）
+            if ((save.latexCondition ?? 100) < 50 && (save.latexCoverage || 0) > 20) {
+                const narrs = CYOA.tn(CONFIG.MAINTENANCE_NARRATIVES || [], 'maintenance');
+                const effect = CYOA.getMaintenanceEffect?.();
+                _addToPool(0.06, effect?.desc || (narrs.length > 0 ? pick(narrs) : ''), 'latex');
+            }
+
+            // 步态
+            const gaitNow = CYOA.getCurrentGait?.();
+            if (gaitNow && gaitNow.value !== 'normal' && gaitNow.narratives?.length > 0) {
+                const gaitNarrs = CYOA.tn(gaitNow.narratives, 'gait.' + gaitNow.value);
+                _addToPool(0.12, pick(gaitNarrs), 'gait');
+            }
+
+            // 口水/强制张口
+            const activeGagDef = CYOA.getActiveGagType?.();
+            if (activeGagDef?.suppressDrool) {
+                const oralNarrs = CYOA.tn(CONFIG.CONSTRAINT_SENSORY_NARRATIVES?.oral_sheath, 'constraintSensory.oralSheath') || [];
+                if (oralNarrs.length > 0) _addToPool(0.1, pick(oralNarrs), 'oral');
+            } else if ((save.drool || 0) > 20) {
+                const narrs = CYOA.tn(CONFIG.DROOL_NARRATIVES || [], 'drool');
+                if (narrs.length > 0) _addToPool(Math.min(0.2, save.drool / 250), pick(narrs), 'drool');
+            }
+
+            // 头颈约束（被动）
+            const headR = CYOA.getActiveHeadRestrictions?.() || { canTurn: true, canNod: true };
+            if (!headR.canTurn || !headR.canNod) {
+                const narrs = CYOA.tn(CONFIG.HEAD_NECK_NARRATIVES || [], 'headNeck');
+                if (narrs.length > 0) _addToPool(0.06, pick(narrs), 'posture');
+            }
+
+            // 手指约束（被动）
+            if (constraints.has('no_fingers')) {
+                const narrs = CYOA.tn(CONFIG.FINGER_NARRATIVES || [], 'finger');
+                if (narrs.length > 0) _addToPool(0.06, pick(narrs), 'constraint');
+            }
+
+            // 耳部装置（已在系统提示 → 极低权重）
+            if (constraints.has('deaf')) {
+                const narrs = CYOA.tn(CONFIG.EAR_DEVICE_NARRATIVES || [], 'earDevice');
+                if (narrs.length > 0) _addToPool(0.04, pick(narrs), 'ear');
+            }
+        }
+
+        // ========== 加权随机抽取（最多 2 条） ==========
+        if (_pool.length > 0) {
+            const totalW = _pool.reduce((s, c) => s + c.w, 0);
+            // 总活跃度越高，越有可能产生旁白
+            if (Math.random() < Math.min(0.7, totalW * 0.4)) {
+                let r = Math.random() * totalW;
+                let idx = 0;
+                for (let j = 0; j < _pool.length; j++) {
+                    r -= _pool[j].w;
+                    if (r <= 0) { idx = j; break; }
+                }
+                t += '\n\n*' + _pool[idx].t + '*';
+                _pool.splice(idx, 1);
+                // 第二条：仅当剩余池权重较高时才抽取
+                if (_pool.length > 0) {
+                    const remainW = _pool.reduce((s, c) => s + c.w, 0);
+                    if (Math.random() < Math.min(0.35, remainW * 0.25)) {
+                        let r2 = Math.random() * remainW;
+                        for (let j = 0; j < _pool.length; j++) {
+                            r2 -= _pool[j].w;
+                            if (r2 <= 0) {
+                                t += '\n\n*' + _pool[j].t + '*';
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return t;
+    }
+
+    // ========== 处理AI响应 ==========
+    CYOA.processAIResponse = async function(fullResponse, userMessage, targetRole, filteredResponse) {
+        const currentSave = CYOA.currentSave;
+        if (!currentSave) return;
+        const currentNodeId = CYOA.currentNodeId;
+        
+        // 保存新的剧情节点（原文用于选项提取和任务检测，过滤后文本用于界面显示）
+        const newNodeId = 'node_' + Date.now();
+        currentSave.nodes[newNodeId] = {
+            id: newNodeId,
+            parentId: currentNodeId,
+            userMessage: userMessage,
+            assistantMessage: filteredResponse || fullResponse,
+            rawAssistantMessage: fullResponse,
+            options: CYOA.extractOptions(fullResponse),
+            summary: userMessage.substring(0, 30) + '...',
+            createdAt: Date.now(),
+            childrenIds: []
+        };
+        
+        // 更新父节点的childrenIds
+        if (currentNodeId && currentSave.nodes[currentNodeId]) {
+            if (!currentSave.nodes[currentNodeId].childrenIds) {
+                currentSave.nodes[currentNodeId].childrenIds = [];
+            }
+            currentSave.nodes[currentNodeId].childrenIds.push(newNodeId);
+        }
+        
+        CYOA.currentNodeId = newNodeId;
+        currentSave.currentNodeId = newNodeId;
+        
+        // 检查任务完成情况
+        await CYOA.checkQuestProgress(fullResponse);
+        
+        // AI 挣扎关键词自动检测
+        const strugglePattern = /(?:挣扎|挣脱|扯动|试图解开|拼命拽|使劲扭动|奋力挣|拼命挣|剧烈扭|猛力拉扯)\s*(?:了?)?\s*(?:手|脚|腿|头|眼|腰|身|胯|脖|颈|嘴|腕|脚踝|大腿|手腕|手掌)?/g;
+        const slotKeywords = {
+            '手': 'palm', '手掌': 'palm', '手腕': 'wrist', '腕': 'wrist',
+            '脚': 'ankle', '脚踝': 'ankle', '腿': 'thigh', '大腿': 'thigh',
+            '头': 'head', '眼': 'eyes', '嘴': 'mouth',
+            '腰': 'waist', '身': 'chest', '胯': 'crotch',
+            '脖': 'neck', '颈': 'neck'
+        };
+        let struggleMatch;
+        const processedSlots = new Set();
+        while ((struggleMatch = strugglePattern.exec(fullResponse)) !== null) {
+            const bodyPart = struggleMatch[0].replace(/.*(?:挣扎|挣脱|扯动|试图解开|拼命拽|使劲扭动|奋力挣|拼命挣|剧烈扭|猛力拉扯)\s*了?\s*/, '').trim();
+            let targetSlot = slotKeywords[bodyPart] || null;
+            if (!targetSlot) {
+                const equippedSlots = Object.keys(currentSave.equipment || {}).filter(s => currentSave.equipment[s]);
+                if (equippedSlots.length) targetSlot = equippedSlots[0];
+            }
+            if (targetSlot && !processedSlots.has(targetSlot) && currentSave.equipment?.[targetSlot]) {
+                processedSlots.add(targetSlot);
+                const sItem = currentSave.equipment[targetSlot];
+                const sEquipDef = CYOA.currentGame?.equipment?.find(e => e.id === sItem?.id);
+                const result = attemptStruggle(targetSlot);
+                if (result) {
+                    if (result.success && !result.broken) {
+                        if (sEquipDef?.statModifiers) {
+                            const mods = parseStatModifiers(sEquipDef.statModifiers);
+                            applyStatModifiers(mods, false);
+                        }
+                        const already = currentSave.inventory.some(i => i.id === sItem.id);
+                        if (!already) currentSave.inventory.push(sItem);
+                    } else if (result.broken && sEquipDef?.statModifiers) {
+                        const mods = parseStatModifiers(sEquipDef.statModifiers);
+                        applyStatModifiers(mods, false);
+                    }
+                    const logEl = document.getElementById('log');
+                    if (logEl) {
+                        const sysDiv = document.createElement('div');
+                        sysDiv.className = 'cyoa-struggle-msg';
+                        sysDiv.style.cssText = 'text-align:center; padding:8px 12px; margin:6px 0; border-radius:8px; font-size:13px; ' +
+                            (result.success ? 'background:linear-gradient(135deg,#dcfce7,#bbf7d0); color:#16a34a; font-weight:600;' :
+                             result.degraded ? 'background:linear-gradient(135deg,#fef3c7,#fde68a); color:#d97706;' :
+                             'background:linear-gradient(135deg,#fee2e2,#fecaca); color:#dc2626;');
+                        let msg = result.narrative;
+                        if (result.duraDmg > 0) msg += ` [${t('ui.struggle.durDown', {n: result.duraDmg})} → ${result.remainingDurability}/${result.maxDurability}]`;
+                        sysDiv.textContent = msg;
+                        logEl.appendChild(sysDiv);
+                    }
+                }
+            }
+        }
+
+        // 监控介入检查：警觉度达到阈值时注入系统消息
+        if (isChapterMonitored()) {
+            const alertVal = getObserverAlert();
+            const alertCfg = CONFIG.OBSERVER_ALERT_CONFIG;
+            const interventionThreshold = alertCfg?.interventionThreshold || 100;
+            if (alertVal >= interventionThreshold) {
+                const logEl = document.getElementById('log');
+                if (logEl) {
+                    const intDiv = document.createElement('div');
+                    intDiv.className = 'cyoa-cctv-intervention';
+                    intDiv.style.cssText = 'text-align:center; padding:12px 16px; margin:8px 0; border-radius:8px; font-size:13px; font-weight:600; background:linear-gradient(135deg,#fef2f2,#fee2e2); color:#b91c1c; border:2px solid #f87171; animation: pulse 1.5s infinite;';
+                    intDiv.textContent = t('ui.chapter.securityAlert');
+                    logEl.appendChild(intDiv);
+                }
+            }
+        }
+
+        // 检查物品消耗（从AI响应中解析）
+        CYOA.parseAndApplyItemChanges(fullResponse);
+        
+        // 技能熟练度：当 AI 回复中提到某个已学技能的名字时，自动增加少量熟练度
+        if (currentSave.skills?.length) {
+            currentSave.skills.forEach(skill => {
+                if (fullResponse.includes(skill.name)) {
+                    const gain = Math.floor(Math.random() * 6) + 5;
+                    const result = CYOA.addSkillProficiency(skill.id, gain);
+                    if (result) {
+                        const logEl = document.getElementById('log');
+                        if (logEl) {
+                            const lvUpDiv = document.createElement('div');
+                            lvUpDiv.style.cssText = 'text-align:center; padding:8px; margin:6px 0; background:linear-gradient(135deg,#fff8e1,#fff3c4); border-radius:8px; font-size:13px; color:#f59e0b; font-weight:600;';
+                            lvUpDiv.textContent = t('ui.msg.skillLevelUp', {name: skill.name, level: result.newLevel + (result.label ? ' ' + result.label : '')});
+                            logEl.appendChild(lvUpDiv);
+                        }
+                    }
+                }
             });
         }
-        // 从装备附件中检测呼吸限制
-        const equipment = save.equipment || {};
-        Object.values(equipment).forEach(item => {
-            if (!item) return;
-            const equipDef = CYOA.currentGame?.equipment?.find(e => e.id === item.id);
-            const attachments = equipDef?.attachments || item.attachments || [];
+        
+        // 保存存档
+        if (CYOA.DataManager) {
+            CYOA.DataManager.saveSaves();
+        }
+        
+        // 更新面板
+        CYOA.renderTreePanel();
+        CYOA.renderInventoryPanel();
+        CYOA.renderAttributesPanel();
+        CYOA.renderQuestsPanel();
+        CYOA.renderSkillsPanel?.();
+        CYOA.renderGameOptions();
+
+        // 检测行动类型（用于叙事权重和装备联动）
+        if (CYOA.currentSave && userMessage) {
+            CYOA.currentSave.lastActionType = CYOA.detectActionType(userMessage);
+        }
+
+        // 每轮综合系统更新（兴奋度/时长/习惯度/呼吸/痕迹/温度/困境/感官剥夺/羞耻）
+        CYOA.updateAllSystems();
+
+        // 检查章节推进条件
+        CYOA.checkChapterTransition();
+
+        // 滚动摘要：对话积累到一定量后自动压缩历史
+        triggerRollingSummary();
+    };
+
+    // ========== 渲染游戏选项按钮（含限步/缚手/禁言约束过滤与通用默认选项） ==========
+    CYOA.renderGameOptions = function() {
+        const container = document.getElementById('gameOptions');
+        if (!container || !CYOA.currentSave) return;
+        const node = CYOA.currentSave.nodes[CYOA.currentNodeId];
+        let options = (node && node.options) ? node.options : [];
+
+        // 兼容旧存档：若选项是纯字符串数组，转换为 { type, text } 对象
+        options = options.map(opt => {
+            if (typeof opt === 'string') return { type: 'action', text: opt.replace(/^[🔹◆]\s*/, '').trim() };
+            return opt;
+        });
+
+        const constraints = getActiveConstraints();
+        const limitedStepRe = /(逃跑|奔跑|快跑|跑走|跑开|跑出|跑去|跑向|跑过|冲出|冲向|冲去|冲刺|飞奔|跳过|跳下|跳上|跳出|跳开|跳跃|翻过|翻越|攀爬|攀上|离开|走出|走开|走去|走掉|逃离|逃走|远离|撤退|大步|迈步)/;
+        const noHandsRe = /(拿起|拿取|拿出|拿来|拿走|取出|取下|取来|捡起|拾起|抓住|抓取|抓起|握住|握紧|使用道具|使用物品|使用钥匙|脱下|脱掉|解开|解除|穿上|穿戴|装备上|卸下|投掷|丢出|扔掉|推开|拉开|打开门|打开箱|开锁)/;
+        const tetheredRe = /(离开|逃跑|逃离|逃走|前往|走向|移动到|换一个地方|走出|走开|走去|走掉|远离|撤退|跑出|跑去|跑向|冲出|冲向|冲去|溜走|出发|转移|去往|赶往)/;
+        const suspendedRe = /(走|跑|站|坐|跪|蹲|踢|踩|跳|迈步|行走|奔跑|跑步|散步|起身)/;
+        const groundPostureRe = /(跑|跳|冲|奔|冲刺|飞奔|跳跃|跳过|跳上)/;
+
+        const currentPosture = CYOA.currentSave?.posture || 'standing';
+        const arousalTier = CYOA.getArousalTier?.() || { value: 'calm' };
+        const arousalEffects = CONFIG.AROUSAL_GAMEPLAY_EFFECTS?.[arousalTier.value] || {};
+        const precisionRe = /(开锁|撬锁|解锁|精密|仔细|小心翼翼|谨慎|细致|制作|修理|拆解|组装|缝合|书写|绘制|瞄准|射击)/;
+
+        const beforeCount = options.length;
+        const filtered = options.filter(opt => {
+            if (opt.type === 'action') {
+                if (constraints.has('limited_step') && limitedStepRe.test(opt.text)) return false;
+                if (constraints.has('no_hands') && noHandsRe.test(opt.text)) return false;
+                if (constraints.has('tethered') && tetheredRe.test(opt.text)) return false;
+                if (currentPosture === 'suspended' && suspendedRe.test(opt.text)) return false;
+                if ((currentPosture === 'kneeling' || currentPosture === 'prone' || currentPosture === 'supine' || currentPosture === 'hogtied') && groundPostureRe.test(opt.text)) return false;
+                if (arousalEffects.filterPrecision && precisionRe.test(opt.text)) return false;
+                // 氧气过低：禁止体力行动
+                if ((CYOA.currentSave?.oxygen ?? 100) <= 25 && /跑|冲|跳|攀|爬|推|拉|搬|举/g.test(opt.text)) return false;
+                // 羞耻崩溃：禁止社交行动
+                const shameTier = CYOA.getShameTier?.()?.value;
+                if ((shameTier === 'humiliated' || shameTier === 'broken') && /交谈|说服|对话|谈判|请求|恳求|命令/g.test(opt.text)) return false;
+            }
+            if (opt.type === 'speech' && constraints.has('mute')) return false;
+            if (constraints.has('forced_open_mouth') && /唇语|用嘴说|吹口哨|吹哨|舔|吸吮|咬|吻|亲|啃|咀嚼|吃东西|喝水|饮|吞咽/.test(opt.text)) return false;
+            if (constraints.has('no_fingers') && /抓|握|捏|拿|拧|解|扣|按钮|打字|写字|手语|手指|指尖|拨|开锁|钥匙|操作/.test(opt.text)) return false;
+            return true;
+        });
+
+        // 限步/缚手/禁言时，在选项最前插入通用默认反应选项
+        const defaultActions = CONFIG.CONSTRAINT_DEFAULT_ACTIONS;
+        const inConstraint = constraints.has('limited_step') || constraints.has('no_hands') || constraints.has('mute') || constraints.has('tethered');
+        const hasDefaultActions = defaultActions && Array.isArray(defaultActions) && defaultActions.length > 0;
+        const displayList = (inConstraint && hasDefaultActions)
+            ? defaultActions.map(a => ({ _default: true, type: 'action', label: a.label, modifiers: a.modifiers }))
+                .concat(filtered.map(opt => ({ _default: false, ...opt })))
+            : filtered.map(opt => ({ _default: false, ...opt }));
+
+        // 约束提示
+        const anyFilteredByStep = constraints.has('limited_step') && options.some(opt => opt.type === 'action' && limitedStepRe.test(opt.text));
+        const anyFilteredByHands = constraints.has('no_hands') && options.some(opt => opt.type === 'action' && noHandsRe.test(opt.text));
+        const anyFilteredByFingers = constraints.has('no_fingers') && options.some(opt => /抓|握|捏|拿|拧|解|扣|按钮|打字|写字|手语|手指|指尖|拨|开锁|钥匙|操作/.test(opt.text));
+        const anyFilteredByMute = constraints.has('mute') && options.some(opt => opt.type === 'speech');
+        const anyFilteredByTether = constraints.has('tethered') && options.some(opt => opt.type === 'action' && tetheredRe.test(opt.text));
+        const anyFilteredByPosture = currentPosture !== 'standing' && options.some(opt => {
+            if (opt.type !== 'action') return false;
+            if (currentPosture === 'suspended' && suspendedRe.test(opt.text)) return true;
+            if (['kneeling', 'prone', 'supine', 'hogtied'].includes(currentPosture) && groundPostureRe.test(opt.text)) return true;
+            return false;
+        });
+        let constraintHints = [];
+        if (filtered.length < beforeCount) {
+            if (anyFilteredByStep) {
+                const lsP = getLimitedStepParams();
+                if (lsP) {
+                    const spdSign = (lsP.speedModifierPct >= 0 ? '+' : '') + lsP.speedModifierPct;
+                    constraintHints.push(t('ui.constraint.stepLimit', {cm: lsP.stepLimitCm, speed: spdSign}));
+                } else {
+                    constraintHints.push(t('ui.constraint.stepGeneric'));
+                }
+            }
+            if (anyFilteredByHands) constraintHints.push(t('ui.constraint.handsAction'));
+            if (anyFilteredByFingers) {
+                const fDef = CYOA.getActiveFingerRestraint?.();
+                constraintHints.push(t('ui.constraint.fingerRestrict', {label: fDef?.label || '约束'}));
+            }
+            if (anyFilteredByMute) {
+                if (constraints.has('forced_open_mouth')) {
+                    const muteGag = CYOA.getActiveGagType?.();
+                    if (muteGag?.suppressDrool) {
+                        constraintHints.push(t('ui.constraint.forcedMouth'));
+                    } else {
+                        constraintHints.push(t('ui.constraint.drooling'));
+                    }
+                } else {
+                    constraintHints.push(t('ui.constraint.gagged'));
+                }
+            }
+            if (anyFilteredByTether) {
+                const tetherInfo = CYOA.currentSave?.tether;
+                const tetherDef = (CONFIG.TETHER_TYPES || []).find(x => x.value === tetherInfo?.type);
+                constraintHints.push(t('ui.constraint.tethered'));
+            }
+            if (anyFilteredByPosture) {
+                const postureDef = (CONFIG.POSTURES || []).find(p => p.value === currentPosture);
+                constraintHints.push(t('ui.constraint.postureLimited', {posture: postureDef?.label || currentPosture}));
+            }
+            if (arousalEffects.filterPrecision && options.some(opt => opt.type === 'action' && precisionRe.test(opt.text))) {
+                constraintHints.push(t('ui.constraint.trembling', {reason: arousalTier.label}));
+            }
+            if (constraintHints.length === 0) constraintHints.push(t('ui.constraint.physicalLimit'));
+        }
+
+        container.innerHTML = '';
+        // 可折叠选项区块：纵向列表，默认收起，点击标题展开/收起
+        const header = document.createElement('div');
+        header.className = 'cyoa-options-header';
+        header.setAttribute('data-expanded', 'false');
+        const count = displayList.length;
+        header.innerHTML = `<span class="cyoa-options-title">${t('ui.panel.gameOptions')}</span> <span class="cyoa-options-count">(${t('ui.panel.gameOptionsCount', {n: count})})</span> <span class="cyoa-options-chevron">▶</span>`;
+        header.title = t('ui.panel.gameOptionsToggle');
+        header.style.cssText = 'display:flex;align-items:center;gap:6px;padding:8px 10px;background:var(--bg);border:1px solid var(--border);border-radius:var(--radius-md);cursor:pointer;font-size:13px;margin-top:6px;user-select:none;';
+        header.addEventListener('click', function() {
+            const expanded = this.getAttribute('data-expanded') === 'true';
+            this.setAttribute('data-expanded', expanded ? 'false' : 'true');
+            const listEl = container.querySelector('.cyoa-options-list');
+            const chevron = this.querySelector('.cyoa-options-chevron');
+            if (listEl) listEl.style.display = expanded ? 'none' : 'flex';
+            if (chevron) chevron.textContent = expanded ? '▶' : '▼';
+        });
+
+        const listWrap = document.createElement('div');
+        listWrap.className = 'cyoa-options-list';
+        listWrap.style.cssText = 'display:none;flex-direction:column;gap:6px;margin-top:6px;max-height:200px;overflow-y:auto;';
+
+        if (constraintHints.length) {
+            const hintEl = document.createElement('div');
+            hintEl.className = 'cyoa-options-constraint-hint';
+            hintEl.style.cssText = 'font-size:11px;color:var(--text-light,#666);margin-bottom:4px;font-style:italic;';
+            hintEl.textContent = constraintHints.join(' ');
+            listWrap.appendChild(hintEl);
+        }
+
+        displayList.forEach(item => {
+            const btn = document.createElement('button');
+            btn.type = 'button';
+            const isSpeech = item.type === 'speech';
+            btn.className = 'cyoa-btn cyoa-btn-secondary cyoa-option-btn';
+            if (isSpeech) {
+                btn.style.cssText += 'border-left:3px solid var(--primary,#4CAF50);';
+            }
+
+            if (item._default) {
+                btn.textContent = '🎬 ' + item.label;
+                btn.onclick = function() {
+                    if (item.modifiers && typeof CYOA.applyStatModifiers === 'function') {
+                        CYOA.applyStatModifiers(item.modifiers, true);
+                    }
+                    const msgInput = document.getElementById('gameMsg');
+                    if (msgInput) msgInput.value = item.label;
+                    CYOA.sendGameMessage();
+                };
+            } else {
+                const text = item.text || '';
+                btn.textContent = (isSpeech ? '💬 ' : '🎬 ') + text;
+                btn.onclick = function() {
+                    if (isSpeech) {
+                        const speechInput = document.getElementById('gameSpeech');
+                        if (speechInput) speechInput.value = text;
+                    } else {
+                        const actionInput = document.getElementById('gameMsg');
+                        if (actionInput) actionInput.value = text;
+                    }
+                    CYOA.sendGameMessage();
+                };
+            }
+            listWrap.appendChild(btn);
+        });
+
+        container.appendChild(header);
+        container.appendChild(listWrap);
+    };
+
+    // ========== 技能熟练度与等级 ==========
+    CYOA.addSkillProficiency = function(skillId, amount) {
+        if (!CYOA.currentSave?.skills) return null;
+        const skill = CYOA.currentSave.skills.find(s => s.id === skillId);
+        if (!skill) return null;
+
+        const maxLv = CONFIG.SKILL_MAX_LEVEL || 9;
+        const minLv = CONFIG.SKILL_MIN_LEVEL || 1;
+        const perLv = CONFIG.SKILL_PROFICIENCY_PER_LEVEL || 100;
+        const levelLabels = CONFIG.SKILL_LEVEL_LABELS || {};
+
+        if (!skill.level) skill.level = minLv;
+        if (typeof skill.proficiency !== 'number') skill.proficiency = 0;
+
+        skill.proficiency += amount;
+
+        let leveledUp = false;
+        while (skill.proficiency >= perLv && skill.level < maxLv) {
+            skill.proficiency -= perLv;
+            skill.level++;
+            leveledUp = true;
+        }
+        if (skill.level >= maxLv) {
+            skill.proficiency = Math.min(skill.proficiency, perLv);
+        }
+
+        persistSave();
+        CYOA.renderSkillsPanel?.();
+
+        if (leveledUp) {
+            const tag = levelLabels[skill.level] || '';
+            return { skill, newLevel: skill.level, label: tag };
+        }
+        return null;
+    };
+
+    CYOA.addSkillProficiencyByName = function(skillName, amount) {
+        if (!CYOA.currentSave?.skills) return null;
+        const skill = CYOA.currentSave.skills.find(s => s.name === skillName);
+        if (!skill) return null;
+        return CYOA.addSkillProficiency(skill.id, amount);
+    };
+
+    CYOA.getSkillLevel = function(skillId) {
+        const skill = CYOA.currentSave?.skills?.find(s => s.id === skillId);
+        if (!skill) return 0;
+        return skill.level || CONFIG.SKILL_MIN_LEVEL || 1;
+    };
+
+    CYOA.getSkillLevelLabel = function(level) {
+        const labels = CONFIG.SKILL_LEVEL_LABELS || {};
+        return labels[level] || '';
+    };
+
+    // 等级缩放：效果倍率（越高越强）
+    CYOA.getSkillEffectMultiplier = function(level) {
+        const lv = level || 1;
+        const scale = CONFIG.SKILL_EFFECT_SCALE_PER_LEVEL || 0.15;
+        return 1 + (lv - 1) * scale;
+    };
+
+    // 等级缩放：消耗倍率（越高消耗越少）
+    CYOA.getSkillCostMultiplier = function(level) {
+        const lv = level || 1;
+        const reduce = CONFIG.SKILL_COST_REDUCE_PER_LEVEL || 0.08;
+        const floor = CONFIG.SKILL_COST_FLOOR || 0.3;
+        return Math.max(floor, 1 - (lv - 1) * reduce);
+    };
+
+    // 按等级缩放后的实际消耗数量
+    CYOA.getScaledConsumeCost = function(baseAmount, level) {
+        return Math.max(1, Math.ceil(baseAmount * CYOA.getSkillCostMultiplier(level)));
+    };
+
+    // 按等级缩放后的效果描述字符串
+    CYOA.getScaledEffectText = function(baseEffect, level) {
+        if (!baseEffect) return '';
+        const mult = CYOA.getSkillEffectMultiplier(level);
+        if (mult === 1) return baseEffect;
+        return baseEffect + ` (×${mult.toFixed(2)})`;
+    };
+
+    // ========== 检查任务进度 ==========
+    CYOA.checkQuestProgress = async function(aiResponse) {
+        const currentSave = CYOA.currentSave;
+        if (!currentSave.quests) return;
+        
+        let questUpdated = false;
+        
+        // 遍历所有任务
+        currentSave.quests.forEach(quest => {
+            if (quest.status === 'completed' || quest.status === 'failed') return;
+            
+            // 检查任务是否应该开始
+            if (quest.status === 'locked' || quest.status === 'available') {
+                // 简单关键词触发（实际应该用更复杂的规则）
+                if (quest.unlockCondition && aiResponse.includes(quest.unlockCondition)) {
+                    quest.status = 'active';
+                    quest.started = true;
+                    questUpdated = true;
+                    
+                    // 添加系统消息
+                    CYOA.appendSystemMessage(`✨ 新任务开始：${quest.name}`);
+                }
+            }
+            
+            // 检查任务完成条件
+            if (quest.status === 'active' && quest.objectives) {
+                let allCompleted = true;
+                
+                quest.objectives.forEach((objective, idx) => {
+                    // 初始化进度
+                    if (!quest.progress) quest.progress = {};
+                    if (quest.progress[idx] === undefined) quest.progress[idx] = false;
+                    
+                    // 检查是否完成（简单关键词匹配）
+                    if (!quest.progress[idx] && aiResponse.includes(objective)) {
+                        quest.progress[idx] = true;
+                        questUpdated = true;
+                        CYOA.appendSystemMessage(`✅ 任务目标完成：${objective}`);
+                    }
+                    
+                    if (!quest.progress[idx]) allCompleted = false;
+                });
+                
+                if (allCompleted && quest.status === 'active') {
+                    quest.status = 'completed';
+                    quest.completed = true;
+                    questUpdated = true;
+                    
+                    // 发放奖励
+                    if (quest.rewards && quest.rewards.length > 0) {
+                        CYOA.grantQuestRewards(quest.rewards);
+                    }
+                    
+                    CYOA.appendSystemMessage(`🎉 任务完成：${quest.name}`);
+                }
+            }
+        });
+        
+        if (questUpdated) {
+            if (CYOA.DataManager) {
+                CYOA.DataManager.saveSaves();
+            }
+            CYOA.renderQuestsPanel();
+        }
+    };
+
+    // ========== 发放任务奖励 ==========
+    CYOA.grantQuestRewards = function(rewards) {
+        const currentSave = CYOA.currentSave;
+        const currentGame = CYOA.currentGame;
+        
+        rewards.forEach(reward => {
+            // 解析奖励格式：物品名称 或 技能名称 或 属性+5
+            if (reward.startsWith('物品:')) {
+                const itemName = reward.substring(3).trim();
+                const itemDef = currentGame.items?.find(i => i.name === itemName);
+                if (itemDef) {
+                    const newItem = JSON.parse(JSON.stringify(itemDef));
+                    newItem.id = CYOA.generateId();
+                    currentSave.inventory.push(newItem);
+                    CYOA.appendSystemMessage(`📦 获得物品：${itemName}`);
+                }
+            } else if (reward.startsWith('技能:')) {
+                const skillName = reward.substring(3).trim();
+                const skillDef = currentGame.skills?.find(s => s.name === skillName);
+                if (skillDef && !currentSave.skills.some(s => s.id === skillDef.id)) {
+                    currentSave.skills.push(JSON.parse(JSON.stringify(skillDef)));
+                    CYOA.appendSystemMessage(`✨ 学会技能：${skillName}`);
+                }
+            } else if (reward.includes('+')) {
+                // 属性提升
+                const match = reward.match(/([^+]+)\+(\d+)/);
+                if (match) {
+                    const attrName = match[1].trim();
+                    const value = parseInt(match[2]);
+                    const attr = currentSave.attributes?.find(a => a.name === attrName);
+                    if (attr) {
+                        attr.value = Math.min(attr.max, attr.value + value);
+                        CYOA.appendSystemMessage(`📈 ${attrName} +${value}`);
+                    }
+                }
+            }
+        });
+    };
             attachments.forEach(att => {
                 if (att.type === 'breath_restrict') {
                     const bDef = (CONFIG.BREATH_DEVICE_TYPES || []).find(b => b.value === att.breathType);
@@ -2041,92 +4025,6 @@
             canTurn: !tags.includes('restricts_head_turn') && !tags.includes('forces_head_position'),
             canNod:  !tags.includes('restricts_head_nod') && !tags.includes('forces_head_position')
         };
-    };
-
-    // ========== 每轮综合更新 ==========
-    CYOA.updateAllSystems = function() {
-        CYOA.calculateTurnArousal();
-        CYOA.updateDurations();
-        CYOA.updateHabituation();
-        CYOA.calculateBreath();
-        CYOA.decayMarksAndPain();
-        CYOA.decayTemp();
-        CYOA.updatePredicament();
-        CYOA.updateDeprivation();
-        CYOA.calculateLatex();
-        CYOA.updatePetplay();
-        CYOA.updateFurniture();
-        CYOA.updateIdentityErosion();
-        CYOA.updatePanic();
-        // 呼吸管对氧气的影响
-        const tube = CYOA.currentSave?.breathingTube;
-        if (tube?.active) {
-            const levels = CONFIG.BREATHING_TUBE_CONFIG?.flowLevels || {};
-            const lv = levels[tube.flowLevel];
-            if (lv && lv.oxygenRate) CYOA.modifyOxygen(lv.oxygenRate);
-        }
-        // 导电乳胶每轮兴奋度
-        const electro = CYOA.currentSave?.electroLatex;
-        if (electro?.active && electro.zones?.length > 0) {
-            const eCfg = CONFIG.ELECTRO_LATEX_CONFIG || {};
-            let totalArousal = 0;
-            let totalPain = 0;
-            electro.zones.forEach(z => {
-                const zoneDef = (eCfg.zones || []).find(zd => zd.value === z.zone);
-                const intDef = (eCfg.intensityLevels || []).find(i => i.value === z.intensity);
-                const sens = zoneDef?.sensitivity || 1;
-                totalArousal += (eCfg.baseArousalPerTurn || 3) * (intDef?.arousalMult || 0.5) * sens;
-                totalPain += (intDef?.painMult || 0) * 5 * sens;
-            });
-            if (totalArousal > 0) CYOA.modifyArousal?.(Math.round(totalArousal), 'electro_latex');
-            if (totalPain > 0) {
-                CYOA.currentSave.pain = Math.min(
-                    (CONFIG.IMPACT_CONFIG?.maxPain || 100),
-                    (CYOA.currentSave.pain || 0) + Math.round(totalPain)
-                );
-            }
-        }
-        // 复合姿势 + 跌倒检测
-        CYOA.resolveCompoundPosture();
-        CYOA.checkFallRisk();
-        // 口水系统
-        CYOA.updateDrool();
-
-        // 乳胶颜色 → 羞耻度加成
-        const _save = CYOA.currentSave;
-        if (_save?.latexColor && (_save.latexCoverage || 0) > 20) {
-            const colorDef = (CONFIG.LATEX_COLORS || []).find(c => c.value === _save.latexColor);
-            if (colorDef?.shameMod > 0) {
-                CYOA.modifyShame?.(colorDef.shameMod * 0.3, 'latex_color');
-            }
-        }
-
-        // 恐慌 → 属性惩罚
-        if ((_save?.panic || 0) > 40) {
-            const pCfg = CONFIG.PANIC_CONFIG || {};
-            const pTier = CYOA.getPanicTier?.();
-            if (pTier && (pTier.value === 'anxious' || pTier.value === 'panicked' || pTier.value === 'meltdown')) {
-                const penalty = pCfg.panicAttrPenalty || {};
-                const mult = pTier.value === 'meltdown' ? 2 : pTier.value === 'panicked' ? 1.5 : 1;
-                Object.entries(penalty).forEach(([attr, val]) => {
-                    if (_save.attributes?.[attr] != null) {
-                        _save.attributes[attr] = Math.max(0, _save.attributes[attr] + Math.round(val * mult * 0.2));
-                    }
-                });
-            }
-        }
-
-        // 羞耻自然衰减
-        const shameCfg = CONFIG.SHAME_CONFIG || {};
-        if (_save && (_save.shame || 0) > 0) {
-            CYOA.modifyShame(-(shameCfg.decayPerTurn || 1), 'natural_decay');
-        }
-
-        // ========== 新系统每轮更新 ==========
-        CYOA.updateEquipmentTimers();
-        CYOA.updateTravel();
-        CYOA.updateDependency();
-        CYOA.checkDiscoveries();
     };
 
     // ========== ① 装备计时器系统 ==========
@@ -3002,1032 +4900,6 @@
             const memCfg = CONFIG.MEMORY_CONFIG || {};
             const recentHistory = buildRecentHistory(memCfg.recentTurns || 6);
             const budgeted = applyTokenBudget(systemPrompt, recentHistory);
-
-            // 敏感词过滤
-            const maskedPrompt = maskSensitiveWords(budgeted.systemPrompt);
-            const maskedUserMessage = maskSensitiveWords(userMessage);
-            const maskedHistory = budgeted.historyMessages.map(m => ({
-                role: m.role, content: maskSensitiveWords(m.content)
-            }));
-
-            // 构建请求体：system + 历史 + 当前消息
-            const messages = [{ role: 'system', content: maskedPrompt }];
-            messages.push(...maskedHistory);
-            messages.push({ role: 'user', content: maskedUserMessage });
-
-            const requestBody = {
-                model: modelValue,
-                task: 'chat',
-                messages: messages,
-                stream: true
-            };
-            
-            log(`发送AI请求（RAG ${CYOA.getRAG().length}字 + 动态状态，${maskedHistory.length / 2}轮历史，prompt ${maskedPrompt.length}字）`);
-            
-            // 调用AI接口
-            const response = await fetch('ai_proxy.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(requestBody)
-            });
-            
-            if (!response.ok) {
-                throw new Error(`HTTP error ${response.status}`);
-            }
-            
-            // 处理流式响应
-            const reader = response.body.getReader();
-            const decoder = new TextDecoder('utf-8');
-            let buffer = '';
-            let fullResponse = '';
-            
-            while (true) {
-                const { done, value } = await reader.read();
-                if (done) break;
-                
-                buffer += decoder.decode(value, { stream: true });
-                const lines = buffer.split('\n');
-                buffer = lines.pop() || '';
-                
-                for (const line of lines) {
-                    const trimmed = line.trim();
-                    if (trimmed.startsWith('data: ')) {
-                        const data = trimmed.substring(6);
-                        if (data === '[DONE]') continue;
-                        
-                        try {
-                            const parsed = JSON.parse(data);
-                            const delta = parsed.choices?.[0]?.delta;
-                            if (delta) {
-                                let textChunk = delta.content || '';
-                                if (textChunk) {
-                                    fullResponse += textChunk;
-                                    aiDiv.textContent = fullResponse;
-                                    logEl.scrollTop = logEl.scrollHeight;
-                                }
-                            }
-                        } catch (e) {
-                            console.warn('解析流数据失败:', e);
-                        }
-                    }
-                }
-            }
-            
-            aiDiv.classList.remove('streaming');
-            
-            // 流式结束后检查游戏是否仍在运行（防止退出后崩溃）
-            if (!CYOA.currentSave || !CYOA.currentGame) {
-                _isSending = false;
-                return;
-            }
-            
-            // 敏感词回转：将 AI 回复中的安全替代词还原为原始敏感词
-            fullResponse = unmaskSensitiveWords(fullResponse);
-            aiDiv.textContent = fullResponse;
-
-            // 视觉/听觉过滤：根据当前装备的 blind/deaf 约束过滤 AI 回复后再显示与保存
-            const filteredResponse = applySensoryFilters(fullResponse);
-            if (filteredResponse !== fullResponse) {
-                aiDiv.textContent = filteredResponse;
-            }
-            
-            // 处理AI响应：传入过滤后文本用于显示，原文用于选项提取和任务检测
-            if (fullResponse) {
-                await CYOA.processAIResponse(fullResponse, userMessage, targetRole, filteredResponse);
-            }
-            
-        } catch (e) {
-            console.error('AI请求失败:', e);
-            aiDiv.textContent = `[错误] ${e.message}`;
-            aiDiv.classList.remove('streaming');
-        } finally {
-            _isSending = false;
-        }
-    };
-
-    // ========== 构建AI提示词 ==========
-
-    // ========== RAG 静态知识库 ==========
-    // 从游戏数据中提取不会每轮变化的"百科全书"式知识，缓存在 save 中
-    CYOA.generateRAG = function() {
-        const game = CYOA.currentGame;
-        const save = CYOA.currentSave;
-        if (!game || !save) return '';
-        const sections = [];
-
-        // 1) 游戏基础 + 叙述者核心指令
-        let header = `【${game.name}】`;
-        if (game.synopsis) header += `\n简介：${game.synopsis}`;
-        if (game.narrator?.prompt) header += `\n\n=== 叙述者核心指令（最高优先级）===\n${game.narrator.prompt}`;
-        if (game.narrator?.style) header += `\n叙述风格：${game.narrator.style}`;
-        sections.push(header);
-
-        // 2) 世界设定
-        const ws = game.worldSetting;
-        if (ws) {
-            let world = '=== 世界设定 ===';
-            if (ws.background) world += `\n时代背景：${ws.background}`;
-            if (ws.geography) world += `\n地理：${ws.geography}`;
-            if (ws.factions) world += `\n阵营：${ws.factions}`;
-            if (ws.socialStructure) world += `\n社会：${ws.socialStructure}`;
-            if (ws.history) world += `\n历史：${ws.history}`;
-            if (ws.custom) world += `\n${ws.custom}`;
-            if (ws.ruleTags?.length) {
-                const pathLabels = (ws.ruleTags || []).map(tag => {
-                    const p = (CONFIG.HEAVENLY_PATHS || []).find(x => x.value === tag);
-                    return p ? p.label : tag;
-                }).join('、');
-                world += `\n世界规则：${pathLabels}${ws.isFusionWorld ? '（融合世界，多规则并存，道纹可呈复合形态）' : ''}`;
-                world += '\n派系：理性派(K,J)、感性派(M,Q)、混乱派(C,G)、平衡派(Z,X)，相容性影响阵营交互';
-            }
-            sections.push(world);
-        }
-
-        // 3) 角色档案
-        if (game.characters?.length) {
-            let chars = '=== 角色档案 ===';
-            game.characters.forEach(c => {
-                chars += `\n\n【${c.name}】(${CYOA.getRoleTypeLabel(c.roleType)})`;
-                if (c.gender) chars += ` ${({male:'♂',female:'♀'})[c.gender] || ''}`;
-                if (c.personality?.length) chars += `\n性格：${c.personality.join('、')}`;
-                if (c.goal) chars += `\n目标：${c.goal}`;
-                if (c.background) chars += `\n背景：${c.background}`;
-                if (c.prompt) chars += `\nAI指令：${c.prompt}`;
-                if (c.professions?.length) {
-                    const profNames = c.professions.map(pid => game.professions?.find(p => p.id === pid)?.name).filter(Boolean);
-                    if (profNames.length) chars += `\n职业：${profNames.join('、')}`;
-                }
-                if (c.skills?.length) {
-                    const skillNames = c.skills.map(sid => game.skills?.find(s => s.id === sid)?.name).filter(Boolean);
-                    if (skillNames.length) chars += `\n技能：${skillNames.join('、')}`;
-                }
-                if (c.disciplineRules?.length || c.customRules?.length) {
-                    const ruleTexts = [
-                        ...(c.disciplineRules || []).map(rv => (CONFIG.DISCIPLINE_RULES || []).find(r => r.value === rv)?.label || rv),
-                        ...(c.customRules || [])
-                    ];
-                    if (ruleTexts.length) chars += `\n纪律规则：${ruleTexts.join('、')}`;
-                }
-            });
-            sections.push(chars);
-        }
-
-        // 4) 装备目录（精炼摘要）
-        if (game.equipment?.length) {
-            let equips = '=== 装备目录 ===';
-            game.equipment.forEach(e => {
-                equips += `\n- ${e.name}`;
-                if (e.slots?.length) equips += ` [${e.slots.map(s => CONFIG.EQUIPMENT_SLOTS.find(sl => sl.value === s)?.label || s).join(',')}]`;
-                if (e.constraints?.length) equips += ` [${e.constraints.map(c => CYOA.getConstraintLabel?.(c) || c).join(',')}]`;
-                if (e.material) { const mt = CONFIG.MATERIAL_TEMPLATES?.[e.material]; if (mt) equips += ` ${mt.label}`; }
-                if (e.locked) equips += ' 🔒';
-                if (e.attachments?.length) equips += ` +${e.attachments.map(a => a.name).join(',')}`;
-                if (e.description) equips += `：${e.description.length > 60 ? e.description.substring(0, 60) + '…' : e.description}`;
-            });
-            sections.push(equips);
-        }
-
-        // 5) 物品目录
-        if (game.items?.length) {
-            let items = '=== 物品目录 ===';
-            game.items.forEach(i => {
-                items += `\n- ${i.name}(${CYOA.getItemTypeLabel?.(i.itemType) || i.itemType})`;
-                if (i.itemType === 'relic' && i.relicGrade) items += ` [${i.relicGrade}级]`;
-                if (i.sideEffects) items += ` 副作用：${i.sideEffects.length > 30 ? i.sideEffects.substring(0, 30) + '…' : i.sideEffects}`;
-                if (i.description) items += `：${i.description.length > 40 ? i.description.substring(0, 40) + '…' : i.description}`;
-            });
-            sections.push(items);
-        }
-
-        // 6) 章节总览
-        if (game.chapters?.length) {
-            const sorted = [...game.chapters].sort((a, b) => (a.order || 0) - (b.order || 0));
-            let chs = `=== 章节总览（共${sorted.length}章，必须按序推进，禁跳章）===`;
-            sorted.forEach(ch => {
-                chs += `\n第${ch.order || '?'}章：${ch.title}`;
-                if (ch.description) chs += ` — ${ch.description.length > 50 ? ch.description.substring(0, 50) + '…' : ch.description}`;
-            });
-            sections.push(chs);
-        }
-
-        // 7) 任务目录
-        if (game.quests?.length) {
-            let qs = '=== 任务目录 ===';
-            game.quests.forEach(q => {
-                qs += `\n- ${q.name}(${CYOA.getQuestTypeLabel?.(q.questType) || q.questType})`;
-                if (q.description) qs += `：${q.description.length > 40 ? q.description.substring(0, 40) + '…' : q.description}`;
-            });
-            sections.push(qs);
-        }
-
-        // 8) 场景目录
-        if (game.scenes?.length) {
-            let sc = '=== 场景目录 ===';
-            game.scenes.forEach(s => {
-                sc += `\n- ${s.name}`;
-                if (s.location) sc += `(${s.location})`;
-                if (s.ruleTags?.length) {
-                    const labels = s.ruleTags.map(tag => (CONFIG.HEAVENLY_PATHS || []).find(p => p.value === tag)?.label || tag).join('、');
-                    sc += ` [${labels}]`;
-                }
-                if (s.description) sc += `：${s.description.length > 40 ? s.description.substring(0, 40) + '…' : s.description}`;
-            });
-            sections.push(sc);
-        }
-
-        // 9) 约束与状态规则摘要（静态系统知识）
-        const ruleLines = [];
-        const cd = CONFIG.CONSTRAINT_DESCRIPTIONS || {};
-        if (Object.keys(cd).length) {
-            ruleLines.push('=== 约束规则 ===');
-            Object.entries(cd).forEach(([k, v]) => {
-                const label = CYOA.getConstraintLabel?.(k) || k;
-                ruleLines.push(`${label}(${k})：${v.length > 80 ? v.substring(0, 80) + '…' : v}`);
-            });
-        }
-        const pd = CONFIG.POSTURE_DESCRIPTIONS || {};
-        if (Object.keys(pd).length) {
-            ruleLines.push('\n=== 姿势规则 ===');
-            Object.entries(pd).forEach(([k, v]) => {
-                const label = (CONFIG.POSTURES || []).find(p => p.value === k)?.label || k;
-                ruleLines.push(`${label}：${v}`);
-            });
-        }
-        const td = CONFIG.TETHER_DESCRIPTIONS || {};
-        if (Object.keys(td).length) {
-            ruleLines.push('\n=== 牵引规则 ===');
-            Object.entries(td).forEach(([k, v]) => {
-                const label = (CONFIG.TETHER_TYPES || []).find(t => t.value === k)?.label || k;
-                ruleLines.push(`${label}：${v.length > 80 ? v.substring(0, 80) + '…' : v}`);
-            });
-        }
-        const vd = CONFIG.VISION_DESCRIPTIONS || {};
-        if (Object.keys(vd).length) {
-            ruleLines.push('\n=== 视野类型 ===');
-            Object.entries(vd).forEach(([k, v]) => {
-                const label = CYOA.getVisionTypeLabel?.(k) || k;
-                ruleLines.push(`${label}(${k})：${v.length > 80 ? v.substring(0, 80) + '…' : v}`);
-            });
-        }
-        if (ruleLines.length > 1) sections.push(ruleLines.join('\n'));
-
-        // 预安全化：RAG 是 AI 的底层知识，用安全词描述世界观
-        const ragText = maskSensitiveWords(sections.join('\n\n'));
-
-        save._ragCache = ragText;
-        save._ragVersion = Date.now();
-        log(`RAG知识库已生成（${ragText.length}字，已预安全化）`);
-        return ragText;
-    };
-
-    // 获取 RAG 缓存（不存在则自动生成）
-    CYOA.getRAG = function() {
-        const save = CYOA.currentSave;
-        if (!save) return '';
-        if (!save._ragCache) CYOA.generateRAG();
-        return save._ragCache || '';
-    };
-
-    // 标记 RAG 需要重建（游戏数据变化时调用）
-    CYOA.invalidateRAG = function() {
-        if (CYOA.currentSave) CYOA.currentSave._ragCache = null;
-    };
-
-    // ========== Story Cards 触发与注入（FictionLab 风格） ==========
-    CYOA.getActiveStoryCards = function(userMessage) {
-        const game = CYOA.currentGame;
-        const save = CYOA.currentSave;
-        if (!game?.storyCards?.length) return '';
-
-        const path = getConversationPath();
-        const recentText = path.slice(-6).map(n => (n.userMessage || '') + ' ' + (n.assistantMessage || '')).join(' ');
-        const scanText = (recentText + ' ' + (userMessage || '')).toLowerCase();
-        const maxActive = CONFIG.STORY_CARD_MAX_ACTIVE || 3;
-
-        if (!save._activeStoryCards) save._activeStoryCards = [];
-        const active = save._activeStoryCards;
-
-        for (const card of game.storyCards) {
-            if (!card.triggerWords?.length || !card.content) continue;
-            const triggers = Array.isArray(card.triggerWords) ? card.triggerWords : [card.triggerWords];
-            const matched = triggers.some(w => {
-                const kw = String(w).trim().toLowerCase();
-                return kw && scanText.indexOf(kw) >= 0;
-            });
-            if (!matched) continue;
-            const existsIdx = active.findIndex(a => a.cardId === card.id);
-            if (existsIdx >= 0) {
-                active.splice(existsIdx, 1);
-            }
-            active.push({ cardId: card.id, order: Date.now() });
-            while (active.length > maxActive) active.shift();
-        }
-        save._activeStoryCards = active;
-
-        const toInject = [];
-        for (const { cardId } of active) {
-            const card = game.storyCards.find(c => c.id === cardId);
-            if (card?.content) toInject.push(`[${card.name || 'Lore'}] ${card.content}`);
-        }
-        if (toInject.length === 0) return '';
-        return '\n=== 【当前激活的 Lore】（触发词激活） ===\n' + toInject.join('\n\n') + '\n\n';
-    };
-
-    CYOA.buildGamePrompt = function(targetRole, userMessage) {
-        const currentGame = CYOA.currentGame;
-        const currentSave = CYOA.currentSave;
-        if (!currentGame || !currentSave) return t('ui.msg.gameStateError');
-
-        // RAG 架构：静态知识库（缓存） + Story Cards（触发注入） + 动态状态快照 + AI规则
-        let systemPrompt = t('prompt.opening') + '\n\n';
-        systemPrompt += CYOA.getRAG() + '\n\n';
-        const storyCardBlock = CYOA.getActiveStoryCards(userMessage);
-        if (storyCardBlock) systemPrompt += storyCardBlock;
-        
-        // ===== 当前游戏状态（动态快照，每轮重新生成） =====
-        systemPrompt += '=== 【当前游戏状态】 ===\n';
-        
-        // 当前角色
-        const currentCharacter = currentGame.characters?.find(c => c.name === targetRole);
-        systemPrompt += `${t('当前扮演角色：')}${targetRole}\n`;
-        if (currentCharacter?.goal) systemPrompt += `${t('角色当前目标：')}${currentCharacter.goal}\n`;
-        systemPrompt += '\n';
-        
-        // 当前属性
-        if (currentSave.attributes?.length > 0) {
-            systemPrompt += '--- 当前属性 ---\n';
-            currentSave.attributes.forEach(attr => {
-                systemPrompt += `${attr.name}: ${attr.value}/${attr.max}`;
-                if (attr.description) systemPrompt += ` (${attr.description})`;
-                systemPrompt += '\n';
-            });
-            systemPrompt += '\n';
-        }
-        
-        // 人性平衡协议（当游戏启用时）
-        if (currentGame.humanityBalanceEnabled) {
-            const hi = currentSave.humanityIndex ?? 70;
-            const dp = currentSave.divinePermission ?? 20;
-            const lockLv = currentSave.humanityBalanceLock ?? 0;
-            const lockDef = CONFIG.HUMANITY_BALANCE_CONFIG?.lockLevels?.[lockLv];
-            systemPrompt += '--- 人性平衡 ---\n';
-            systemPrompt += `人性指数：${hi}% | 神性权限：${dp}%`;
-            if (lockLv > 0 && lockDef) systemPrompt += ` | 当前封锁：${lockDef.label}（${lockDef.effects?.join('、') || ''}）`;
-            systemPrompt += '\n';
-            systemPrompt += '当人性指数<30%或神性权限>80%时触发封锁。保持人性锚点（感官体验、情感联结、道德选择）可恢复人性指数。\n\n';
-        }
-        
-        // 已学技能
-        if (currentSave.skills?.length > 0) {
-            const lvLabels = CONFIG.SKILL_LEVEL_LABELS || {};
-            const perLv = CONFIG.SKILL_PROFICIENCY_PER_LEVEL || 100;
-            systemPrompt += '--- 已学技能 ---\n';
-            currentSave.skills.forEach(skill => {
-                const lv = skill.level || 1;
-                const prof = typeof skill.proficiency === 'number' ? skill.proficiency : 0;
-                const tag = lvLabels[lv] || '';
-                const effectMult = CYOA.getSkillEffectMultiplier(lv);
-                const costMult = CYOA.getSkillCostMultiplier(lv);
-                systemPrompt += `- ${skill.name} (${getSkillTypeLabel(skill.skillType)}) LV${lv}${tag ? ' ' + tag : ''} [${t('熟练度: ')}${prof}/${perLv}]`;
-                if (skill.effect) systemPrompt += ` [${t('效果: ')}${skill.effect} ×${effectMult.toFixed(2)}]`;
-                if (skill.consumeItems?.length) {
-                    const consumeDesc = skill.consumeItems.map(c => {
-                        const scaledAmt = CYOA.getScaledConsumeCost(c.amount || 1, lv);
-                        return `${c.description || c.itemId}×${scaledAmt}`;
-                    }).join(', ');
-                    systemPrompt += ` [消耗: ${consumeDesc} ×${costMult.toFixed(2)}]`;
-                }
-                systemPrompt += '\n';
-            });
-            systemPrompt += '\n';
-        }
-        
-        // 当前装备（含锁定等级/耐久/降级状态）
-        if (Object.keys(currentSave.equipment || {}).length > 0) {
-            systemPrompt += '--- 当前装备 ---\n';
-            Object.entries(currentSave.equipment).forEach(([slot, item]) => {
-                const slotLabel = CONFIG.EQUIPMENT_SLOTS.find(s => s.value === slot)?.label || slot;
-                systemPrompt += `${slotLabel}: ${item.name}`;
-                const equipDef = currentGame.equipment?.find(e => e.id === item.id);
-                if (equipDef?.material) {
-                    const mt = CONFIG.MATERIAL_TEMPLATES?.[equipDef.material];
-                    systemPrompt += ` [材质: ${mt?.label || equipDef.material}]`;
-                }
-                const dura = getEquipDurability(item, equipDef);
-                if (dura.indestructible) {
-                    systemPrompt += ' [不可破坏]';
-                } else if (dura.max > 0) {
-                    const duraPct = Math.round((dura.current / dura.max) * 100);
-                    systemPrompt += ` [耐久: ${dura.current}/${dura.max} (${duraPct}%)]`;
-                    if (duraPct <= 25) systemPrompt += ' ⚠️严重磨损';
-                    else if (duraPct <= 50) systemPrompt += ' 有明显损伤';
-                }
-                const lockLv = getEquipLockLevel(item, equipDef);
-                if (lockLv > 0) {
-                    const lockDef = CONFIG.LOCK_LEVELS.find(l => l.value === lockLv);
-                    systemPrompt += ` [锁定: Lv${lockLv} ${lockDef?.label || ''}]`;
-                }
-                if (item._degradedStepLimitCm !== undefined) {
-                    systemPrompt += ` [约束已降级: 步幅放宽至${item._degradedStepLimitCm}cm]`;
-                }
-                if (item.statModifiers) systemPrompt += ` (${item.statModifiers})`;
-                systemPrompt += '\n';
-            });
-            systemPrompt += '\n';
-        }
-        
-        // 当前激活的约束（来自已穿戴装备）
-        const activeConstraints = getActiveConstraints();
-        if (activeConstraints.size > 0) {
-            systemPrompt += '--- 当前身体约束状态 ---\n';
-            systemPrompt += '角色目前受到以下物理约束（仅在与当前行动相关时自然提及，不要每轮逐一描述）：\n';
-            activeConstraints.forEach(c => {
-                const label = CYOA.getConstraintLabel?.(c) || c;
-                let desc = CYOA.t(CONFIG.CONSTRAINT_DESCRIPTIONS?.[c] || '');
-                let extra = '';
-                if (c === 'limited_step') {
-                    const lsP = getLimitedStepParams();
-                    if (lsP) {
-                        const tier = getLimitedStepTier(lsP.stepLimitCm);
-                        const spdStr = lsP.speedModifierPct >= 0 ? `+${lsP.speedModifierPct}%` : `${lsP.speedModifierPct}%`;
-                        extra = `  [${CYOA.t(tier?.label || '限步')} | ${CYOA.lang === 'en' ? 'max stride' : '步幅上限'}: ${lsP.stepLimitCm}cm | ${CYOA.lang === 'en' ? 'speed' : '移动速度'}: ${spdStr}]`;
-                        if (tier?.description) desc = CYOA.t(tier.description);
-                    }
-                }
-                if (c === 'blind' || c === 'vision_restricted') {
-                    const vt = getActiveVisionType() || (c === 'blind' ? 'full_blind' : 'pinhole');
-                    const vtLabel = CYOA.getVisionTypeLabel?.(vt) || vt;
-                    extra = `  [${CYOA.lang === 'en' ? 'vision type' : '视野类型'}: ${vtLabel}]`;
-                    if (CONFIG.VISION_DESCRIPTIONS?.[vt]) desc = CYOA.t(CONFIG.VISION_DESCRIPTIONS[vt]);
-                }
-                if (c === 'chastity') {
-                    const pChar = currentGame.characters?.find(ch => ch.id === currentSave.playerCharacterId);
-                    const g = pChar?.gender || 'unknown';
-                    const gTag = g === 'female' ? '♀' : g === 'male' ? '♂' : '';
-                    if (gTag) extra = `  [${gTag}]`;
-                }
-                systemPrompt += `- ${label}（${c}）：${desc}${extra}\n`;
-            });
-            if (activeConstraints.has('mute')) {
-                const gagDef = CYOA.getActiveGagType?.();
-                if (activeConstraints.has('forced_open_mouth')) {
-                    const hasOralSheath = gagDef?.suppressDrool;
-                    systemPrompt += `\n[重要] 角色口腔被${gagDef?.label || '口枷'}强制撑开——嘴唇完全无法闭合，不能做唇语（主动用嘴唇传达信息）、不能舔唇。但角色仍可观察他人嘴唇动作（读唇）来理解他人在说什么。`;
-                    if (hasOralSheath) {
-                        systemPrompt += `\n口腔内部被医用级乳胶口腔套完全覆盖，精密复刻了真实口腔的舌面、上颚纹理和牙龈弹性。内置导流管网将唾液自动引向咽喉吞咽，下巴和面部保持干燥整洁——不会流口水。`;
-                        systemPrompt += `\n口腔套可作为基座与阳具口塞等设备嵌套，被侵入时仿真内壁提供逼真的口腔触感。`;
-                        systemPrompt += '\n发出的声音仅限于喉音和含混的元音——"啊...呜...哈..."——嘴被锁定张开，说话完全不可能。';
-                        systemPrompt += '\n仅在相关动作触发时简短提及口腔异物感。不应描写流口水。\n';
-                    } else {
-                        systemPrompt += `\n持续且不可控地流口水。口水从嘴角、下巴不断滴落，浸湿胸前。`;
-                        const droolVal = currentSave.drool || 0;
-                        const droolCfg = CONFIG.DROOL_CONFIG || {};
-                        if (droolVal >= (droolCfg.heavyThreshold || 70)) {
-                            systemPrompt += '\n口水已经大量流出，下巴、胸口、甚至腿部都被唾液浸湿——这种完全失控的生理反应带来持续的羞耻。';
-                        } else if (droolVal >= (droolCfg.messThreshold || 30)) {
-                            systemPrompt += '\n口水开始明显积聚并溢出，下巴和胸口已经出现潮湿痕迹。';
-                        }
-                        systemPrompt += '\n发出的声音仅限于喉音、呻吟和含混不清的元音——不是"唔嗯"而是"啊...呜...哈..."因为嘴是张开的。';
-                        systemPrompt += '\n张口导致说话不可能；流口水效果在涉及口部动作时自然提及即可，无需每轮重复。\n';
-                    }
-                } else {
-                    systemPrompt += '\n[重要] 角色被禁言，无法正常说话，只能发出模糊的声音（唔、嗯等）。仅在角色试图说话时体现。\n';
-                    if (gagDef) {
-                        systemPrompt += `口塞类型：${gagDef.label}——${gagDef.desc}\n`;
-                    }
-                }
-            }
-            if (activeConstraints.has('blind')) {
-                systemPrompt += '\n[重要] 角色完全目盲——视线被彻底剥夺，眼前是纯粹的黑暗，没有任何视觉信号。\n';
-                systemPrompt += '不应出现视觉描写（看见、看到、望见等），改用听觉、触觉、嗅觉。\n';
-            }
-            if (activeConstraints.has('vision_restricted')) {
-                const vType = getActiveVisionType() || 'pinhole';
-                const vtLabel = CYOA.getVisionTypeLabel?.(vType) || vType;
-                const vtDesc = CYOA.t(CONFIG.VISION_DESCRIPTIONS?.[vType] || '');
-                systemPrompt += `\n[重要] 角色视野受限（非目盲）——类型: ${vtLabel}。${vtDesc}\n`;
-                systemPrompt += '角色仍保有有限视觉，按以下类型调整：\n';
-                switch (vType) {
-                    case 'pinhole':
-                        systemPrompt += '视觉仅限极小范围内的破碎画面（一道光线、一个模糊轮廓），其余是黑暗。应使用"勉强瞥见""针尖大小的光""破碎的影子"等措辞，但角色确实能看到一些东西。\n';
-                        break;
-                    case 'translucent':
-                        systemPrompt += '视觉为模糊的色块和重影，能感知光暗与大致轮廓，但无法辨认面孔、文字或细节。应使用"模糊""朦胧""隐约可见""色块"等措辞。\n';
-                        break;
-                    case 'fixed_gaze':
-                        systemPrompt += '视觉仅限正前方极窄范围，正前方视觉清晰，但完全没有余光，侧面和身后是盲区。应强调"无法转头""余光消失""背后的恐惧"等。\n';
-                        break;
-                    case 'multiphole':
-                        systemPrompt += '视觉为多个重叠的碎片画面，像透过万花筒，距离感和空间感严重扭曲。应使用"碎片""重叠""眩晕""万花筒"等措辞。\n';
-                        break;
-                    default:
-                        systemPrompt += '角色有部分视觉能力，根据受限程度适当包含有限的视觉描写。\n';
-                        break;
-                }
-            }
-            if (activeConstraints.has('deaf')) {
-                const earDev = CYOA.getActiveEarDevice?.();
-                if (earDev?.hearController) {
-                    systemPrompt += `\n[重要] 角色佩戴${earDev.label || '耳部装置'}——外界声音被隔绝，仅能听到控制者的通讯。叙述中不含其他听觉描写。\n`;
-                } else {
-                    systemPrompt += `\n[重要] 角色${earDev ? '佩戴' + earDev.label + '——' : ''}耳聋，无法听到声音。不含听觉描写。\n`;
-                }
-            }
-            if (activeConstraints.has('limited_step')) {
-                const lsParams = getLimitedStepParams();
-                if (lsParams) {
-                    const spdText = lsParams.speedModifierPct >= 0 ? `+${lsParams.speedModifierPct}%` : `${lsParams.speedModifierPct}%`;
-                    const tier = getLimitedStepTier(lsParams.stepLimitCm);
-                    const tierLabel = tier ? `（${tier.label}）` : '';
-                    const tierDesc = tier ? tier.description : '';
-                    systemPrompt += `\n[重要] 角色步幅受限${tierLabel}，最大步幅仅 ${lsParams.stepLimitCm}cm，移动速度 ${spdText}。${tierDesc}`;
-                    systemPrompt += `\n选项不应包含跑、跳等剧烈运动。仅在角色移动时简短提及步幅受限感。\n`;
-                } else {
-                    systemPrompt += '\n[重要] 角色步幅受限，无法快速移动或大幅位移。生成的选项不应包含跑、跳等剧烈运动。\n';
-                }
-            }
-            if (activeConstraints.has('no_hands')) {
-                systemPrompt += '\n[重要] 角色双手被缚，无法抓取、操作物品。生成的选项不应包含需要手部操作的动作。\n';
-            }
-            if (activeConstraints.has('no_fingers')) {
-                const fingerDef = CYOA.getActiveFingerRestraint?.();
-                const deviceLabel = fingerDef?.label || '约束装置';
-                const shapeLabel = fingerDef?.shapeLabel || '固定';
-                systemPrompt += `\n[重要] 角色手指被${deviceLabel}约束在"${shapeLabel}"形态——完全丧失精细操作能力。`;
-                systemPrompt += `${fingerDef?.desc || '无法抓取物品、按按钮、解开扣子或操作任何需要手指灵活度的事物。'}`;
-                if (fingerDef?.canTouch) {
-                    systemPrompt += '但手掌/指尖仍有一定触觉，可以以粗糙的方式推、拍、蹭。';
-                } else {
-                    systemPrompt += '触觉也被严重削弱，手变成了无感的肢端。';
-                }
-                systemPrompt += '生成的选项不应包含需要手指精细动作的行为（如解锁、打字、系绳、手语等）。\n';
-            }
-            if (activeConstraints.has('chastity')) {
-                const pChar = currentGame.characters?.find(c => c.id === currentSave.playerCharacterId);
-                const gender = pChar?.gender || 'unknown';
-                let chDesc = '\n[重要] 角色下体被贞操装置封锁，无法触碰或暴露私密部位。';
-                if (gender === 'female') {
-                    chDesc += '该角色为女性，装置覆盖阴道、尿道与后穴三处。';
-                } else if (gender === 'male') {
-                    chDesc += '该角色为男性，装置封锁阳具并覆盖后穴。';
-                }
-                chDesc += '装置存在感仅在体位变化或试图脱除时提及。\n';
-                systemPrompt += chDesc;
-            }
-            // 挣扎系统提示
-            const hasLockedEquip = Object.values(currentSave.equipment || {}).some(item => {
-                const ed = currentGame.equipment?.find(e => e.id === item?.id);
-                return getEquipLockLevel(item, ed) > 0;
-            });
-            if (hasLockedEquip) {
-                systemPrompt += '\n[挣扎系统] 角色身上有锁定的装备。当角色进行挣扎、扯动束缚等动作时，装备耐久度会降低。';
-                systemPrompt += '耐久耗尽的装备会损坏脱落，低耐久装备的约束效果会降级（如步幅放宽、视野裂缝）。';
-                systemPrompt += '现实逻辑：手被绑时只能挣扎手/脚部位，解开其他部位需要先解放双手或使用外物。';
-                systemPrompt += '永久锁死(Lv5)的装备无论如何都无法解除。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 牵引状态段落
-        if (currentSave.tether?.active) {
-            const t = currentSave.tether;
-            const tetherDef = (CONFIG.TETHER_TYPES || []).find(x => x.value === t.type);
-            const chainDef = (CONFIG.TETHER_CHAIN_LENGTHS || []).find(x => x.value === t.chainLength);
-            const tetherDesc = CYOA.t(CONFIG.TETHER_DESCRIPTIONS?.[t.type] || '');
-            const slotLabel = t.sourceSlot ? CYOA.getSlotLabel?.(t.sourceSlot) || t.sourceSlot : '未知部位';
-            systemPrompt += '--- 牵引状态 ---\n';
-            systemPrompt += '⚠️ 玩家当前被牵引：\n';
-            systemPrompt += `- 连接部位：${slotLabel}的D环\n`;
-            systemPrompt += `- 牵引类型：${tetherDef?.label || t.type}`;
-            if (t.targetName) systemPrompt += `（被[${t.targetName}]牵住）`;
-            systemPrompt += '\n';
-            if (chainDef) systemPrompt += `- 链长：${chainDef.label}，活动范围约${chainDef.movementPct}%\n`;
-            if (tetherDesc) systemPrompt += tetherDesc + '\n';
-            if (t.type === 'npc_lead') {
-                systemPrompt += '[重要] 玩家无法自行选择目的地，只能被动跟随牵引者。任何试图挣脱或偏离方向的动作都会通过牵引绳传来强制拉扯。\n';
-            } else if (t.type === 'fixed_anchor') {
-                systemPrompt += '[重要] 玩家被固定在锚点上，无法离开当前区域。活动范围严格限制在链条长度内。\n';
-            } else if (t.type === 'suspended') {
-                systemPrompt += '[重要] 玩家被吊离地面，双脚悬空，无法行走或站立。所有地面移动类动作不可用。\n';
-            } else if (t.type === 'short_chain') {
-                systemPrompt += '[重要] 玩家被极短链条固定，几乎无法移动，连转身都受到严格限制。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 姿势状态段落
-        if (currentSave.posture && currentSave.posture !== 'standing') {
-            const postureDef = (CONFIG.POSTURES || []).find(p => p.value === currentSave.posture);
-            const postureDesc = CYOA.t(CONFIG.POSTURE_DESCRIPTIONS?.[currentSave.posture] || '');
-            systemPrompt += '--- 当前姿势 ---\n';
-            systemPrompt += `玩家当前姿势：${postureDef?.label || currentSave.posture}\n`;
-            if (postureDesc) systemPrompt += `${CYOA.lang === 'en' ? 'Effect' : '效果'}：${postureDesc}\n`;
-            if (currentSave.posture === 'suspended') {
-                systemPrompt += '[重要] 玩家双脚离地，无法行走或站立，所有地面移动类动作不可用。\n';
-            } else if (currentSave.posture === 'prone' || currentSave.posture === 'supine') {
-                systemPrompt += '[重要] 玩家躺在地面上，需要先起身才能行走。\n';
-            } else if (currentSave.posture === 'hogtied') {
-                systemPrompt += '[重要] 玩家四肢被反缚，几乎丧失所有自主移动能力。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 兴奋度状态段落
-        const arousalVal = currentSave.arousal || 0;
-        if (arousalVal > 0) {
-            const arousalTier = CYOA.getArousalTier();
-            const arousalDesc = CYOA.t(CONFIG.AROUSAL_DESCRIPTIONS?.[arousalTier.value] || '');
-            systemPrompt += '--- 兴奋度状态 ---\n';
-            systemPrompt += `当前兴奋度：${arousalVal}/100（${arousalTier.label}）\n`;
-            if (arousalDesc) systemPrompt += `${arousalDesc}\n`;
-            // 活跃刺激器
-            const activeStims = currentSave.activeStimulators || [];
-            if (activeStims.length > 0) {
-                systemPrompt += '⚡ 活跃刺激装置：\n';
-                activeStims.forEach(s => {
-                    if (s.mode === 'off') return;
-                    const modeDef = (CONFIG.STIMULATOR_MODES || []).find(m => m.value === s.mode);
-                    const intDef = (CONFIG.STIMULATOR_INTENSITIES || []).find(i => i.value === s.intensity);
-                    systemPrompt += `- ${s.attachmentName}（${s.stimType === 'shock' ? '电击' : '振动'}）模式：${modeDef?.label || s.mode}，强度：${intDef?.label || s.intensity}\n`;
-                });
-            }
-            // 兴奋度对叙述的约束指令
-            if (arousalTier.value === 'aroused' || arousalTier.value === 'heated' || arousalTier.value === 'critical') {
-                systemPrompt += `[重要] 角色兴奋度「${arousalTier.label}」。与行动相关时简短体现身体反应：`;
-                if (arousalTier.value === 'aroused') {
-                    systemPrompt += '呼吸加深、注意力分散、对接触过度敏感。角色尚能勉强保持理智，但动作已明显受到生理干扰。\n';
-                } else if (arousalTier.value === 'heated') {
-                    systemPrompt += '全身发热、肌肉颤抖、思维模糊。角色难以进行精细操作或保持冷静对话，身体反应已经难以掩饰。\n';
-                } else {
-                    systemPrompt += '身体完全被生理冲动支配、四肢不自主颤抖、呼吸紊乱、意识模糊。角色几乎无法正常思考或行动。\n';
-                }
-            }
-            // 贞操锁+高兴奋度
-            const hasChastity = activeConstraints.has('chastity');
-            if (hasChastity && arousalVal >= 41) {
-                systemPrompt += '[重要] 贞操装置封锁，无法释放兴奋度。仅在相关情境下简短提及。\n';
-            }
-            systemPrompt += '\n';
-        }
-        
-        // 纪律规则注入
-        const npcChars = currentGame.characters?.filter(c => c.roleType !== 'playable' && (c.disciplineRules?.length > 0 || c.customRules?.length > 0)) || [];
-        if (npcChars.length > 0) {
-            systemPrompt += '--- 纪律规则 ---\n';
-            systemPrompt += '⚠️ 以下NPC对玩家有纪律要求，违反会降低玩家的顺从度并触发惩罚：\n';
-            npcChars.forEach(npc => {
-                systemPrompt += `[${npc.name}] 的规则：\n`;
-                (npc.disciplineRules || []).forEach(rv => {
-                    const rd = (CONFIG.DISCIPLINE_RULES || []).find(r => r.value === rv);
-                    if (rd) systemPrompt += `- ${rd.label}：${rd.description}\n`;
-                });
-                (npc.customRules || []).forEach(cr => {
-                    systemPrompt += `- (自定义) ${cr}\n`;
-                });
-            });
-            const obAttr = currentSave.attributes?.find(a => a.name === 'obedience');
-            const fnAttr = currentSave.attributes?.find(a => a.name === 'fondness');
-            if (obAttr) systemPrompt += `当前顺从度：${obAttr.value}/${obAttr.max || 100}\n`;
-            if (fnAttr) systemPrompt += `当前好感度：${fnAttr.value}/${fnAttr.max || 100}\n`;
-            const recentV = (currentSave.violations || []).slice(-3);
-            if (recentV.length > 0) {
-                systemPrompt += `近期违规(${recentV.length}次)：` + recentV.map(v => v.rule).join(', ') + '\n';
-                systemPrompt += '轻度违规→NPC口头警告/叙事惩罚；重度违规→自动触发惩罚动作（收紧装备、强制姿势等）。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 习惯度 + 姿势不适描写
-        const habEntries = Object.entries(currentSave.habituation || {}).filter(([, v]) => v > 10);
-        if (habEntries.length > 0) {
-            systemPrompt += '--- 约束习惯度 ---\n';
-            habEntries.forEach(([c, v]) => {
-                const tier = CYOA.getHabituationTier(c);
-                const label = CYOA.getConstraintLabel?.(c) || c;
-                systemPrompt += `- ${label}：习惯度 ${v}/100（${tier.label}）${tier.desc}\n`;
-            });
-            const highHab = habEntries.filter(([, v]) => v >= 61);
-            if (highHab.length > 0) {
-                systemPrompt += '[重要] 身体已对部分约束产生依赖。若约束被移除时才体现戒断反应。\n';
-            }
-            systemPrompt += '\n';
-        }
-        // 戒断效应
-        if (currentSave.withdrawalEffects?.length > 0) {
-            systemPrompt += '--- 戒断效应 ---\n';
-            systemPrompt += '⚠️ 角色正在经历约束移除后的戒断反应：\n';
-            currentSave.withdrawalEffects.forEach(w => {
-                const label = CYOA.getConstraintLabel?.(w.constraintType) || w.constraintType;
-                systemPrompt += `- ${label}戒断（${w.severity}），剩余${w.turnsRemaining}轮：皮肤上残留幻触，身体不自觉地寻找已消失的束缚感。\n`;
-            });
-            systemPrompt += '约束移除后的身体记忆（幻触、空虚）在相关场景下偶尔提及即可。\n\n';
-        }
-        // 姿势不适
-        const posture = currentSave.posture || 'standing';
-        const pDur = currentSave.postureDuration || 0;
-        const durEff = CONFIG.DURATION_EFFECTS?.postureDiscomfort?.[posture];
-        if (durEff && pDur >= durEff.startTurn) {
-            const discomfort = Math.min(durEff.maxDiscomfort, (pDur - durEff.startTurn) * durEff.perTurn);
-            if (discomfort > 0) {
-                systemPrompt += `--- 姿势不适 ---\n`;
-                systemPrompt += `玩家已保持${(CONFIG.POSTURES || []).find(p => p.value === posture)?.label || posture}姿势 ${pDur} 轮。不适度：${discomfort}/${durEff.maxDiscomfort}\n`;
-                systemPrompt += `${durEff.desc}\n`;
-                systemPrompt += '姿势维持的不适仅在角色尝试改变姿势或长时间维持后提及。\n\n';
-            }
-        }
-
-        // 羞耻状态
-        if ((currentSave.shame || 0) > 10) {
-            const shameTier = CYOA.getShameTier();
-            systemPrompt += `--- 羞耻状态 ---\n`;
-            systemPrompt += `羞耻度：${currentSave.shame}/100（${shameTier.label}）\n`;
-            if (shameTier.value === 'humiliated' || shameTier.value === 'broken') {
-                systemPrompt += '[重要] 角色处于极度羞耻状态。仅在社交互动时体现。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 氧气/呼吸状态
-        if ((currentSave.oxygen ?? 100) < 90) {
-            const oxyTier = CYOA.getOxygenTier();
-            systemPrompt += `--- 呼吸状态 ---\n`;
-            systemPrompt += `氧气值：${currentSave.oxygen}/100（${oxyTier.label}）\n`;
-            if (oxyTier.value === 'desperate' || oxyTier.value === 'critical') {
-                systemPrompt += '[重要] 角色呼吸严重受限！行动受缺氧影响，简短体现呼吸困难。\n';
-            } else if (oxyTier.value === 'blackout') {
-                systemPrompt += '[严重] 角色濒临窒息昏厥！NPC应注意安全。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 痛感和痕迹
-        if ((currentSave.pain || 0) > 5 || (currentSave.marks?.length > 0)) {
-            systemPrompt += `--- 痛感与痕迹 ---\n`;
-            if (currentSave.pain > 0) systemPrompt += `痛感等级：${currentSave.pain}/100\n`;
-            if (currentSave.marks?.length > 0) {
-                systemPrompt += '身体痕迹：\n';
-                currentSave.marks.forEach(m => {
-                    const mDef = CONFIG.MARK_TYPES?.[m.type];
-                    const zDef = (CONFIG.IMPACT_ZONES || []).find(z => z.value === m.zone);
-                    systemPrompt += `- ${zDef?.label || m.zone}：${mDef?.label || m.type}（剩余${m.turnsRemaining}轮）${mDef?.desc || ''}\n`;
-                });
-                systemPrompt += '身体痕迹仅在被触碰或穿戴装备时提及。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 温度状态
-        const activeTemps = Object.entries(currentSave.bodyTemp || {}).filter(([, v]) => v !== 0);
-        if (activeTemps.length > 0) {
-            systemPrompt += `--- 温度状态 ---\n`;
-            activeTemps.forEach(([zone, temp]) => {
-                const zDef = (CONFIG.TEMP_ZONES || []).find(z => z.value === zone);
-                const state = temp > 0 ? `高温(+${temp})` : `低温(${temp})`;
-                systemPrompt += `- ${zDef?.label || zone}：${state}\n`;
-            });
-            systemPrompt += '温度影响在体位变化或外界刺激时偶尔提及。\n\n';
-        }
-
-        // 困境束缚
-        if (currentSave.predicament) {
-            const pred = currentSave.predicament;
-            const pDef = (CONFIG.PREDICAMENT_TYPES || []).find(p => p.value === pred.type);
-            systemPrompt += `--- 困境束缚 ---\n`;
-            systemPrompt += `类型：${pDef?.label || pred.type}——${pDef?.desc || ''}\n`;
-            systemPrompt += `已持续 ${pred.turnsActive} 轮，累积痛苦：${pred.painAccum}/100\n`;
-            systemPrompt += '困境束缚的两难感仅在角色面临选择时体现。\n\n';
-        }
-
-        // 训练状态
-        const trainEntries = Object.entries(currentSave.trainings || {}).filter(([, v]) => v.level > 0);
-        if (trainEntries.length > 0) {
-            systemPrompt += `--- 训练进度 ---\n`;
-            trainEntries.forEach(([type, data]) => {
-                const tDef = (CONFIG.TRAINING_TYPES || []).find(t => t.value === type);
-                const lvLabel = CONFIG.TRAINING_LEVEL_LABELS?.[data.level] || data.level;
-                systemPrompt += `- ${tDef?.label || type}：Lv.${data.level}（${lvLabel}）进度 ${data.progress}%\n`;
-            });
-            systemPrompt += '高等级训练使角色更服从，对应技能更熟练。NPC可根据训练进度调整指令难度。\n\n';
-        }
-
-        // 感官剥夺增强
-        const depLevel = CYOA.getDeprivationLevel();
-        if (depLevel) {
-            systemPrompt += `--- 感官剥夺 ---\n`;
-            systemPrompt += `剥夺等级：${depLevel.label}——${depLevel.desc}\n`;
-            const depDur = currentSave.deprivationDuration || 0;
-            const depCfg = CONFIG.DEPRIVATION_CONFIG || {};
-            if (depDur >= (depCfg.timeDistortionStart || 8)) {
-                systemPrompt += '⚠ 时间扭曲：角色已失去时间感知。\n';
-            }
-            if (depDur >= (depCfg.spaceDisorientStart || 5)) {
-                systemPrompt += '⚠ 空间迷失：角色已失去空间定位感，不知自己面朝哪里、身处何处。\n';
-            }
-            systemPrompt += '剩余感官增敏，触碰放大。仅在有触觉交互时提及。\n\n';
-        }
-        if ((currentSave.sensoryOverload || 0) > 0) {
-            systemPrompt += `--- 感官过载 ---\n`;
-            systemPrompt += `感官恢复中，过载剩余 ${currentSave.sensoryOverload} 轮。所有感官输入都被极度放大，光线刺眼、声音震耳、触碰过电。\n\n`;
-        }
-
-        // 乳胶封闭状态（含层叠、自紧、护理、汗液、颜色、开口）
-        if ((currentSave.latexCoverage || 0) > 10) {
-            const covTier = CYOA.getLatexCoverageTier();
-            const heatTier = CYOA.getLatexHeatTier();
-            const sweatTier = CYOA.getLatexSweatTier();
-            systemPrompt += `--- 乳胶封闭 ---\n`;
-            systemPrompt += `覆盖率：${currentSave.latexCoverage}%（${covTier?.label || '局部'}）\n`;
-            systemPrompt += `体温：${currentSave.latexHeat || 0}（${heatTier.label}）\n`;
-            // 颜色
-            if (currentSave.latexColor) {
-                const colorDef = (CONFIG.LATEX_COLORS || []).find(c => c.value === currentSave.latexColor);
-                if (colorDef) {
-                    systemPrompt += `颜色：${colorDef.label}——${colorDef.desc}\n`;
-                    if (currentSave.latexColor === 'transparent') {
-                        systemPrompt += '⚠ 透明乳胶：身体细节暴露可见。在有他人在场时偶尔提及暴露感。\n';
-                    } else if (currentSave.latexColor === 'metallic') {
-                        systemPrompt += '⚠ 金属反光乳胶：穿戴者变为无面的反射体，镜面表面消解了人类身份。叙述应强调物化的视觉效果。\n';
-                    }
-                }
-            }
-            if ((currentSave.latexLayers || 0) > 1) {
-                systemPrompt += `层数：${currentSave.latexLayers} 层——多层乳胶叠加，触觉进一步隔离，散热能力指数下降。\n`;
-            }
-            // 开口状态与可达性
-            const openings = currentSave.latexOpenings || {};
-            const openEntries = Object.entries(openings);
-            if (openEntries.length > 0) {
-                const openStates = CONFIG.LATEX_OPENING_STATES || {};
-                const openingLabels = openEntries.map(([type, state]) => {
-                    const oDef = (CONFIG.LATEX_OPENING_TYPES || []).find(o => o.value === type);
-                    const sDef = openStates[state];
-                    const accessNote = sDef?.accessible ? '(可接触)' : sDef?.needsKey ? '(锁定,需钥匙)' : '(已闭合)';
-                    return `${oDef?.label || type}:${sDef?.label || state}${accessNote}`;
-                });
-                systemPrompt += `拉链/开口：${openingLabels.join('、')}\n`;
-                const accessibleParts = openEntries.filter(([, s]) => openStates[s]?.accessible).map(([t]) => {
-                    const oDef = (CONFIG.LATEX_OPENING_TYPES || []).find(o => o.value === t);
-                    return oDef?.label?.replace(/^.+\s/, '') || t;
-                });
-                if (accessibleParts.length > 0) {
-                    systemPrompt += `可接触部位：${accessibleParts.join('、')}——NPC可通过开放的拉链接触这些区域。\n`;
-                }
-                const lockedParts = openEntries.filter(([, s]) => openStates[s]?.needsKey);
-                if (lockedParts.length > 0) {
-                    systemPrompt += '部分拉链已锁定，需要钥匙或工具才能打开。\n';
-                }
-            }
-            if (currentSave.latexCoverage >= 91) {
-                systemPrompt += '⚠ 全身密封状态：完全与外界隔绝，呼吸受限，触觉被乳胶厚度改变。\n';
-            }
-            const cfg = CONFIG.LATEX_ENCLOSURE_CONFIG || {};
-            // 汗液状态
-            if ((currentSave.latexSweat || 0) > 15) {
-                systemPrompt += `汗液：${currentSave.latexSweat}/100（${sweatTier.label}）——${sweatTier.desc}\n`;
-            }
-            if ((currentSave.latexHeat || 0) >= (cfg.sweatStartThreshold || 15)) {
-                systemPrompt += '身体开始大量出汗，乳胶内壁变得湿滑，皮肤敏感度提升。\n';
-            }
-            if ((currentSave.latexHeat || 0) >= (cfg.overheatThreshold || 35)) {
-                systemPrompt += '[重要] 过热状态！乳胶内闷热已达危险水平。\n';
-            }
-            // 气味提示
-            if (currentSave.latexCoverage >= 60) {
-                if ((currentSave.latexSweat || 0) > 40) {
-                    systemPrompt += '乳胶内空气充满了橡胶味和汗液的混合气息——闷热、咸湿、浓郁的体味。\n';
-                } else if ((currentSave.latexHeat || 0) >= 20) {
-                    systemPrompt += '升温的乳胶散发出加倍浓郁的橡胶气味，充满了每一次呼吸。\n';
-                }
-            }
-            // 自紧状态
-            if ((currentSave.latexTightness || 0) > 10) {
-                const tTier = CYOA.getTightnessTier();
-                systemPrompt += `乳胶紧度：${currentSave.latexTightness}/100（${tTier.label}）——${tTier.desc}\n`;
-                if (tTier.value === 'crushing') {
-                    systemPrompt += '[重要] 乳胶正以危险力度收紧，形成正反馈循环。\n';
-                }
-            }
-            // 护理状态
-            const mEffect = CYOA.getMaintenanceEffect();
-            const cond = currentSave.latexCondition ?? 100;
-            if (cond < 80) {
-                systemPrompt += `乳胶状态：${cond}/100——${mEffect.desc || ''}\n`;
-                if (cond < 25) {
-                    systemPrompt += '乳胶严重失养：摩擦声极度刺耳，表面粘连皮肤，每次移动都伴随阻力和不适。NPC可能要求/命令玩家进行护理。\n';
-                }
-            }
-            // 潜行修正
-            if (currentSave.latexColor) {
-                const colorDef = (CONFIG.LATEX_COLORS || []).find(c => c.value === currentSave.latexColor);
-                if (colorDef?.stealthMod && colorDef.stealthMod < 0) {
-                    systemPrompt += `⚠ 乳胶颜色（${colorDef.label}）极为醒目：在任何需要隐蔽的场景中，角色更容易被发现。\n`;
-                }
-            }
-            systemPrompt += '叙述中应持续体现乳胶的触感、吱嘎声、光泽、气味、紧致包裹感和体温变化。\n\n';
-        }
-
-        // 身份侵蚀
-        if ((currentSave.identityErosion || 0) > 10) {
-            const idTier = CYOA.getIdentityTier();
-            systemPrompt += `--- 身份侵蚀 ---\n`;
-            systemPrompt += `侵蚀度：${currentSave.identityErosion}/100（${idTier.label}——${idTier.desc}）\n`;
-            systemPrompt += `[严格指令] ${idTier.pronounDirective}\n\n`;
-        }
-
-        // 恐慌/幽闭恐惧
-        if ((currentSave.panic || 0) > 20) {
-            const panicTier = CYOA.getPanicTier();
-            systemPrompt += `--- 恐慌 ---\n`;
-            systemPrompt += `恐慌度：${currentSave.panic}/100（${panicTier.label}）——${panicTier.desc}\n`;
-            if (panicTier.value === 'panicked' || panicTier.value === 'meltdown') {
-                systemPrompt += '[重要] 角色恐慌发作中！恐慌加速氧气消耗。\n';
-            }
-            systemPrompt += '\n';
-        }
-
-        // 呼吸管控制
-        const tube = currentSave.breathingTube;
-        if (tube?.active) {
-            const levels = CONFIG.BREATHING_TUBE_CONFIG?.flowLevels || {};
-            const lv = levels[tube.flowLevel] || levels.full;
-            systemPrompt += `--- 呼吸管 ---\n`;
-            systemPrompt += `流量：${lv?.label || tube.flowLevel}——${lv?.desc || ''}\n`;
-            if (tube.controlledBy) {
-                const ctrlNpc = currentGame.characters?.find(c => c.id === tube.controlledBy);
-                systemPrompt += `控制者：${ctrlNpc?.name || 'NPC'}——该NPC可随时调整呼吸管流量。\n`;
-            }
-            systemPrompt += '\n';
-        }
-
-        // 导电乳胶
-        const electro = currentSave.electroLatex;
-        if (electro?.active && electro.zones?.length > 0) {
-            const eCfg = CONFIG.ELECTRO_LATEX_CONFIG || {};
-            systemPrompt += `--- 导电乳胶 ---\n`;
-            electro.zones.forEach(z => {
-                const zoneDef = (eCfg.zones || []).find(zd => zd.value === z.zone);
-                const intDef = (eCfg.intensityLevels || []).find(i => i.value === z.intensity);
-                const patDef = (eCfg.patternTypes || []).find(p => p.value === z.pattern);
-                systemPrompt += `- ${zoneDef?.label || z.zone}：${intDef?.label || z.intensity}（${patDef?.label || z.pattern}）——${intDef?.desc || ''}\n`;
-            });
-            if (electro.controlledBy) {
-                const ctrlNpc = currentGame.characters?.find(c => c.id === electro.controlledBy);
-                systemPrompt += `控制者：${ctrlNpc?.name || 'NPC'}——可随时调整电流区域、强度和模式。\n`;
-            }
-            systemPrompt += '\n';
-        }
-
-        // 充气装置状态
-        const inflateEntries = Object.entries(currentSave.inflationLevels || {}).filter(([, v]) => v > 0);
-        if (inflateEntries.length > 0) {
-            systemPrompt += `--- 充气装置 ---\n`;
-            const lvDescs = CONFIG.INFLATION_CONFIG?.levelDescriptions || {};
-            inflateEntries.forEach(([devId, lv]) => {
-                const dDef = (CONFIG.VACUUM_INFLATION_TYPES || []).find(d => d.value === devId);
-                systemPrompt += `- ${dDef?.label || devId}：充气等级 ${lv}/5 — ${lvDescs[lv] || ''}\n`;
-            });
-            systemPrompt += '\n';
-        }
-
-        // PetPlay / PonyPlay 状态
-        if (currentSave.petplayRole) {
-            const rDef = (CONFIG.PETPLAY_ROLES || []).find(r => r.value === currentSave.petplayRole);
-            const immTier = CYOA.getPetplayImmersionTier();
-            systemPrompt += `--- 角色扮演 ---\n`;
-            systemPrompt += `当前角色：${rDef?.label || currentSave.petplayRole}\n`;
-            systemPrompt += `沉浸度：${currentSave.petplayImmersion || 0}/100（${immTier.label}）— ${immTier.desc}\n`;
-            if (rDef?.rules?.length > 0) {
-                systemPrompt += '角色规则：';
-                const ruleLabels = { no_speak: '禁止说人类语言', all_fours: '必须四肢着地', follow_master: '必须跟随主人', graceful_movement: '动作必须优雅如猫', hop_only: '只能跳跃前进', high_step: '必须高抬腿步行', respond_to_reins: '必须回应缰绳指令', docile: '必须温顺配合' };
-                systemPrompt += rDef.rules.map(r => ruleLabels[r] || r).join('；') + '\n';
-            }
-            systemPrompt += '[重要] 玩家正在进行宠物/小马角色扮演。AI回复中应：1)用对应动物的行为描写玩家的动作；2)NPC以对待该动物的方式对待玩家；3)沉浸度高时，玩家的思维也应显现角色化倾向。\n\n';
-        }
-
-        // 家具化状态
-        if (currentSave.furnitureRole) {
-            const fDef = (CONFIG.FURNITURE_ROLES || []).find(f => f.value === currentSave.furnitureRole);
-            const cfg = CONFIG.FURNITURE_CONFIG || {};
-            const endPct = Math.round((currentSave.furnitureEndurance / (cfg.maxEndurance || 100)) * 100);
-            systemPrompt += `--- 家具化 ---\n`;
-            systemPrompt += `当前角色：${fDef?.label || currentSave.furnitureRole}——${fDef?.desc || ''}\n`;
-            systemPrompt += `耐力：${currentSave.furnitureEndurance}/${cfg.maxEndurance || 100}（${endPct}%）\n`;
-            if (currentSave.furnitureEndurance >= (cfg.shakeThreshold || 70)) {
-                systemPrompt += '⚠ 身体颤抖，肌肉疲劳，难以维持姿势。\n';
-            }
-            systemPrompt += '[重要] 玩家被当作家具使用。AI应以物品化的视角描写玩家——不是人在做动作，而是一件家具在承受使用。\n\n';
-        }
-
-        // 高级姿势额外约束注入
-        const postureDef = (CONFIG.POSTURES || []).find(p => p.value === (currentSave.posture || 'standing'));
-        if (postureDef?.category && postureDef.desc) {
-            systemPrompt += `--- 束缚姿势 ---\n`;
-            systemPrompt += `${postureDef.label}：${postureDef.desc}\n`;
-            if (postureDef.constraints?.length > 0) {
-                systemPrompt += '此姿势附加约束：' + postureDef.constraints.map(c => CYOA.getConstraintLabel?.(c) || c).join('、') + '\n';
-            }
-            systemPrompt += '\n';
-        }
 
         // 装备联动姿势 / 步态
         const gait = CYOA.getCurrentGait?.();
@@ -6127,12 +6999,67 @@ ${t('prompt.rule.9')}`;
     };
 
     // ========== 装备系统 ==========
-    CYOA.equipItem = function(itemIndex) {
+    function getAgreementActorAndTarget() {
+        const save = CYOA.currentSave || {};
+        return {
+            actorId: save.playerCharacterId || '',
+            targetId: save.playerCharacterId || ''
+        };
+    }
+
+    function getAgreementParties(agreement) {
+        const controllerId = agreement.controllerId || agreement.ownerId || agreement.masterId || agreement.partyAId || '';
+        const controlledId = agreement.controlledId || agreement.subId || agreement.partyBId || '';
+        return { controllerId, controlledId };
+    }
+
+    function getAgreementPermissionFlags(agreement) {
+        const type = String(agreement?.type || '').toLowerCase();
+        const perms = agreement?.permissions || {};
+        const defaults = (type === 'slave' || type === 'master_sub')
+            ? { controllerCanManageEquipment: true, selfCanManageEquipment: false }
+            : { controllerCanManageEquipment: true, selfCanManageEquipment: true };
+        return {
+            controllerCanManageEquipment: perms.controllerCanManageEquipment ?? defaults.controllerCanManageEquipment,
+            selfCanManageEquipment: perms.selfCanManageEquipment ?? defaults.selfCanManageEquipment
+        };
+    }
+
+    function canOperateEquipmentByAgreement(actionType) {
+        const save = CYOA.currentSave || {};
+        const { actorId, targetId } = getAgreementActorAndTarget();
+        if (!actorId || !targetId) return true;
+        const agreements = Array.isArray(save.agreements) ? save.agreements : [];
+        for (const ag of agreements) {
+            if (!ag || ag.active === false) continue;
+            const { controllerId, controlledId } = getAgreementParties(ag);
+            if (!controlledId || controlledId !== targetId) continue;
+            const flags = getAgreementPermissionFlags(ag);
+            if (actorId === controlledId && !flags.selfCanManageEquipment) {
+                alert('当前合同/契约限制你直接' + (actionType === 'equip' ? '穿戴' : '卸下') + '装备');
+                return false;
+            }
+            if (actorId === controllerId && !flags.controllerCanManageEquipment) {
+                alert('当前合同/契约未授予控制方装备管理权限');
+                return false;
+            }
+        }
+        return true;
+    }
+
+    function getEquipLayerValue(item, equipDef) {
+        const raw = item?.layer ?? equipDef?.layer;
+        const n = Number(raw);
+        return Number.isFinite(n) ? Math.max(0, Math.min(7, n)) : 5;
+    }
+
+    CYOA._equipItemImpl = function(itemIndex) {
         if (!CYOA.currentSave) return;
         if (getActiveConstraints().has('no_hands')) {
             alert(t('ui.msg.handsRestricted'));
             return;
         }
+        if (!canOperateEquipmentByAgreement('equip')) return;
         const item = CYOA.currentSave.inventory[itemIndex];
         if (!item) return;
         
@@ -6155,14 +7082,30 @@ ${t('prompt.rule.9')}`;
             }
         }
         
-        // 装备到所有部位
+        // 装备到所有部位（层级引擎 v1：单槽位 + 层级冲突阻断）
+        const newLayer = getEquipLayerValue(item, equipDef);
+        const slotsToReplace = [];
         (equipDef.slots || []).forEach(slot => {
             if (CYOA.currentSave.equipment[slot]) {
                 const oldItem = CYOA.currentSave.equipment[slot];
-                if (oldItem.id !== item.id) {
-                    CYOA.currentSave.inventory.push(oldItem);
+                if (oldItem.id === item.id) return;
+                const oldDef = CYOA.currentGame?.equipment?.find(e => e.id === oldItem.id);
+                const oldLayer = getEquipLayerValue(oldItem, oldDef);
+                const oldLock = getEquipLockLevel(oldItem, oldDef);
+                if (oldLayer === 0) {
+                    throw new Error('layer_immutable');
                 }
+                if (oldLock >= 2) {
+                    throw new Error('slot_locked');
+                }
+                if (newLayer < oldLayer) {
+                    throw new Error('blocked_by_outer_layer');
+                }
+                slotsToReplace.push({ slot, oldItem });
             }
+        });
+        slotsToReplace.forEach(({ oldItem }) => CYOA.currentSave.inventory.push(oldItem));
+        (equipDef.slots || []).forEach(slot => {
             CYOA.currentSave.equipment[slot] = item;
         });
         
@@ -6183,10 +7126,37 @@ ${t('prompt.rule.9')}`;
         CYOA.renderInventoryPanel();
     };
 
-    CYOA.unequipItem = function(slot) {
+    CYOA._equipItemSafe = function(itemIndex) {
+        try {
+            CYOA._equipItemImpl(itemIndex);
+        } catch (err) {
+            if (err && err.message === 'layer_immutable') {
+                alert('LV0 皮肤层装备不可移除，无法被替换');
+                return;
+            }
+            if (err && err.message === 'slot_locked') {
+                alert('当前部位存在锁定装备，请先解锁后再替换');
+                return;
+            }
+            if (err && err.message === 'blocked_by_outer_layer') {
+                alert('存在更外层装备，需先卸下外层再穿戴内层');
+                return;
+            }
+            throw err;
+        }
+    };
+    CYOA.equipItem = CYOA._equipItemSafe;
+
+    CYOA._unequipItemImpl = function(slot) {
         if (!CYOA.currentSave || !CYOA.currentSave.equipment[slot]) return;
+        if (!canOperateEquipmentByAgreement('unequip')) return;
         const item = CYOA.currentSave.equipment[slot];
         const equipDef = CYOA.currentGame?.equipment?.find(e => e.id === item.id);
+        const layer = getEquipLayerValue(item, equipDef);
+        if (layer === 0) {
+            alert('LV0 皮肤层装备不可移除');
+            return;
+        }
         const lockLevel = getEquipLockLevel(item, equipDef);
 
         if (lockLevel >= 5) {
@@ -6268,6 +7238,490 @@ ${t('prompt.rule.9')}`;
         CYOA.resolveCompoundPosture();
         persistSave();
         CYOA.renderInventoryPanel();
+    };
+
+    CYOA.unequipItem = function(slot) {
+        CYOA._unequipItemImpl(slot);
+    };
+
+    CYOA.useConsumable = function(itemIndex) {
+        if (!CYOA.currentSave) return;
+        if (getActiveConstraints().has('no_hands')) {
+            alert(t('ui.msg.handsRestricted'));
+            return;
+        }
+        const item = CYOA.currentSave.inventory[itemIndex];
+        if (!item) return;
+        
+        if (item.itemType !== 'consumable' && item.itemType !== 'fuel' && item.itemType !== 'healing') {
+            alert(t('ui.msg.cannotUse'));
+            return;
+        }
+        
+        if (item.statModifiers) {
+            const modifiers = parseStatModifiers(item.statModifiers);
+            applyStatModifiers(modifiers, true);
+        }
+        
+        // 优先扣减 quantity（叠放数量），其次扣 durability（耐久），最后直接移除
+        const maxQty = CONFIG.ITEM_MAX_QUANTITY || 99;
+        if (typeof item.quantity === 'number' && item.quantity > 1) {
+            item.quantity = Math.min(maxQty, item.quantity - 1);
+        } else if (item.durability !== undefined && item.durability > 1) {
+            item.durability -= 1;
+        } else {
+            CYOA.currentSave.inventory.splice(itemIndex, 1);
+        }
+        
+        CYOA.appendSystemMessage(t('ui.msg.usedItem', {name: item.name, effect: item.statModifiers || '无'}));
+        
+        if (CYOA.DataManager) {
+            CYOA.DataManager.saveSaves();
+        }
+        CYOA.renderInventoryPanel();
+    };
+
+    // ========== 存档管理 ==========
+    CYOA.renameSave = function() {
+        const newName = CYOA.$('saveNameInput')?.value.trim();
+        if (newName && CYOA.currentSave) { 
+            CYOA.currentSave.name = newName; 
+            if (CYOA.DataManager) {
+                CYOA.DataManager.saveSaves();
+            }
+            alert(t('ui.msg.renamed')); 
+        }
+    };
+
+    CYOA.saveCurrentSave = function() { 
+        if (CYOA.currentSave) { 
+            CYOA.currentSave.updatedAt = Date.now(); 
+            if (CYOA.DataManager) {
+                CYOA.DataManager.saveSaves();
+            }
+            alert(t('ui.msg.saved')); 
+        } 
+    };
+
+    CYOA.saveAsNewSave = function() {
+        if (!CYOA.currentSave) return;
+        const newId = 'save_' + Date.now();
+        const newSave = JSON.parse(JSON.stringify(CYOA.currentSave));
+        newSave.id = newId;
+        newSave.name = CYOA.currentSave.name + ' ' + t('ui.game.copy');
+        newSave.createdAt = Date.now();
+        newSave.updatedAt = Date.now();
+        CYOA.saves[newId] = newSave;
+        CYOA.currentSave = newSave;
+        if (CYOA.DataManager) {
+            CYOA.DataManager.saves = CYOA.saves;
+            CYOA.DataManager.saveSaves();
+        }
+        alert(t('ui.msg.savedAsNew'));
+        CYOA.renderSavesPanel();
+    };
+
+    CYOA.exportSave = function() {
+        if (!CYOA.currentSave) return;
+        const blob = new Blob([JSON.stringify(CYOA.currentSave, null, 2)], {type: 'application/json'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `cyoa_save_${CYOA.currentSave.id}.json`;
+        a.click();
+    };
+
+    CYOA.importSave = function() {
+        const input = document.createElement('input');
+        input.type = 'file';
+        input.accept = '.json';
+        input.onchange = function(e) {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+            reader.onload = function(ev) {
+                try {
+                    const save = JSON.parse(ev.target.result);
+                    if (!save.id || !save.gameId || !save.nodes) { 
+                        alert(t('ui.msg.invalidSaveFile')); 
+                        return; 
+                    }
+                    const game = CYOA.DataManager?.getGameById(save.gameId);
+                    if (!game) { 
+                        alert(t('ui.msg.saveGameNotExist')); 
+                        return; 
+                    }
+                    CYOA.saves[save.id] = save;
+                    if (CYOA.DataManager) {
+                        CYOA.DataManager.saves = CYOA.saves;
+                        CYOA.DataManager.saveSaves();
+                    }
+                    alert(t('ui.msg.importSaveSuccess'));
+                } catch (ex) { 
+                    alert(t('ui.msg.saveImportFailed')); 
+                }
+            };
+            reader.readAsText(file);
+        };
+        input.click();
+    };
+
+    CYOA.loadSave = function(saveId) {
+        if (!CYOA.saves || !CYOA.saves[saveId]) return;
+        
+        const save = CYOA.saves[saveId];
+        if (save.gameId !== CYOA.currentGame?.id) {
+            alert(t('ui.msg.saveMismatch'));
+            return;
+        }
+        
+        CYOA.currentSave = save;
+        CYOA.currentNodeId = save.currentNodeId;
+        
+        // 旧存档兼容：补充 playerCharacterId 和 acquiredItemIds
+        if (!save.playerCharacterId && save.playerCharacter && CYOA.currentGame) {
+            const pc = CYOA.currentGame.characters?.find(c => c.name === save.playerCharacter);
+            save.playerCharacterId = pc?.id || '';
+        }
+        if (!save.acquiredItemIds) {
+            save.acquiredItemIds = (save.inventory || []).map(i => i.id);
+        }
+
+        // 人性平衡：旧存档补充默认值
+        if (CYOA.currentGame?.humanityBalanceEnabled) {
+            if (save.humanityIndex === undefined) save.humanityIndex = 70;
+            if (save.divinePermission === undefined) save.divinePermission = 20;
+            if (save.humanityBalanceLock === undefined) save.humanityBalanceLock = 0;
+        }
+        
+        // 向后兼容：locked boolean -> lockLevel number
+        if (save.equipment) {
+            Object.values(save.equipment).forEach(item => {
+                if (item && typeof item.locked === 'boolean') {
+                    item.lockLevel = item.locked ? 3 : 0;
+                    delete item.locked;
+                }
+                if (item && item.indestructible === undefined) {
+                    item.indestructible = false;
+                }
+            });
+        }
+        // 游戏定义中的装备也做迁移
+        if (CYOA.currentGame?.equipment) {
+            CYOA.currentGame.equipment.forEach(eq => {
+                if (typeof eq.locked === 'boolean') {
+                    eq.lockLevel = eq.locked ? 3 : 0;
+                    delete eq.locked;
+                }
+            });
+        }
+        
+        // 刷新显示
+        CYOA.renderSidebar();
+        
+        // 刷新聊天记录
+        const logEl = document.getElementById('log');
+        if (logEl) {
+            logEl.innerHTML = '';
+            const node = save.nodes[save.currentNodeId];
+            if (node) {
+                const path = [];
+                let nId = save.currentNodeId;
+                while (nId && save.nodes[nId]) {
+                    path.unshift(nId);
+                    nId = save.nodes[nId].parentId;
+                }
+                
+                path.forEach(id => {
+                    const n = save.nodes[id];
+                    if (n.userMessage) {
+                        const userDiv = document.createElement('div');
+                        userDiv.className = 'user';
+                        userDiv.textContent = n.userMessage;
+                        logEl.appendChild(userDiv);
+                    }
+                    const aiDiv = document.createElement('div');
+                    aiDiv.className = 'ai';
+                    aiDiv.textContent = n.assistantMessage;
+                    logEl.appendChild(aiDiv);
+                });
+            }
+        }
+        
+        CYOA._gamePhase = 'playing';
+        CYOA._bindInputKeyHandler();
+        alert(t('ui.msg.saveLoaded'));
+    };
+
+    CYOA.deleteSave = function(saveId) {
+        if (!CYOA.saves || !CYOA.saves[saveId]) return;
+        
+        if (!confirm(t('ui.msg.confirmDeleteSave'))) return;
+        
+        delete CYOA.saves[saveId];
+        
+        if (CYOA.DataManager) {
+            CYOA.DataManager.saves = CYOA.saves;
+            CYOA.DataManager.saveSaves();
+        }
+        
+        if (saveId === CYOA.currentSave?.id) {
+            const remaining = Object.values(CYOA.saves).find(s => s.gameId === CYOA.currentGame?.id);
+            if (remaining) {
+                CYOA.loadSave(remaining.id);
+            } else {
+                if (CYOA.currentGame) {
+                    CYOA.startGame(CYOA.currentGame.id, CYOA.currentSave?.playerCharacter);
+                }
+            }
+        } else {
+            CYOA.renderSavesPanel();
+        }
+    };
+
+    log('CYOA 游戏模块加载完成');
+})();
+
+    // ========== 解析并应用物品变化 ==========
+    CYOA.parseAndApplyItemChanges = function(aiResponse) {
+        const currentSave = CYOA.currentSave;
+        if (!currentSave.inventory) return;
+        
+        // 检查物品消耗（从AI响应中提取，例如 "消耗了1个煤油"）
+        const consumePattern = /消耗了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
+        let match;
+        while ((match = consumePattern.exec(aiResponse)) !== null) {
+            const amount = parseInt(match[1]);
+            const itemName = match[2];
+            
+            const itemIndex = currentSave.inventory.findIndex(i => i.name === itemName);
+            if (itemIndex >= 0) {
+                const item = currentSave.inventory[itemIndex];
+                const qty = item.quantity || 1;
+                if (qty > amount) {
+                    item.quantity = qty - amount;
+                } else if (item.durability !== undefined && item.durability > 0) {
+                    item.durability -= amount;
+                    if (item.durability <= 0) {
+                        currentSave.inventory.splice(itemIndex, 1);
+                        CYOA.appendSystemMessage(`❌ ${itemName} 已耗尽`);
+                    }
+                } else {
+                    currentSave.inventory.splice(itemIndex, 1);
+                    CYOA.appendSystemMessage(`❌ ${itemName} 已耗尽`);
+                }
+            }
+        }
+        
+        // 检查装备耐久消耗（跳过不可破坏装备，触发降级逻辑）
+        const durabilityPattern = /([^，。\s]+)的耐久度[下降低了]了\s*(\d+)/g;
+        while ((match = durabilityPattern.exec(aiResponse)) !== null) {
+            const equipName = match[1];
+            const amount = parseInt(match[2]);
+            
+            for (const slot in currentSave.equipment) {
+                const equip = currentSave.equipment[slot];
+                if (!equip || equip.name !== equipName) continue;
+                const equipDef = CYOA.currentGame?.equipment?.find(e => e.id === equip.id);
+                const isIndestructible = equip.indestructible ?? equipDef?.indestructible ?? false;
+                if (isIndestructible) break;
+                if (equip.durability === undefined) break;
+
+                equip.durability = Math.max(0, equip.durability - amount);
+                applyDegradation(equip, equipDef);
+                if (equip.durability <= 0) {
+                    delete currentSave.equipment[slot];
+                    if (equipDef?.statModifiers) {
+                        const mods = parseStatModifiers(equipDef.statModifiers);
+                        applyStatModifiers(mods, false);
+                    }
+                    CYOA.appendSystemMessage(`💔 ${equipName} 损坏了`);
+                }
+                break;
+            }
+        }
+        
+        // 检查获得物品
+        const gainPattern = /获得了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
+        while ((match = gainPattern.exec(aiResponse)) !== null) {
+            const amount = parseInt(match[1]);
+            const itemName = match[2];
+            
+            const itemDef = CYOA.currentGame.items?.find(i => i.name === itemName);
+            if (itemDef) {
+                const maxQty = CONFIG.ITEM_MAX_QUANTITY || 99;
+                const existingItem = currentSave.inventory.find(i => i.name === itemName);
+                if (existingItem) {
+                    existingItem.quantity = Math.min(maxQty, (existingItem.quantity || 1) + amount);
+                } else {
+                    const newItem = JSON.parse(JSON.stringify(itemDef));
+                    newItem.quantity = Math.min(maxQty, amount);
+                    currentSave.inventory.push(newItem);
+                }
+                // 标记为已获取
+                if (!currentSave.acquiredItemIds) currentSave.acquiredItemIds = [];
+                if (!currentSave.acquiredItemIds.includes(itemDef.id)) {
+                    currentSave.acquiredItemIds.push(itemDef.id);
+                }
+            }
+        }
+    };
+
+    // 显式获取物品（按名称或 ID，从游戏定义中查找并放入背包）
+    CYOA.acquireItem = function(nameOrId, amount) {
+        if (!CYOA.currentSave || !CYOA.currentGame) return false;
+        const qty = amount || 1;
+        const maxQty = CONFIG.ITEM_MAX_QUANTITY || 99;
+        const gameDef = CYOA.currentGame.items?.find(i => i.id === nameOrId || i.name === nameOrId);
+        if (!gameDef) return false;
+
+        const existing = CYOA.currentSave.inventory.find(i => i.id === gameDef.id || i.name === gameDef.name);
+        if (existing) {
+            existing.quantity = Math.min(maxQty, (existing.quantity || 1) + qty);
+        } else {
+            const newItem = JSON.parse(JSON.stringify(gameDef));
+            newItem.quantity = Math.min(maxQty, qty);
+            CYOA.currentSave.inventory.push(newItem);
+        }
+
+        if (!CYOA.currentSave.acquiredItemIds) CYOA.currentSave.acquiredItemIds = [];
+        if (!CYOA.currentSave.acquiredItemIds.includes(gameDef.id)) {
+            CYOA.currentSave.acquiredItemIds.push(gameDef.id);
+        }
+
+        persistSave();
+        CYOA.renderInventoryPanel?.();
+        return true;
+    };
+
+    // 移除物品
+    CYOA.removeItem = function(nameOrId, amount) {
+        if (!CYOA.currentSave) return false;
+        const qty = amount || 1;
+        const idx = CYOA.currentSave.inventory.findIndex(i => i.id === nameOrId || i.name === nameOrId);
+        if (idx < 0) return false;
+
+        const item = CYOA.currentSave.inventory[idx];
+        const curQty = item.quantity || 1;
+        if (curQty > qty) {
+            item.quantity = curQty - qty;
+        } else {
+            CYOA.currentSave.inventory.splice(idx, 1);
+        }
+
+        persistSave();
+        CYOA.renderInventoryPanel?.();
+        return true;
+    };
+
+    // ========== 添加系统消息 ==========
+    CYOA.appendSystemMessage = function(message) {
+        const logEl = document.getElementById('log');
+        if (!logEl) return;
+        
+        const systemDiv = document.createElement('div');
+        systemDiv.className = 'ai system-message';
+        systemDiv.style.background = 'rgba(16, 185, 129, 0.05)';
+        systemDiv.style.borderLeft = '4px solid #10b981';
+        systemDiv.textContent = `📌 ${message}`;
+        logEl.appendChild(systemDiv);
+        logEl.scrollTop = logEl.scrollHeight;
+    };
+
+    // ========== 从AI回复中提取选项 ==========
+    // 支持 🔹 与 ◆ 两种符号（AI 可能输出不同符号）
+    const OPTION_PREFIX_RE = /^[🔹◆]\s*/;
+    const OPTION_TYPE_RE = /^[🔹◆]\s*\((行动|对话)\)\s*/;
+    CYOA.extractOptions = function(text) {
+        const options = [];
+        const lines = text.split('\n');
+        lines.forEach(line => {
+            const trimmed = line.trim();
+            if (!OPTION_PREFIX_RE.test(trimmed)) return;
+            const m = trimmed.match(OPTION_TYPE_RE);
+            if (m) {
+                options.push({
+                    type: m[1] === '行动' ? 'action' : 'speech',
+                    text: trimmed.replace(OPTION_TYPE_RE, '').trim()
+                });
+            } else {
+                // 兼容旧格式：无类型前缀默认为行动
+                options.push({
+                    type: 'action',
+                    text: trimmed.replace(OPTION_PREFIX_RE, '').trim()
+                });
+            }
+        });
+        return options;
+    };
+
+    // ========== 跳转到指定节点 ==========
+    CYOA.jumpToNode = function(nodeId) {
+        if (!CYOA.currentSave || !CYOA.currentSave.nodes[nodeId]) return;
+        
+        log('跳转到节点', nodeId);
+        CYOA.currentNodeId = nodeId;
+        CYOA.currentSave.currentNodeId = nodeId;
+        
+        if (CYOA.DataManager) {
+            CYOA.DataManager.saveSaves();
+        }
+        
+        const logEl = document.getElementById('log');
+        if (!logEl) return;
+        
+        logEl.innerHTML = '';
+        
+        // 重建路径
+        const path = [];
+        let nId = nodeId;
+        while (nId && CYOA.currentSave.nodes[nId]) {
+            path.unshift(nId);
+            nId = CYOA.currentSave.nodes[nId].parentId;
+        }
+        
+        path.forEach(id => {
+            const node = CYOA.currentSave.nodes[id];
+            if (node.userMessage) {
+                const userDiv = document.createElement('div');
+                userDiv.className = 'user';
+                userDiv.style.cssText = 'margin:10px 0; text-align:right;';
+                const span = document.createElement('span');
+                span.style.cssText = 'background:var(--cyoa-primary-light); padding:10px 14px; border-radius:12px 12px 0 12px; display:inline-block;';
+                span.textContent = node.userMessage;
+                userDiv.appendChild(span);
+                logEl.appendChild(userDiv);
+            }
+            const aiDiv = document.createElement('div');
+            aiDiv.className = 'ai';
+            aiDiv.style.margin = "10px 0";
+            aiDiv.textContent = node.assistantMessage;
+            logEl.appendChild(aiDiv);
+        });
+        
+        logEl.scrollTop = logEl.scrollHeight;
+        CYOA.renderTreePanel();
+        CYOA.renderGameOptions();
+    };
+
+    // ========== 角色切换 ==========
+    CYOA.onRoleChange = function(role) {
+        if (CYOA.currentSave) {
+            CYOA.currentSave.playerCharacter = role;
+        }
+    };
+
+    // ========== 装备系统 ==========
+    CYOA.equipItem = function(itemIndex) {
+        if (typeof CYOA._equipItemSafe === 'function') {
+            CYOA.equipItem = CYOA._equipItemSafe;
+            return CYOA._equipItemSafe(itemIndex);
+        }
+    };
+
+    CYOA.unequipItem = function(slot) {
+        if (typeof CYOA._unequipItemImpl === 'function') {
+            CYOA.unequipItem = CYOA._unequipItemImpl;
+            return CYOA._unequipItemImpl(slot);
+        }
     };
 
     CYOA.useConsumable = function(itemIndex) {

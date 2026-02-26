@@ -100,7 +100,12 @@ switch (PLUGIN_ACTION) {
                         'id' => $game['id'],
                         'name' => isset($game['name']) ? $game['name'] : '未命名',
                         'author' => isset($game['author']) ? $game['author'] : '',
+                        'version' => isset($game['version']) ? $game['version'] : '1.0',
                         'updatedAt' => isset($game['updatedAt']) ? $game['updatedAt'] : '',
+                        'attributes' => isset($game['attributes']) ? count($game['attributes']) : 0,
+                        'items' => isset($game['items']) ? count($game['items']) : 0,
+                        'skills' => isset($game['skills']) ? count($game['skills']) : 0,
+                        'quests' => isset($game['quests']) ? count($game['quests']) : 0,
                         'characters' => isset($game['characters']) ? count($game['characters']) : 0,
                         'scenes' => isset($game['scenes']) ? count($game['scenes']) : 0
                     ];

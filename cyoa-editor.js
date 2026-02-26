@@ -110,6 +110,7 @@
                     html += `<span class="item-icon">⚔️</span>`;
                     html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
                     html += `<span class="item-type">${escapeHtml(item.equipType || t('ui.type.equipment'))}</span>`;
+                    html += `<span class="item-value">${escapeHtml((CYOA.getWearLayerLabel ? CYOA.getWearLayerLabel(item.layer ?? 5) : `LV${item.layer ?? 5}`))}</span>`;
                     html += `<span class="item-slots">${item.slots?.length || 0} ${t('ui.summary.slot')}</span>`;
                     if (item.indestructible) {
                         html += `<span class="item-value" title="${t('ui.label.indestructible')}">♾️</span>`;
@@ -187,7 +188,7 @@
                     html += `<span class="item-icon">${cardTypeDef?.label?.charAt(0) || '📝'}</span>`;
                     html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
                     const triggers = Array.isArray(item.triggerWords) ? item.triggerWords : (item.triggerWords || '').split(/[,，\s]+/).filter(Boolean);
-                    html += `<span class="item-desc">${escapeHtml((triggers.slice(0, 3).join(', ') + (triggers.length > 3 ? '...' : '')) || t('ui.storyCard.triggers')}</span>`;
+                    html += `<span class="item-desc">${escapeHtml((triggers.slice(0, 3).join(', ') + (triggers.length > 3 ? '...' : '')) || t('ui.storyCard.triggers'))}</span>`;
                     break;
             }
             
@@ -275,46 +276,46 @@
         
         switch(type) {
             case 'attributes':
-                html = renderAttributeForm(item, index);
+                html = CYOA.renderAttributeForm(item, index);
                 break;
             case 'items':
-                html = renderItemForm(item, index);
+                html = CYOA.renderItemForm(item, index);
                 break;
             case 'equipment':
-                html = renderEquipmentForm(item, index);
+                html = CYOA.renderEquipmentForm(item, index);
                 break;
             case 'professions':
-                html = renderProfessionForm(item, index);
+                html = CYOA.renderProfessionForm(item, index);
                 break;
             case 'skills':
-                html = renderSkillForm(item, index);
+                html = CYOA.renderSkillForm(item, index);
                 break;
             case 'quests':
-                html = renderQuestForm(item, index);
+                html = CYOA.renderQuestForm(item, index);
                 break;
             case 'characters':
-                html = renderCharacterForm(item, index);
+                html = CYOA.renderCharacterForm(item, index);
                 break;
             case 'scenes':
-                html = renderSceneForm(item, index);
+                html = CYOA.renderSceneForm(item, index);
                 break;
             case 'chapters':
-                html = renderChapterForm(item, index);
+                html = CYOA.renderChapterForm(item, index);
                 break;
             case 'locations':
-                html = renderLocationForm(item, index);
+                html = CYOA.renderLocationForm(item, index);
                 break;
             case 'equipmentSynergies':
-                html = renderSynergyForm(item, index);
+                html = CYOA.renderSynergyForm(item, index);
                 break;
             case 'discoveryRules':
-                html = renderDiscoveryForm(item, index);
+                html = CYOA.renderDiscoveryForm(item, index);
                 break;
             case 'outfitPresets':
-                html = renderPresetForm(item, index);
+                html = CYOA.renderPresetForm(item, index);
                 break;
             case 'storyCards':
-                html = renderStoryCardForm(item, index);
+                html = CYOA.renderStoryCardForm(item, index);
                 break;
         }
         
@@ -325,160 +326,7 @@
         bindFormEvents(type, index);
     }
 
-    // ========== 渲染各种表单 ==========
-    function renderAttributeForm(attr, index) {
-        return `
-            <div class="cyoa-edit-form">
-                <h4>${attr.id ? t('ui.editor.editItem', {type: t('ui.type.attributes')}) : t('ui.editor.newItem', {type: t('ui.type.attributes')})}</h4>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.attrName')}</label>
-                    <input type="text" id="editAttrName" class="cyoa-input" value="${escapeHtml(attr.name || '')}">
-                </div>
-                <div class="cyoa-form-row cyoa-grid-3">
-                    <div><label>${t('ui.label.currentVal')}</label><input type="number" id="editAttrValue" class="cyoa-input" value="${attr.value || 0}"></div>
-                    <div><label>${t('ui.label.minVal')}</label><input type="number" id="editAttrMin" class="cyoa-input" value="${attr.min || 0}"></div>
-                    <div><label>${t('ui.label.maxVal')}</label><input type="number" id="editAttrMax" class="cyoa-input" value="${attr.max || 100}"></div>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.description')}</label>
-                    <input type="text" id="editAttrDesc" class="cyoa-input" value="${escapeHtml(attr.description || '')}">
-                </div>
-                <div class="cyoa-form-actions">
-                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
-                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveAttribute(${index})">${t('ui.btn.saveAttr')}</button>
-                </div>
-            </div>
-        `;
-    }
-
-    function renderItemForm(item, index) {
-        const typeOptions = CONFIG.ITEM_TYPES.map(t => 
-            `<option value="${t.value}" ${t.value === item.itemType ? 'selected' : ''}>${t.label}</option>`
-        ).join('');
-        
-        const items = getItemsForSelect(item.id);
-        const unlockOptions = items.map(i => 
-            `<option value="${i.value}" ${i.value === item.unlockItemId ? 'selected' : ''}>${i.label}</option>`
-        ).join('');
-        
-        // 技能选项
-        const skills = getSkillsForSelect();
-        const skillOptions = skills.map(s => 
-            `<option value="${s.value}">${s.label}</option>`
-        ).join('');
-        
-        // 已选技能
-        const selectedSkills = item.skills || [];
-        
-        // 消耗物品选项
-        const consumeOptions = items.map(i => 
-            `<option value="${i.value}">${i.label}</option>`
-        ).join('');
-        
-        // 角色选项
-        const characters = CYOA.editorTempData?.characters || [];
-        const ownerOptions = characters.map(char => 
-            `<option value="${char.id}" ${char.id === item.ownerId ? 'selected' : ''}>${char.name}</option>`
-        ).join('');
-        
-        return `
-            <div class="cyoa-edit-form">
-                <h4>${item.id ? t('ui.editor.editItem', {type: t('ui.type.items')}) : t('ui.editor.newItem', {type: t('ui.type.items')})}</h4>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.itemName')}</label>
-                    <input type="text" id="editItemName" class="cyoa-input" value="${escapeHtml(item.name || '')}">
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.itemType')}</label>
-                    <select id="editItemType" class="cyoa-select" onchange="var r=document.getElementById('relicFields');if(r)r.style.display=this.value==='relic'?'block':'none'">${typeOptions}</select>
-                </div>
-                <div class="cyoa-form-row cyoa-grid-2">
-                    <div>
-                        <label>${t('ui.label.quantity')}（${CONFIG.ITEM_MAX_QUANTITY || 99} max）</label>
-                        <input type="number" id="editItemQuantity" class="cyoa-input" value="${item.quantity || 1}" min="1" max="${CONFIG.ITEM_MAX_QUANTITY || 99}">
-                    </div>
-                    <div>
-                        <label>${t('ui.label.durability')}</label>
-                        <input type="number" id="editItemDurability" class="cyoa-input" value="${item.durability || 0}" min="0">
-                    </div>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.ownerChar')}</label>
-                    <select id="editItemOwner" class="cyoa-select">
-                        <option value="">${t('ui.opt.noOwner')}</option>
-                        ${ownerOptions}
-                    </select>
-                </div>
-                <div class="cyoa-form-row cyoa-checkbox-row">
-                    <label><input type="checkbox" id="editItemLocked" ${item.locked ? 'checked' : ''}> ${t('ui.label.locked')}</label>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.unlockItem')}</label>
-                    <select id="editItemUnlock" class="cyoa-select"><option value="">${t('ui.opt.none')}</option>${unlockOptions}</select>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.attachedSkills')}</label>
-                    <select id="editItemSkills" class="cyoa-select" multiple size="3">
-                        ${skillOptions}
-                    </select>
-                    <small>${t('ui.hint.ctrlSelect')}</small>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.consumeItems')}</label>
-                    <div id="consumeItemsList">
-                        ${renderConsumeItems(item.consumeItems || [])}
-                    </div>
-                    <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm add-consume-item" type="button">${t('ui.btn.addConsume')}</button>
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.statEffect')}</label>
-                    <input type="text" id="editItemStats" class="cyoa-input" value="${escapeHtml(item.statModifiers || '')}" placeholder="${t('ui.ph.statEffect')}">
-                </div>
-                <div class="cyoa-form-row">
-                    <label>${t('ui.label.description')}</label>
-                    <input type="text" id="editItemDesc" class="cyoa-input" value="${escapeHtml(item.description || '')}">
-                </div>
-                <div id="relicFields" class="cyoa-form-row" style="display:${item.itemType === 'relic' ? 'block' : 'none'};">
-                    <label>${t('ui.label.relicGrade')}</label>
-                    <select id="editItemRelicGrade" class="cyoa-select">
-                        ${(CONFIG.RELIC_GRADES || []).map(g => `<option value="${g.value}" ${g.value === (item.relicGrade || 'S') ? 'selected' : ''}>${g.label}</option>`).join('')}
-                    </select>
-                    <label style="margin-top:6px;">${t('ui.label.sideEffects')}</label>
-                    <input type="text" id="editItemSideEffects" class="cyoa-input" value="${escapeHtml(item.sideEffects || '')}" placeholder="${t('ui.ph.sideEffects')}">
-                    <label style="margin-top:6px;">${t('ui.label.unlockCondition')}</label>
-                    <input type="text" id="editItemUnlockCond" class="cyoa-input" value="${escapeHtml(item.unlockCondition || '')}" placeholder="${t('ui.ph.unlockCondition')}">
-                </div>
-                <div class="cyoa-form-actions">
-                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
-                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveItem(${index})">${t('ui.btn.saveItem')}</button>
-                </div>
-            </div>
-        `;
-    }
-
-    function renderConsumeItems(consumeItems) {
-        if (!consumeItems || consumeItems.length === 0) {
-            return '<div class="cyoa-empty-row">' + t('ui.empty.noConsume') + '</div>';
-        }
-        
-        const items = getItemsForSelect();
-        let html = '';
-        consumeItems.forEach((consume, i) => {
-            html += `
-                <div class="cyoa-consume-row" data-index="${i}">
-                    <select class="cyoa-select consume-item-select" style="width:150px;">
-                        <option value="">${t('ui.opt.selectItem')}</option>
-                        ${items.map(item => `<option value="${item.value}" ${item.value === consume.itemId ? 'selected' : ''}>${item.label}</option>`).join('')}
-                    </select>
-                    <input type="number" class="cyoa-input consume-item-amount" value="${consume.amount || 1}" min="1" style="width:80px;" placeholder="${t('ui.ph.quantity')}">
-                    <input type="number" class="cyoa-input consume-item-duration" value="${consume.duration || 0}" min="0" style="width:80px;" placeholder="${t('ui.ph.duration')}">
-                    <button class="cyoa-btn-icon danger remove-consume-item">🗑️</button>
-                </div>
-            `;
-        });
-        return html;
-    }
-
+    // ========== 装备表单 ==========
     function renderEquipmentForm(equip, index) {
         const items = getItemsForSelect(equip.id);
         const unlockOptions = items.map(i => 
@@ -519,6 +367,17 @@
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.equipType')}</label>
                     <input type="text" id="editEquipType" class="cyoa-input" value="${escapeHtml(equip.equipType || t('ui.default.equipType'))}">
+                </div>
+                <div class="cyoa-form-row">
+                    <label>服装/装备层级</label>
+                    <select id="editEquipLayer" class="cyoa-select">
+                        ${(CONFIG.WEAR_LAYERS || []).map(layer => {
+                            const lv = Number(layer.value);
+                            const selected = Number(equip.layer ?? 5) === lv ? 'selected' : '';
+                            const immutable = layer.immutable ? '（不可移除）' : '';
+                            return `<option value="${lv}" ${selected}>${layer.label}${immutable}</option>`;
+                        }).join('')}
+                    </select>
                 </div>
                 <div class="cyoa-form-row cyoa-checkbox-row" style="margin-bottom:4px;">
                     <label><input type="checkbox" id="editEquipIndestructible" ${equip.indestructible ? 'checked' : ''}> ${t('ui.status.indestructible')} <small style="color:var(--text-light);">${t('ui.hint.indestructible')}</small></label>
@@ -988,6 +847,12 @@
         const skillOptions = skills.map(s => 
             `<option value="${s.value}" ${character.skills?.includes(s.value) ? 'selected' : ''}>${s.label}</option>`
         ).join('');
+        const itemOptions = (CYOA.editorTempData?.items || []).map(it =>
+            `<option value="${it.id}" ${(character.initialInventoryItemIds || []).includes(it.id) ? 'selected' : ''}>${escapeHtml(it.name || it.id)}</option>`
+        ).join('');
+        const equipOptions = (CYOA.editorTempData?.equipment || []).map(eq =>
+            `<option value="${eq.id}" ${(character.initialEquipmentIds || []).includes(eq.id) ? 'selected' : ''}>${escapeHtml(eq.name || eq.id)}</option>`
+        ).join('');
         
         return `
             <div class="cyoa-edit-form">
@@ -1040,6 +905,20 @@
                         ${skillOptions}
                     </select>
                     <small>${t('ui.hint.ctrlSelect')}</small>
+                </div>
+                <div class="cyoa-form-row">
+                    <label>初始背包（物品）</label>
+                    <select id="editCharInitItems" class="cyoa-select" multiple size="4">
+                        ${itemOptions}
+                    </select>
+                    <small>开局时自动放入该角色背包</small>
+                </div>
+                <div class="cyoa-form-row">
+                    <label>初始装备（按装备ID）</label>
+                    <select id="editCharInitEquip" class="cyoa-select" multiple size="4">
+                        ${equipOptions}
+                    </select>
+                    <small>开局时自动穿戴（与 startEquipped 规则叠加）</small>
                 </div>
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.personality')}</label>
@@ -1212,12 +1091,17 @@
                         <input type="number" id="editChapterOrder" class="cyoa-input" value="${chapter.order || index + 1}">
                     </div>
                     <div>
-                        <label>${t('ui.label.status')}</label>
-                        <select id="editChapterUnlocked" class="cyoa-select">
-                            <option value="true" ${chapter.unlocked !== false ? 'selected' : ''}>${t('ui.status.unlocked')}</option>
-                            <option value="false" ${chapter.unlocked === false ? 'selected' : ''}>${t('ui.status.locked')}</option>
+                        <label>${t('ui.label.unlockType')}</label>
+                        <select id="editChapterUnlockType" class="cyoa-select">
+                            <option value="immediate" ${(chapter.unlockType || (chapter.unlocked !== false ? 'immediate' : 'condition')) === 'immediate' ? 'selected' : ''}>${t('ui.opt.unlockImmediate')}</option>
+                            <option value="condition" ${(chapter.unlockType || (chapter.unlocked === false ? 'condition' : '')) === 'condition' ? 'selected' : ''}>${t('ui.opt.unlockCondition')}</option>
+                            <option value="time" ${chapter.unlockType === 'time' ? 'selected' : ''}>${t('ui.opt.unlockTime')}</option>
                         </select>
                     </div>
+                </div>
+                <div class="cyoa-form-row" id="editChapterTimeUnlockRow" style="${chapter.unlockType === 'time' ? '' : 'display:none;'}">
+                    <label>${t('ui.label.unlockAfterMinutes')}</label>
+                    <input type="number" id="editChapterUnlockMinutes" class="cyoa-input" value="${chapter.unlockAfterMinutes ?? 30}" min="1" placeholder="30" style="width:100px;">
                 </div>
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.chapterDesc')}</label>
@@ -1392,7 +1276,7 @@
         const idx = container.querySelectorAll('.cyoa-condition-row').length;
         const cond = { type: 'quest_complete', questId: '', itemId: '', quantity: 1, attribute: '', operator: '>=', value: 0 };
         const temp = document.createElement('div');
-        temp.innerHTML = buildChapterConditionRow(cond, idx);
+        temp.innerHTML = CYOA.buildChapterConditionRow(cond, idx);
         container.appendChild(temp.firstElementChild);
     };
 
@@ -1705,9 +1589,29 @@
         // 附件系统：添加按钮 + 已有行的事件绑定
         const addAttachmentBtn = document.querySelector('.add-attachment');
         if (addAttachmentBtn) {
-            addAttachmentBtn.addEventListener('click', () => createEmptyAttachmentRow());
+            addAttachmentBtn.addEventListener('click', () => CYOA.createEmptyAttachmentRow());
         }
-        document.querySelectorAll('.cyoa-attachment-row').forEach(row => bindAttachmentRowEvents(row));
+        document.querySelectorAll('.cyoa-attachment-row').forEach(row => CYOA.bindAttachmentRowEvents(row));
+
+        // 地点设施：添加/删除
+        const addFacilityBtn = document.querySelector('.add-facility');
+        if (addFacilityBtn) {
+            addFacilityBtn.addEventListener('click', () => {
+                const list = CYOA.$('locationFacilitiesList');
+                if (!list) return;
+                const row = document.createElement('div');
+                row.className = 'cyoa-facility-row';
+                row.style.cssText = 'display:flex;gap:6px;align-items:center;margin-bottom:6px;';
+                row.innerHTML = `<input type="text" class="facility-name cyoa-input" placeholder="${t('ui.ph.facilityName')}" style="flex:1;">
+                    <input type="text" class="facility-desc cyoa-input" placeholder="${t('ui.ph.facilityDesc')}" style="flex:2;">
+                    <button type="button" class="cyoa-btn-icon danger remove-facility">🗑️</button>`;
+                list.appendChild(row);
+                row.querySelector('.remove-facility').addEventListener('click', () => row.remove());
+            });
+        }
+        document.querySelectorAll('.remove-facility').forEach(btn => {
+            btn.addEventListener('click', (e) => e.target.closest('.cyoa-facility-row')?.remove());
+        });
 
         // 添加可交互设施
         const addInteractable = document.querySelector('.add-interactable');
@@ -1717,16 +1621,16 @@
                 if (list) {
                     const emptyRow = list.querySelector('.cyoa-empty-row');
                     if (emptyRow) emptyRow.remove();
-                    const rowHtml = buildInteractableRowHTML({ name: '', function: '', effect: '', attributeEffect: '' });
+                    const rowHtml = CYOA.buildInteractableRowHTML({ name: '', function: '', effect: '', attributeEffect: '' });
                     const temp = document.createElement('div');
                     temp.innerHTML = rowHtml;
                     const newRow = temp.firstElementChild;
                     list.appendChild(newRow);
-                    bindInteractableRowEvents(newRow);
+                    CYOA.bindInteractableRowEvents(newRow);
                 }
             });
         }
-        document.querySelectorAll('.cyoa-interactable-row').forEach(row => bindInteractableRowEvents(row));
+        document.querySelectorAll('.cyoa-interactable-row').forEach(row => CYOA.bindInteractableRowEvents(row));
         
         // (remove-interactable 事件已在 bindInteractableRowEvents 中统一绑定)
         
@@ -1840,6 +1744,13 @@
                 tetherFields.style.display = tetherCb.checked ? '' : 'none';
             });
         }
+        const unlockTypeSel = CYOA.$('editChapterUnlockType');
+        const timeUnlockRow = CYOA.$('editChapterTimeUnlockRow');
+        if (unlockTypeSel && timeUnlockRow) {
+            unlockTypeSel.addEventListener('change', () => {
+                timeUnlockRow.style.display = unlockTypeSel.value === 'time' ? '' : 'none';
+            });
+        }
     }
 
     // ========== 保存各项数据 ==========
@@ -1937,6 +1848,7 @@
         const item = CYOA.editorTempData.equipment[index] || { id: CYOA.generateId() };
         item.name = name;
         item.equipType = CYOA.$('editEquipType')?.value.trim() || t('ui.default.equipType');
+        item.layer = Math.max(0, Math.min(7, parseInt(CYOA.$('editEquipLayer')?.value, 10) || 5));
         item.durability = parseInt(CYOA.$('editEquipDurability')?.value) || 0;
         item.maxDurability = parseInt(CYOA.$('editEquipMaxDurability')?.value) || 0;
         item.ownerId = CYOA.$('editEquipOwner')?.value || '';
@@ -1984,6 +1896,17 @@
         item.isIntegrated = CYOA.$('editEquipIsIntegrated')?.checked || false;
         item.comfortType = CYOA.$('editEquipComfort')?.checked || false;
         item.lockCountdownTurns = parseInt(CYOA.$('editEquipLockCountdown')?.value) || 5;
+        const unlockVal = parseInt(CYOA.$('editEquipUnlockCountdown')?.value, 10);
+        const unlockUnit = CYOA.$('editEquipUnlockUnit')?.value || 'turns';
+        if (unlockVal > 0) {
+            item.unlockCountdown = unlockVal;
+            item.unlockCountdownUnit = unlockUnit;
+            if (unlockUnit === 'turns') item.unlockCountdownTurns = unlockVal;
+        } else {
+            delete item.unlockCountdown;
+            delete item.unlockCountdownUnit;
+            delete item.unlockCountdownTurns;
+        }
         item.escalationPeakTurns = parseInt(CYOA.$('editEquipEscPeak')?.value) || 24;
         item.slotGroup = CYOA.$('editEquipSlotGroup')?.value || '';
         item.appearanceName = CYOA.$('editEquipAppearanceName')?.value.trim() || '';
@@ -1996,7 +1919,6 @@
         if (skillSelect) {
             item.skills = Array.from(skillSelect.selectedOptions).map(opt => opt.value);
         }
-        
         item.statModifiers = CYOA.$('editEquipStats')?.value.trim() || '';
         
         // 收集附件数据
@@ -2208,6 +2130,10 @@
         if (skillSelect) {
             item.skills = Array.from(skillSelect.selectedOptions).map(opt => opt.value);
         }
+        const initItemsSelect = CYOA.$('editCharInitItems');
+        item.initialInventoryItemIds = initItemsSelect ? Array.from(initItemsSelect.selectedOptions).map(opt => opt.value) : [];
+        const initEquipSelect = CYOA.$('editCharInitEquip');
+        item.initialEquipmentIds = initEquipSelect ? Array.from(initEquipSelect.selectedOptions).map(opt => opt.value) : [];
 
         // 纪律规则
         item.disciplineRules = [];
@@ -2292,7 +2218,14 @@
         const chapter = CYOA.editorTempData.chapters[index] || { id: CYOA.generateId() };
         chapter.title = title;
         chapter.order = parseInt(CYOA.$('editChapterOrder')?.value) || index + 1;
-        chapter.unlocked = CYOA.$('editChapterUnlocked')?.value === 'true';
+        const unlockType = CYOA.$('editChapterUnlockType')?.value || 'immediate';
+        chapter.unlockType = unlockType;
+        if (unlockType === 'time') {
+            chapter.unlockAfterMinutes = parseInt(CYOA.$('editChapterUnlockMinutes')?.value, 10) || 30;
+        } else {
+            delete chapter.unlockAfterMinutes;
+        }
+        chapter.unlocked = (unlockType === 'immediate') ? true : (unlockType === 'condition' ? false : undefined);
         chapter.description = CYOA.$('editChapterDesc')?.value.trim() || '';
         
         const sceneSelect = CYOA.$('editChapterScenes');
@@ -2420,42 +2353,163 @@
 
     // ========== ② 地点编辑表单 ==========
     function renderLocationForm(loc, index) {
+        const game = CYOA.editorTempData;
+        const edges = game?.locationEdges || [];
+        loc._edgesStr = edges.filter(e => e.from === loc.id).map(e => `${e.to}:${e.travelTurns || 6}`).join(', ');
+        const wm = game?.worldMap;
+        const regions = wm?.regions || [];
+        const regionOptions = regions.map(r => `<option value="${escapeHtml(r.id)}" ${loc.regionId === r.id ? 'selected' : ''}>${escapeHtml(r.name || r.id)}</option>`).join('');
+        const facilities = loc.facilities || [];
+        const facilityRows = facilities.map((f, fi) =>
+            `<div class="cyoa-facility-row" style="display:flex;gap:6px;align-items:center;margin-bottom:6px;">
+                <input type="text" class="facility-name cyoa-input" value="${escapeHtml(f.name || '')}" placeholder="${t('ui.ph.facilityName')}" style="flex:1;">
+                <input type="text" class="facility-desc cyoa-input" value="${escapeHtml(f.description || '')}" placeholder="${t('ui.ph.facilityDesc')}" style="flex:2;">
+                <button type="button" class="cyoa-btn-icon danger remove-facility">🗑️</button>
+            </div>`
+        ).join('');
         return `<div class="cyoa-edit-form">
-            <h3>📍 编辑地点</h3>
+            <h3>📍 ${t('ui.editor.editLocation')}</h3>
             <div class="cyoa-form-row">
-                <label>地点名称</label>
+                <label>${t('ui.label.locationName')}</label>
                 <input type="text" id="editLocName" class="cyoa-input" value="${escapeHtml(loc.name || '')}">
             </div>
             <div class="cyoa-form-row">
-                <label>描述</label>
+                <label>${t('ui.label.description')}</label>
                 <textarea id="editLocDesc" class="cyoa-textarea" rows="2">${escapeHtml(loc.description || '')}</textarea>
             </div>
             <div class="cyoa-form-row">
-                <label><input type="checkbox" id="editLocSafeRoom" ${loc.isSafeRoom ? 'checked' : ''}> 安全区（密室/解锁区）</label>
+                <label>${t('ui.label.region')}</label>
+                <select id="editLocRegion" class="cyoa-select">
+                    <option value="">${t('ui.opt.none')}</option>
+                    ${regionOptions}
+                </select>
             </div>
             <div class="cyoa-form-row">
-                <label>特性标签（逗号分隔）</label>
-                <input type="text" id="editLocFeatures" class="cyoa-input" value="${escapeHtml((loc.features || []).join(', '))}">
+                <label><input type="checkbox" id="editLocSafeRoom" ${loc.isSafeRoom ? 'checked' : ''}> ${t('ui.label.safeRoom')}</label>
+            </div>
+            <div class="cyoa-form-row">
+                <label>${t('ui.label.features')}</label>
+                <input type="text" id="editLocFeatures" class="cyoa-input" value="${escapeHtml((loc.features || []).join(', '))}" placeholder="${t('ui.ph.features')}">
+            </div>
+            <div class="cyoa-form-row" style="background:var(--bg); padding:12px; border-radius:var(--radius-sm); border:1px solid var(--border);">
+                <label style="font-weight:600; margin-bottom:8px;">${t('ui.label.facilities')}</label>
+                <div id="locationFacilitiesList">${facilityRows || ''}</div>
+                <button type="button" class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm add-facility" style="margin-top:8px;">${t('ui.btn.addFacility')}</button>
             </div>
             <div class="cyoa-form-row" style="background:#eff6ff; padding:10px; border-radius:8px;">
-                <label style="font-weight:600;">到其他地点的旅行轮数</label>
-                <small>格式：地点ID:轮数，逗号分隔。例如 company:6,pool:8</small>
+                <label style="font-weight:600;">${t('ui.label.travelEdges')}</label>
+                <small>${t('ui.hint.travelEdges')}</small>
                 <input type="text" id="editLocEdges" class="cyoa-input" value="${escapeHtml(loc._edgesStr || '')}">
             </div>
             <div class="cyoa-form-actions">
-                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">取消</button>
-                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveLocation(${index})">保存地点</button>
+                <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
+                <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveLocation(${index})">${t('ui.btn.saveLocation')}</button>
             </div>
         </div>`;
     }
+
+    CYOA.showWorldMapEditor = function() {
+        if (!CYOA.editorTempData) return;
+        const wm = CYOA.editorTempData.worldMap = CYOA.editorTempData.worldMap || { name: t('ui.default.worldMap'), regions: [] };
+        const locations = CYOA.editorTempData.locations || [];
+        const formContainer = CYOA.$('editFormContainer');
+        if (!formContainer) return;
+        CYOA.editingItem = { type: 'worldMap', index: -1 };
+        const regionRows = (wm.regions || []).map((r, ri) => {
+            const locOpts = locations.map(l => `<option value="${escapeHtml(l.id)}" ${(r.locationIds || []).includes(l.id) ? 'selected' : ''}>${escapeHtml(l.name || l.id)}</option>`).join('');
+            return `<div class="cyoa-region-row" data-region-id="${escapeHtml(r.id || '')}" style="display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:10px;background:var(--bg);border-radius:var(--radius-sm);">
+                <input type="text" class="region-name cyoa-input" value="${escapeHtml(r.name || '')}" placeholder="${t('ui.ph.regionName')}" style="width:120px;">
+                <select class="region-locations cyoa-select" multiple size="3" style="flex:1; min-width:150px;">${locOpts}</select>
+                <button type="button" class="cyoa-btn-icon danger remove-region">🗑️</button>
+            </div>`;
+        }).join('');
+        formContainer.innerHTML = `
+            <div class="cyoa-edit-form">
+                <h3>🗺️ ${t('ui.editor.worldMap')}</h3>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.mapName')}</label>
+                    <input type="text" id="editMapName" class="cyoa-input" value="${escapeHtml(wm.name || '')}">
+                </div>
+                <div class="cyoa-form-row">
+                    <label style="font-weight:600;">${t('ui.label.regions')}（${t('ui.hint.regions')}）</label>
+                    <div id="worldMapRegionsList">${regionRows || ''}</div>
+                    <button type="button" class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm add-region" style="margin-top:8px;">${t('ui.btn.addRegion')}</button>
+                </div>
+                <div class="cyoa-form-actions">
+                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit(); CYOA.refreshWorldMapSummary?.();">${t('ui.btn.cancel')}</button>
+                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveWorldMap();">${t('ui.btn.save')}</button>
+                </div>
+            </div>`;
+        formContainer.style.display = 'block';
+        document.querySelector('.add-region')?.addEventListener('click', () => {
+            const list = CYOA.$('worldMapRegionsList');
+            if (!list) return;
+            const locOpts = (CYOA.editorTempData?.locations || []).map(l => `<option value="${escapeHtml(l.id)}">${escapeHtml(l.name || l.id)}</option>`).join('');
+            const row = document.createElement('div');
+            row.className = 'cyoa-region-row';
+            row.dataset.regionId = CYOA.generateId();
+            row.style.cssText = 'display:flex;gap:8px;align-items:center;margin-bottom:10px;padding:10px;background:var(--bg);border-radius:var(--radius-sm);';
+            row.innerHTML = `<input type="text" class="region-name cyoa-input" placeholder="${t('ui.ph.regionName')}" style="width:120px;">
+                <select class="region-locations cyoa-select" multiple size="3" style="flex:1;min-width:150px;">${locOpts}</select>
+                <button type="button" class="cyoa-btn-icon danger remove-region">🗑️</button>`;
+            list.appendChild(row);
+            row.querySelector('.remove-region').addEventListener('click', () => row.remove());
+        });
+        document.querySelectorAll('.remove-region').forEach(btn => {
+            btn.addEventListener('click', (e) => e.target.closest('.cyoa-region-row')?.remove());
+        });
+    };
+
+    CYOA.saveWorldMap = function() {
+        if (!CYOA.editorTempData) return;
+        const wm = CYOA.editorTempData.worldMap = CYOA.editorTempData.worldMap || {};
+        wm.name = CYOA.$('editMapName')?.value.trim() || t('ui.default.worldMap');
+        wm.regions = [];
+        document.querySelectorAll('#worldMapRegionsList .cyoa-region-row').forEach(row => {
+            const name = row.querySelector('.region-name')?.value.trim();
+            if (name) {
+                const locIds = Array.from(row.querySelector('.region-locations')?.selectedOptions || []).map(o => o.value);
+                const regionId = row.dataset.regionId || CYOA.generateId();
+                wm.regions.push({ id: regionId, name, locationIds: locIds });
+                locIds.forEach(lid => {
+                    const loc = (CYOA.editorTempData.locations || []).find(l => l.id === lid);
+                    if (loc) loc.regionId = regionId;
+                });
+            }
+        });
+        CYOA.cancelEdit();
+        CYOA.refreshWorldMapSummary?.();
+    };
+
+    CYOA.refreshWorldMapSummary = function() {
+        const el = CYOA.$('worldMapSummary');
+        if (el && CYOA.editorTempData?.worldMap?.regions) {
+            el.textContent = t('ui.status.nRegions', { n: CYOA.editorTempData.worldMap.regions.length });
+        }
+    };
 
     CYOA.saveLocation = function(index) {
         if (!CYOA.editorTempData) return;
         const item = CYOA.editorTempData.locations[index] || { id: CYOA.generateId() };
         item.name = CYOA.$('editLocName')?.value.trim() || '';
         item.description = CYOA.$('editLocDesc')?.value.trim() || '';
+        item.regionId = CYOA.$('editLocRegion')?.value || '';
+        if (!item.regionId) delete item.regionId;
         item.isSafeRoom = CYOA.$('editLocSafeRoom')?.checked || false;
         item.features = (CYOA.$('editLocFeatures')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
+        const facilityRows = document.querySelectorAll('#locationFacilitiesList .cyoa-facility-row');
+        item.facilities = [];
+        facilityRows.forEach(row => {
+            const name = row.querySelector('.facility-name')?.value.trim();
+            if (name) {
+                item.facilities.push({
+                    id: CYOA.generateId(),
+                    name,
+                    description: row.querySelector('.facility-desc')?.value.trim() || ''
+                });
+            }
+        });
+        if (item.facilities.length === 0) delete item.facilities;
         const edgesStr = CYOA.$('editLocEdges')?.value.trim() || '';
         if (edgesStr) {
             const game = CYOA.editorTempData;
