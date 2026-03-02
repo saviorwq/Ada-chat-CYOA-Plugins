@@ -151,6 +151,7 @@
 
     async function saveGameToFile(gameData) {
         await detectStorageMode();
+        CYOA._lastSaveGameError = '';
 
         if (_storageMode === 'local') {
             try {
@@ -160,6 +161,7 @@
                 return true;
             } catch (e) {
                 error('[localStorage] 保存游戏失败', e);
+                CYOA._lastSaveGameError = String(e?.message || e || 'local_storage_save_failed');
                 return false;
             }
         }
@@ -175,6 +177,7 @@
 
             if (!text || text.trim() === '') {
                 error('API返回空响应');
+                CYOA._lastSaveGameError = 'api_empty_response';
                 return false;
             }
 
@@ -185,15 +188,28 @@
                     return true;
                 } else {
                     error('保存失败:', result.error);
-                    return false;
+                    CYOA._lastSaveGameError = String(result.error || 'api_save_failed');
+                    // 远端失败时回退本地，避免编辑成果丢失
+                    try {
+                        DataManager.loadGames();
+                        DataManager.saveGame(gameData);
+                        log('[fallback localStorage] 远端保存失败，已本地保存:', gameData.id);
+                        return true;
+                    } catch (localErr) {
+                        error('[fallback localStorage] 本地保存也失败', localErr);
+                        CYOA._lastSaveGameError += ` | local_fallback_failed: ${String(localErr?.message || localErr || '')}`;
+                        return false;
+                    }
                 }
             } catch (e) {
                 error('解析响应失败', e);
                 console.error('原始响应:', text.substring(0, 200));
+                CYOA._lastSaveGameError = `api_parse_failed: ${String(e?.message || e || '')}`;
                 return false;
             }
         } catch (e) {
             error('保存游戏失败，回退到 localStorage', e);
+            CYOA._lastSaveGameError = `api_request_failed: ${String(e?.message || e || '')}`;
             _storageMode = 'local';
             return await saveGameToFile(gameData);
         }

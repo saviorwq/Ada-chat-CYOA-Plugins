@@ -9,6 +9,17 @@
     const CYOA = window.CYOA;
     const CONFIG = CYOA.CONFIG;
 
+    function shouldBypassInGame() {
+        // 默认：游戏模式下旁路安全词替换，避免改写剧情语义。
+        // 可通过 CYOA.CONFIG.WORD_FILTER_BYPASS_IN_GAME = false 显式关闭旁路。
+        const bypass = CONFIG.WORD_FILTER_BYPASS_IN_GAME !== false;
+        return bypass && !!(CYOA.currentGame && CYOA.currentSave);
+    }
+
+    function isWordFilterEnabled() {
+        return CONFIG.WORD_FILTER_ENABLED !== false;
+    }
+
     // 加载用户自定义词表（合并默认词表）
     function loadWordFilter() {
         const defaults = CONFIG.DEFAULT_WORD_FILTER || [];
@@ -58,6 +69,8 @@
     // 敏感词→安全词（发送给 AI 前 & RAG 预安全化）
     function maskSensitiveWords(text) {
         if (!text) return text;
+        if (!isWordFilterEnabled()) return text;
+        if (shouldBypassInGame()) return text;
         const { forward } = getSortedFilter();
         let result = text;
         forward.forEach(([sensitive, safe]) => {
@@ -70,6 +83,8 @@
     // 纯文本反向替换：安全词本身足够独特（如"下体柱身""锁扣式腰封"），误伤概率极低
     function unmaskSensitiveWords(text) {
         if (!text) return text;
+        if (!isWordFilterEnabled()) return text;
+        if (shouldBypassInGame()) return text;
         const { reverse } = getSortedFilter();
         let result = text;
         reverse.forEach(([sensitive, safe]) => {
@@ -82,4 +97,6 @@
     CYOA.saveWordFilter = saveWordFilter;
     CYOA.maskSensitiveWords = maskSensitiveWords;
     CYOA.unmaskSensitiveWords = unmaskSensitiveWords;
+    CYOA.shouldBypassWordFilterInGame = shouldBypassInGame;
+    CYOA.isWordFilterEnabled = isWordFilterEnabled;
 })();

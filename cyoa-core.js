@@ -7,6 +7,10 @@
     // ========== 配置常量 ==========
     const CONFIG = {
         DEBUG: true,
+        AI_BYPASS_COST_OPTIMIZER: true, // true = 关闭省钱策略（直通模型）
+        WORD_FILTER_ENABLED: true, // 敏感词过滤总开关
+        CONSTRAINT_MODIFIER_REMOVE_SCOPE: 'by_equip', // 固定同装备来源移除
+        MAX_SAVES_PER_GAME: 20, // 每个游戏最多保留存档数（超出自动淘汰最旧）
         MAX_IMAGE_SIZE: 2 * 1024 * 1024, // 2MB
         API_URL: 'api.php',
         STORAGE_KEYS: {
@@ -724,43 +728,68 @@
             latex: {
                 label: '乳胶',
                 sensory_feedback: {
-                    touch: '光滑、紧致、恒温反馈',
-                    sound: '轻微拉伸与摩擦声',
-                    resistance: '贴合肌肤，不易挣脱'
+                    touch: '光滑、紧致、包覆感强、略带黏附',
+                    sound: '拉伸时细响、摩擦时吱鸣',
+                    resistance: '高贴合、低透气、闷热积汗、不易挣脱'
                 }
             },
             metal: {
                 label: '金属',
                 sensory_feedback: {
-                    touch: '冰冷、沉重、硬质',
-                    sound: '硬质碰撞声、金属摩擦声',
-                    resistance: '坚硬、难以形变'
+                    touch: '冰冷、沉重、硬质、棱角压迫',
+                    sound: '清脆碰撞、刮擦回响、链节叮当',
+                    resistance: '高硬度、抗形变、压迫感强'
                 }
             },
             rope: {
                 label: '绳索',
                 sensory_feedback: {
-                    touch: '粗糙、纤维感、勒紧',
-                    sound: '摩擦与绷紧声',
-                    resistance: '可承重、越挣越紧'
+                    touch: '粗糙、纤维刮擦、勒痕明显、干涩摩擦',
+                    sound: '纤维摩擦、绷紧吱响、结扣拉扯声',
+                    resistance: '可承重、受力收紧、越挣越紧'
                 }
             },
             leather: {
                 label: '皮革',
                 sensory_feedback: {
-                    touch: '柔韧、微温、略带纹理',
-                    sound: '低沉摩擦与扣带声',
-                    resistance: '韧性强、不易撕裂'
+                    touch: '柔韧、微温、纹理压痕、贴身束紧',
+                    sound: '低沉摩擦、皮带绷响、扣具轻响',
+                    resistance: '韧性高、回弹稳定、不易撕裂'
                 }
             },
             fabric: {
                 label: '织物',
                 sensory_feedback: {
-                    touch: '柔软、透气或密实依材质而定',
-                    sound: '窸窣声、轻微摩擦',
-                    resistance: '可拉伸或绷紧，视织法而定'
+                    touch: '柔软或粗粝、贴附起伏、吸汗后湿黏',
+                    sound: '窸窣轻响、层叠摩擦声',
+                    resistance: '可拉伸或绷紧、受潮后阻力上升'
                 }
             }
+        },
+        MATERIAL_ALIASES: {
+            "乳胶": "latex",
+            "latex": "latex",
+            "橡胶": "latex",
+            "金属": "metal",
+            "metal": "metal",
+            "钢": "metal",
+            "皮革": "leather",
+            "皮质": "leather",
+            "leather": "leather",
+            "布料": "fabric",
+            "织物": "fabric",
+            "fabric": "fabric",
+            "绳": "rope",
+            "绳索": "rope",
+            "rope": "rope"
+        },
+        MATERIAL_BODY_EFFECTS: {
+            // 每回合小幅被动影响（按已穿戴、去重装备叠加，最终会做总量限幅）
+            latex:   { arousalPerTurn: 1, dependencyPerTurn: 1, painPerTurn: 0, shamePerTurn: 0, desc: '紧贴包覆与压迫反馈' },
+            metal:   { arousalPerTurn: 0, dependencyPerTurn: 0, painPerTurn: 1, shamePerTurn: 0, desc: '冰冷硬质与重量牵制' },
+            rope:    { arousalPerTurn: 0, dependencyPerTurn: 0, painPerTurn: 1, shamePerTurn: 0, desc: '纤维勒紧与摩擦拉扯' },
+            leather: { arousalPerTurn: 1, dependencyPerTurn: 0, painPerTurn: 0, shamePerTurn: 1, desc: '韧性包覆与束缚仪式感' },
+            fabric:  { arousalPerTurn: 0, dependencyPerTurn: 0, painPerTurn: 0, shamePerTurn: 1, desc: '持续贴附与触感提醒' }
         },
         // 约束+材质融合旁白（通用描写，主体为「你」/「身体」，不涉及特定角色名）
         CONSTRAINT_MATERIAL_NARRATIVES: {
@@ -2106,6 +2135,7 @@
         // ② 地点图系统
         LOCATION_DEFAULTS: {
             defaultTravelTurns: 6,      // 默认两地之间旅行轮数
+            limitedStepExtraTurns: 2,   // 受限移动（limited_step）时默认额外回合
             autoLockOnTravel: true      // 旅行期间自动触发计时器
         },
 
@@ -2363,6 +2393,118 @@
         return lex.noun;
     }
 
+    // ========== 插件设置（省钱策略旁路开关） ==========
+    function getDefaultPluginSettings() {
+        return {
+            AI_BYPASS_COST_OPTIMIZER: true, // 默认关闭省钱策略
+            WORD_FILTER_ENABLED: true,
+            LLM_TUNINGS: []
+        };
+    }
+
+    function normalizeLLMTunings(list) {
+        const src = Array.isArray(list) ? list : [];
+        return src
+            .slice(0, 10)
+            .map((it) => {
+                const row = it && typeof it === 'object' ? it : {};
+                const model = String(row.model || '').trim();
+                const instruction = String(row.instruction || '').trim();
+                const label = String(row.label || '').trim();
+                return {
+                    id: String(row.id || ('llm_tune_' + generateId())).trim(),
+                    enabled: row.enabled !== false,
+                    model,
+                    label,
+                    instruction
+                };
+            })
+            .filter((it) => !!it.model && !!it.instruction);
+    }
+
+    function normalizeConstraintRemoveScope(scope) {
+        const s = String(scope || '').trim().toLowerCase();
+        return s === 'by_equip' ? 'by_equip' : 'global';
+    }
+
+    function loadPluginSettings() {
+        try {
+            const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.SETTINGS);
+            const parsed = raw ? JSON.parse(raw) : {};
+            const def = getDefaultPluginSettings();
+            return {
+                AI_BYPASS_COST_OPTIMIZER: parsed.AI_BYPASS_COST_OPTIMIZER !== undefined
+                    ? !!parsed.AI_BYPASS_COST_OPTIMIZER
+                    : def.AI_BYPASS_COST_OPTIMIZER,
+                WORD_FILTER_ENABLED: parsed.WORD_FILTER_ENABLED !== undefined
+                    ? !!parsed.WORD_FILTER_ENABLED
+                    : def.WORD_FILTER_ENABLED,
+                LLM_TUNINGS: normalizeLLMTunings(parsed.LLM_TUNINGS || def.LLM_TUNINGS)
+            };
+        } catch (e) {
+            return getDefaultPluginSettings();
+        }
+    }
+
+    function savePluginSettings(settings) {
+        const def = getDefaultPluginSettings();
+        const normalized = {
+            AI_BYPASS_COST_OPTIMIZER: settings?.AI_BYPASS_COST_OPTIMIZER !== undefined
+                ? !!settings.AI_BYPASS_COST_OPTIMIZER
+                : def.AI_BYPASS_COST_OPTIMIZER,
+            WORD_FILTER_ENABLED: settings?.WORD_FILTER_ENABLED !== undefined
+                ? !!settings.WORD_FILTER_ENABLED
+                : def.WORD_FILTER_ENABLED,
+            LLM_TUNINGS: normalizeLLMTunings(settings?.LLM_TUNINGS || def.LLM_TUNINGS)
+        };
+        localStorage.setItem(CONFIG.STORAGE_KEYS.SETTINGS, JSON.stringify(normalized));
+        return normalized;
+    }
+
+    function getModelTunings(modelValue) {
+        const model = String(modelValue || '').trim();
+        if (!model) return [];
+        const settings = loadPluginSettings();
+        const rows = normalizeLLMTunings(settings?.LLM_TUNINGS || []);
+        return rows.filter((r) => r.enabled !== false && r.model === model);
+    }
+
+    function getModelTuningPrompt(modelValue) {
+        const rows = getModelTunings(modelValue);
+        if (!rows.length) return '';
+        return rows
+            .map((r, idx) => {
+                const title = r.label ? `[${r.label}]` : `[Rule ${idx + 1}]`;
+                return `${title}\n${r.instruction}`;
+            })
+            .join('\n\n');
+    }
+
+    function setAiBypassCostOptimizer(enabled) {
+        const val = !!enabled;
+        CONFIG.AI_BYPASS_COST_OPTIMIZER = val;
+        const current = loadPluginSettings();
+        current.AI_BYPASS_COST_OPTIMIZER = val;
+        savePluginSettings(current);
+        return val;
+    }
+
+    function fileToDataUrl(file, maxSizeMB) {
+        return new Promise((resolve, reject) => {
+            const f = file;
+            if (!f) return reject(new Error("no_file"));
+            const limitMB = Number(maxSizeMB || 2);
+            const limitBytes = Math.max(256 * 1024, Math.floor(limitMB * 1024 * 1024));
+            if (Number(f.size || 0) > limitBytes) {
+                return reject(new Error(`file_too_large_${limitMB}mb`));
+            }
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(new Error("read_failed"));
+            reader.readAsDataURL(f);
+        });
+    }
+
     // ========== 安全词设置 ==========
     const SAFEWORD_STORAGE_KEY = 'cyoa_safeword_v1';
 
@@ -2408,6 +2550,12 @@
     // post-init: 消除重复数据的引用赋值
     CONFIG.CONSTRAINT_BODY_REACTIONS.blind = CONFIG.VISION_BODY_REACTIONS.full_blind;
     CONFIG.CONSTRAINT_BODY_REACTIONS.limited_step = CONFIG.LIMITED_STEP_TIERS.moderate.bodyReactions;
+    // post-init: 读取插件设置并应用
+    const pluginSettings = loadPluginSettings();
+    CONFIG.AI_BYPASS_COST_OPTIMIZER = pluginSettings.AI_BYPASS_COST_OPTIMIZER !== false;
+    CONFIG.WORD_FILTER_ENABLED = pluginSettings.WORD_FILTER_ENABLED !== false;
+    CONFIG.LLM_TUNINGS = normalizeLLMTunings(pluginSettings.LLM_TUNINGS || []);
+    CONFIG.CONSTRAINT_MODIFIER_REMOVE_SCOPE = 'by_equip';
 
     // ========== i18n ==========
     CYOA.t = t;
@@ -2443,6 +2591,14 @@
     CYOA.getWorldLexiconMode = getWorldLexiconMode;
     CYOA.getAgreementLexicon = getAgreementLexicon;
     CYOA.getAgreementTerm = getAgreementTerm;
+    CYOA.getDefaultPluginSettings = getDefaultPluginSettings;
+    CYOA.loadPluginSettings = loadPluginSettings;
+    CYOA.savePluginSettings = savePluginSettings;
+    CYOA.setAiBypassCostOptimizer = setAiBypassCostOptimizer;
+    CYOA.fileToDataUrl = fileToDataUrl;
+    CYOA.getModelTunings = getModelTunings;
+    CYOA.getModelTuningPrompt = getModelTuningPrompt;
+    CYOA.normalizeLLMTunings = normalizeLLMTunings;
     CYOA.getDefaultSafewordSettings = getDefaultSafewordSettings;
     CYOA.loadSafewordSettings = loadSafewordSettings;
     CYOA.saveSafewordSettings = saveSafewordSettings;

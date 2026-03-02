@@ -71,6 +71,7 @@
         buildFormHTML: function(data) {
             const ws = data.worldSetting || {};
             const cm = data.coreMechanics || {};
+            const travelRules = data.travelRules || {};
             const rules = data.rules || {};
             const narrator = data.narrator || CONFIG.DEFAULT_GAME.narrator;
             
@@ -166,6 +167,17 @@
                             </select>
                             <textarea id="editMechanicsDesc" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.mechDesc')}">${escapeHtml(cm.description || '')}</textarea>
                             <textarea id="editMechanicsCustom" class="cyoa-textarea" rows="2" placeholder="${t('ui.ph.customMech')}">${escapeHtml(cm.custom || '')}</textarea>
+                            <div class="cyoa-grid-2">
+                                <div>
+                                    <label>受限移动额外回合（默认）</label>
+                                    <input type="number" id="editTravelLimitedExtraTurns" class="cyoa-input" min="0" value="${Number.isFinite(Number(travelRules.limitedStepExtraTurns)) ? Number(travelRules.limitedStepExtraTurns) : Number(CYOA.CONFIG?.LOCATION_DEFAULTS?.limitedStepExtraTurns ?? 2)}">
+                                    <small style="color:var(--text-light);">当角色处于“限步/移动受限”状态时，每次旅行额外增加回合数（边可单独覆盖）。</small>
+                                </div>
+                                <div>
+                                    <label>地点边回合格式</label>
+                                    <div style="font-size:12px; color:var(--text-light); padding-top:6px;">地点ID:基础回合[:受限额外回合]，例：pool:8:3</div>
+                                </div>
+                            </div>
                         </div>
                     </div>
 
@@ -191,6 +203,14 @@
                                 <div style="display:flex;gap:8px;align-items:flex-start;">
                                     <textarea id="narratorPrompt" class="cyoa-textarea" rows="3" style="flex:1;">${escapeHtml(narrator.prompt || '')}</textarea>
                                     <button type="button" class="cyoa-btn cyoa-btn-sm" style="flex-shrink:0;font-size:11px;white-space:nowrap;" onclick="CYOA.requestAIExpand && CYOA.requestAIExpand('narratorPrompt','narrator')" title="${t('ui.btn.aiExpand')}">✨ AI 扩展</button>
+                                </div>
+                            </div>
+                            <div class="cyoa-form-row">
+                                <label>天道头像（聊天缩略图）</label>
+                                <input type="text" id="narratorAvatar" class="cyoa-input" value="${escapeHtml(narrator.avatar || '')}" placeholder="可填图片 URL，或使用下方上传">
+                                <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+                                    <input type="file" id="narratorAvatarFile" accept="image/*" class="cyoa-input" style="max-width:280px;" onchange="CYOA.handleImageFilePick && CYOA.handleImageFilePick('narratorAvatarFile','narratorAvatar','narratorAvatarPreview',2)">
+                                    <img id="narratorAvatarPreview" src="${escapeHtml(narrator.avatar || '')}" alt="narrator avatar" style="width:36px; height:36px; border-radius:50%; object-fit:cover; border:1px solid var(--border); ${narrator.avatar ? '' : 'display:none;'}">
                                 </div>
                             </div>
                         </div>
@@ -422,7 +442,7 @@
                             newItem = { id: CYOA.generateId(), name: t('ui.default.newItem'), itemType: 'common', quantity: 1, description: '', locked: false, durability: 0, unlockItemId: '', statModifiers: '', skills: [], consumeItems: [] };
                             break;
                         case 'equipment':
-                            newItem = { id: CYOA.generateId(), name: t('ui.default.newEquip'), equipType: t('ui.default.equipType'), slots: [], description: '', locked: false, durability: 0, maxDurability: 0, unlockItemId: '', statModifiers: '', skills: [] };
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newEquip'), equipType: t('ui.default.equipType'), narrativeRole: 'auto', slots: [], description: '', locked: false, durability: 0, maxDurability: 0, unlockItemId: '', statModifiers: '', skills: [] };
                             break;
                         case 'professions':
                             newItem = { id: CYOA.generateId(), name: t('ui.default.newProf'), icon: '🎭', description: '', skills: [], statModifiers: '', traits: '' };
@@ -503,6 +523,12 @@
                         description: CYOA.$('editMechanicsDesc')?.value.trim() || '',
                         custom: CYOA.$('editMechanicsCustom')?.value.trim() || ''
                     };
+                    {
+                        const n = Number(CYOA.$('editTravelLimitedExtraTurns')?.value);
+                        const next = Number.isFinite(n) ? Math.max(0, Math.round(n)) : Number(CONFIG?.LOCATION_DEFAULTS?.limitedStepExtraTurns ?? 2);
+                        CYOA.editorTempData.travelRules = CYOA.editorTempData.travelRules || {};
+                        CYOA.editorTempData.travelRules.limitedStepExtraTurns = next;
+                    }
                     break;
                     
                 case 'narrator':
@@ -510,7 +536,8 @@
                         enabled: true,
                         model: CYOA.$('narratorModel')?.value || '',
                         style: CYOA.$('narratorStyle')?.value || '情感细腻',
-                        prompt: CYOA.$('narratorPrompt')?.value.trim() || CONFIG.DEFAULT_GAME.narrator.prompt
+                        prompt: CYOA.$('narratorPrompt')?.value.trim() || CONFIG.DEFAULT_GAME.narrator.prompt,
+                        avatar: CYOA.$('narratorAvatar')?.value.trim() || ''
                     };
                     break;
                     
@@ -557,11 +584,31 @@
                     renderGameListItems(listContainer);
                 }
             } else {
-                alert(t('ui.msg.saveFailed'));
+                const reason = String(CYOA._lastSaveGameError || '').trim();
+                alert(reason ? `${t('ui.msg.saveFailed')}\n${reason}` : t('ui.msg.saveFailed'));
             }
         }
     };
     CYOA.GameEditor = GameEditor;
+
+    CYOA.handleImageFilePick = async function(fileInputId, targetInputId, previewImgId, maxSizeMB) {
+        try {
+            const fileInput = document.getElementById(fileInputId);
+            const targetInput = document.getElementById(targetInputId);
+            const preview = previewImgId ? document.getElementById(previewImgId) : null;
+            const file = fileInput?.files?.[0];
+            if (!file || !targetInput) return;
+            const dataUrl = await CYOA.fileToDataUrl?.(file, maxSizeMB || 2);
+            if (!dataUrl) return;
+            targetInput.value = dataUrl;
+            if (preview) {
+                preview.src = dataUrl;
+                preview.style.display = "";
+            }
+        } catch (e) {
+            alert(`头像上传失败：${e?.message || e}`);
+        }
+    };
 
     // ========== 设置面板渲染 ==========
     CYOA.renderSettings = function(container) {
@@ -585,8 +632,20 @@
                         <button class="cyoa-btn cyoa-btn-secondary" id="cyoaAIGenerateBtn" title="${t('ui.btn.aiGenerateGame')}">✨ ${t('ui.btn.aiGenerateGame')}</button>
                         <button class="cyoa-btn cyoa-btn-secondary" id="cyoaImportGameBtn">${t('ui.btn.importGame')}</button>
                         <button class="cyoa-btn cyoa-btn-secondary" id="cyoaWordFilterBtn" title="${t('ui.panel.wordFilter')}">${t('ui.btn.wordFilter')}</button>
-                        ${CYOA.langSwitchHtml()}
                     </div>
+                </div>
+                <div style="margin:-8px 0 16px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--bg-light);">
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
+                        <input id="cyoaBypassCostToggle" type="checkbox" ${CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER !== false ? 'checked' : ''}>
+                        <span>关闭省钱策略（CYOA 直通模型，减少乱码/污染回复）</span>
+                    </label>
+                    <div style="font-size:12px; color:var(--text-light); margin-top:6px;">
+                        开启后会跳过 Ada Chat 的省钱优化链路；默认开启。
+                    </div>
+                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; margin-top:10px;">
+                        <input id="cyoaWordFilterEnabledToggle" type="checkbox" ${CYOA.CONFIG?.WORD_FILTER_ENABLED !== false ? 'checked' : ''}>
+                        <span>启用屏蔽词过滤（发送前替换、回包后还原）</span>
+                    </label>
                 </div>
                 <div id="cyoaGameList" class="cyoa-game-list"></div>
             </div>
@@ -596,11 +655,54 @@
         CYOA.$('cyoaAIGenerateBtn').onclick = () => openAIGenerateModal(container);
         CYOA.$('cyoaImportGameBtn').onclick = () => CYOA.importGame(container);
         CYOA.$('cyoaWordFilterBtn').onclick = () => openWordFilterEditor();
-        
+        const bypassToggle = CYOA.$('cyoaBypassCostToggle');
+        if (bypassToggle) {
+            bypassToggle.onchange = () => {
+                const enabled = !!bypassToggle.checked;
+                if (typeof CYOA.setAiBypassCostOptimizer === 'function') {
+                    CYOA.setAiBypassCostOptimizer(enabled);
+                } else {
+                    CYOA.CONFIG.AI_BYPASS_COST_OPTIMIZER = enabled;
+                }
+                CYOA.log?.('AI_BYPASS_COST_OPTIMIZER =', enabled);
+            };
+        }
+        const wordFilterToggle = CYOA.$('cyoaWordFilterEnabledToggle');
+        if (wordFilterToggle) {
+            wordFilterToggle.onchange = () => {
+                const enabled = !!wordFilterToggle.checked;
+                CYOA.CONFIG.WORD_FILTER_ENABLED = enabled;
+                try {
+                    const current = CYOA.loadPluginSettings?.() || {};
+                    current.WORD_FILTER_ENABLED = enabled;
+                    CYOA.savePluginSettings?.(current);
+                } catch (_) {}
+                CYOA.log?.('WORD_FILTER_ENABLED =', enabled);
+            };
+        }
+
         CYOA.loadGamesList().then(() => {
             renderGameListItems(CYOA.$('cyoaGameList'));
         });
     };
+
+    async function ensureGameRuntimeReady() {
+        if (typeof CYOA.startGame === 'function') return true;
+        const src = `plugins/cyoa/cyoa-game.js?v=${Date.now()}`;
+        try {
+            await new Promise((resolve, reject) => {
+                const s = document.createElement('script');
+                s.src = src;
+                s.async = true;
+                s.onload = resolve;
+                s.onerror = () => reject(new Error(`load failed: ${src}`));
+                document.head.appendChild(s);
+            });
+        } catch (e) {
+            console.error('[CYOA] 运行模块补载失败', e);
+        }
+        return typeof CYOA.startGame === 'function';
+    }
 
     function renderGameListItems(listContainer) {
         if (!listContainer) return;
@@ -641,7 +743,12 @@
                 </div>
             `;
             
-            item.querySelector('.play-game').addEventListener('click', () => {
+            item.querySelector('.play-game').addEventListener('click', async () => {
+                const ok = await ensureGameRuntimeReady();
+                if (!ok || typeof CYOA.startGame !== 'function') {
+                    alert('CYOA 游戏运行模块未加载，请刷新页面后重试。');
+                    return;
+                }
                 CYOA.startGame(game.id);
             });
             
@@ -991,12 +1098,15 @@
         sidebarContainer.style.flexShrink = '0';
         
         // 纵向可折叠列表：各分区为独立折叠块
-        if (!CYOA._sidebarAccordion) CYOA._sidebarAccordion = { tree: true, attributes: false, inventory: false, skills: false, quests: false, chapters: false, saves: false };
+        if (!CYOA._sidebarAccordion) CYOA._sidebarAccordion = { tree: true, attributes: false, status: true, inventory: false, map: false, llmdebug: false, skills: false, quests: false, chapters: false, saves: false };
         const acc = CYOA._sidebarAccordion;
         const sections = [
             { tab: 'tree', label: t('ui.panel.storyTree'), defaultOpen: acc.tree },
             { tab: 'attributes', label: t('ui.panel.attributes'), defaultOpen: acc.attributes },
+            { tab: 'status', label: '🩺 状态', defaultOpen: acc.status },
             { tab: 'inventory', label: t('ui.panel.inventory'), defaultOpen: acc.inventory },
+            { tab: 'map', label: '🗺️ 地图', defaultOpen: acc.map },
+            { tab: 'llmdebug', label: '🧪 AI实时调试', defaultOpen: acc.llmdebug },
             { tab: 'skills', label: t('ui.panel.skills'), defaultOpen: acc.skills },
             { tab: 'quests', label: t('ui.panel.quests'), defaultOpen: acc.quests },
             { tab: 'chapters', label: t('ui.panel.chapters'), defaultOpen: acc.chapters },
@@ -1038,7 +1148,10 @@
         
         CYOA.renderTreePanel();
         CYOA.renderAttributesPanel();
+        CYOA.renderStatusPanel();
         CYOA.renderInventoryPanel();
+        CYOA.renderMapPanel?.();
+        CYOA.renderLlmDebugPanel?.();
         CYOA.renderSkillsPanel();
         CYOA.renderQuestsPanel();
         CYOA.renderChaptersPanel();
@@ -1234,6 +1347,65 @@
                 if (ch) ch.textContent = CYOA._attrExpand[id] ? '▼' : '▶';
             });
         });
+        // 属性刷新后同步状态面板
+        CYOA.renderStatusPanel?.();
+    };
+
+    // ========== 渲染状态面板（侧栏专用） ==========
+    CYOA.renderStatusPanel = function() {
+        const container = document.getElementById('cyoaStatusPanel');
+        const save = CYOA.currentSave;
+        if (!container || !save) return;
+        const constraints = CYOA.getActiveConstraints?.() || new Set();
+        const cList = Array.from(constraints || []);
+
+        // 身体状态
+        const bodyRows = [];
+        const pain = Number(save.pain || 0);
+        if (pain > 0) bodyRows.push(`疼痛：${pain}/100`);
+        const oxy = Number(save.oxygen ?? 100);
+        if (oxy < 100) bodyRows.push(`氧气：${oxy}/100`);
+        if (Array.isArray(save.marks) && save.marks.length > 0) bodyRows.push(`伤痕：${save.marks.length} 处`);
+        if (save.predicament?.type) bodyRows.push(`困境束缚：${save.predicament.type}`);
+        if (Array.isArray(save.blockedPostures) && save.blockedPostures.length) {
+            const pDefs = CONFIG.POSTURES || [];
+            const labels = save.blockedPostures.map(v => pDefs.find(p => p.value === v)?.label || v);
+            bodyRows.push(`受限姿势：${labels.join('、')}`);
+        }
+        if (save.currentGait && String(save.currentGait) !== 'normal') bodyRows.push(`步态：${save.currentGait}`);
+        if (Array.isArray(save.injuries) && save.injuries.length) bodyRows.push(`受伤部位：${save.injuries.map(i => i.part || i.type || i).join('、')}`);
+        if (Array.isArray(save.disabilities) && save.disabilities.length) bodyRows.push(`残疾状态：${save.disabilities.map(d => d.name || d.type || d).join('、')}`);
+        if (save.disabilities && !Array.isArray(save.disabilities) && typeof save.disabilities === 'object') {
+            const active = Object.keys(save.disabilities).filter(k => !!save.disabilities[k]);
+            if (active.length) bodyRows.push(`残疾状态：${active.join('、')}`);
+        }
+
+        // 限制状态
+        const cRows = cList.map(c => CYOA.getConstraintLabel?.(c) || c);
+        const posture = save.posture || 'standing';
+        if (posture) {
+            const pDef = (CONFIG.POSTURES || []).find(p => p.value === posture);
+            cRows.unshift(`当前姿势：${pDef?.label || posture}`);
+        }
+        if (save.tether?.active) cRows.push('牵引：生效中');
+
+        const renderList = (arr, emptyText) => {
+            if (!arr.length) return `<div style="font-size:11px; color:var(--text-light);">${escapeHtml(emptyText)}</div>`;
+            return `<div style="display:flex; flex-direction:column; gap:4px;">${arr.map(x => `<div style="font-size:11px;">• ${escapeHtml(String(x))}</div>`).join('')}</div>`;
+        };
+
+        let html = '';
+        html += `<div style="margin-bottom:10px; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">`;
+        html += `<div style="padding:8px 10px; background:var(--bg); font-size:12px; font-weight:600;">身体状态</div>`;
+        html += `<div style="padding:8px 10px; background:var(--bg-light);">${renderList(bodyRows, '暂无明显伤病/残疾状态')}</div>`;
+        html += `</div>`;
+
+        html += `<div style="border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">`;
+        html += `<div style="padding:8px 10px; background:var(--bg); font-size:12px; font-weight:600;">限制状态</div>`;
+        html += `<div style="padding:8px 10px; background:var(--bg-light);">${renderList(cRows, '当前无额外限制')}</div>`;
+        html += `</div>`;
+
+        container.innerHTML = html;
     };
 
     // ========== 可折叠面板封装 ==========
@@ -1250,6 +1422,275 @@
             `<span>${title}</span><span style="font-size:10px; color:var(--text-light);">${arrow}</span></div>` +
             `<div style="display:${display};">${content}</div></div>`;
     }
+
+    function getEnabledChatModelsForDebug() {
+        return (CYOA.getChatModels?.() || [])
+            .filter(m => String(m?.value || '').trim())
+            .map(m => ({ value: String(m.value), label: String(m.label || m.value) }));
+    }
+
+    function ensureLlmDebugDraft() {
+        if (!Array.isArray(CYOA._llmDebugDraft)) {
+            const settings = CYOA.loadPluginSettings?.() || {};
+            const rows = Array.isArray(settings.LLM_TUNINGS) ? settings.LLM_TUNINGS : [];
+            CYOA._llmDebugDraft = rows.slice(0, 10).map(r => ({ ...r }));
+        }
+        return CYOA._llmDebugDraft;
+    }
+
+    function getCurrentGameModelForDebug() {
+        const fallback = (getEnabledChatModelsForDebug()[0] || {}).value || '';
+        const model = String(window.gameModeModel || document.getElementById('model')?.value || fallback).trim();
+        return model;
+    }
+
+    function getNpcNamesForDebug() {
+        const game = CYOA.currentGame || {};
+        const save = CYOA.currentSave || {};
+        const chars = Array.isArray(game.characters) ? game.characters : [];
+        const playerId = String(save.playerCharacterId || '').trim();
+        const playerName = String(save.playerCharacter || '').trim();
+        return chars
+            .filter((c) => {
+                const roleType = String(c?.roleType || '').trim().toLowerCase();
+                const role = String(c?.role || '').trim().toLowerCase();
+                const cid = String(c?.id || '').trim();
+                const cname = String(c?.name || '').trim();
+                if ((playerId && cid === playerId) || (playerName && cname === playerName)) return false;
+                if (roleType === 'playable' || role === 'playable') return false;
+                return !!(cid || cname);
+            })
+            .map((c) => String(c?.name || c?.id || '').trim())
+            .filter(Boolean)
+            .slice(0, 16);
+    }
+
+    function buildLlmDebugPanel() {
+        const draft = ensureLlmDebugDraft();
+        CYOA._llmDebugDraft = draft.slice(0, 10);
+        const currentModel = getCurrentGameModelForDebug();
+        const npcNames = getNpcNamesForDebug();
+        const npcText = npcNames.length
+            ? npcNames.map(n => `<span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:11px;background:var(--bg);">${escapeHtml(n)}</span>`).join(' ')
+            : `<span style="font-size:11px;color:var(--text-light);">暂无可识别 NPC（仍可配置天道叙事规则）</span>`;
+        const rowsHtml = draft.length
+            ? draft.map((row, idx) => {
+                const rid = String(row?.id || `llm_tune_${idx}`);
+                return `
+                    <div data-llm-row="${escapeHtml(rid)}" style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:8px;">
+                        <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
+                            <label style="display:flex; gap:6px; align-items:center; font-size:12px;">
+                                <input type="checkbox" data-llm-field="enabled" ${row.enabled !== false ? 'checked' : ''}>
+                                启用
+                            </label>
+                            <span style="font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:2px 8px;">对象：NPC / 天道</span>
+                            <input class="cyoa-input" data-llm-field="label" value="${escapeHtml(String(row.label || ''))}" placeholder="规则名（可选）" style="min-width:140px; height:28px;">
+                            <button class="cyoa-btn cyoa-btn-danger" data-llm-del="${escapeHtml(rid)}" style="padding:2px 8px; font-size:11px;">删除</button>
+                        </div>
+                        <textarea class="cyoa-textarea" data-llm-field="instruction" rows="2" placeholder="例如：禁止开头寒暄；优先短句；不得输出英文注释等">${escapeHtml(String(row.instruction || ''))}</textarea>
+                    </div>
+                `;
+            }).join('')
+            : `<div style="font-size:12px; color:var(--text-light); margin-top:8px;">暂无规则。可新增并作用于 NPC/天道叙事。</div>`;
+
+        return `
+            <div style="font-size:12px; color:var(--text-light); margin-bottom:8px;">规则仅面向游戏中的 NPC/天道叙事，不再按模型列表配置（保存后下一条消息生效）。</div>
+            <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;">
+                <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
+                    <span style="font-size:11px; color:var(--text-light);">NPC：</span>
+                    ${npcText}
+                </div>
+            </div>
+            <div id="cyoaLlmDebugList">${rowsHtml}</div>
+            <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:nowrap; overflow-x:auto; padding-bottom:2px;">
+                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugAddBtn" style="white-space:nowrap; flex:0 0 auto;">+ 新增规则</button>
+                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugClearCurrentBtn" style="white-space:nowrap; flex:0 0 auto;">清空全部规则</button>
+                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugExportBtn" style="white-space:nowrap; flex:0 0 auto;">导出规则</button>
+                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugImportBtn" style="white-space:nowrap; flex:0 0 auto;">导入规则</button>
+                <button class="cyoa-btn cyoa-btn-primary" id="cyoaLlmDebugSaveBtn" style="white-space:nowrap; flex:0 0 auto;">保存微调</button>
+            </div>
+            <input id="cyoaLlmDebugImportInput" type="file" accept=".json,application/json" style="display:none;">
+        `;
+    }
+
+    function bindLlmDebugPanelEvents(container) {
+        if (!container) return;
+        const draft = ensureLlmDebugDraft();
+
+        const syncDraftFromDom = () => {
+            const activeModel = getCurrentGameModelForDebug();
+            container.querySelectorAll('#cyoaLlmDebugList [data-llm-row]').forEach((rowEl) => {
+                const rid = String(rowEl.getAttribute('data-llm-row') || '');
+                const rowRef = draft.find(x => String(x?.id || '') === rid);
+                if (!rowRef) return;
+                const enabledEl = rowEl.querySelector('[data-llm-field="enabled"]');
+                const labelEl = rowEl.querySelector('[data-llm-field="label"]');
+                const insEl = rowEl.querySelector('[data-llm-field="instruction"]');
+                rowRef.enabled = !!enabledEl?.checked;
+                rowRef.model = activeModel;
+                rowRef.label = String(labelEl?.value || '').trim();
+                rowRef.instruction = String(insEl?.value || '').trim();
+            });
+        };
+
+        container.querySelectorAll('#cyoaLlmDebugList [data-llm-del]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                syncDraftFromDom();
+                const rid = String(btn.getAttribute('data-llm-del') || '');
+                CYOA._llmDebugDraft = draft.filter(x => String(x?.id || '') !== rid);
+                CYOA.renderLlmDebugPanel?.();
+            });
+        });
+
+        const addBtn = container.querySelector('#cyoaLlmDebugAddBtn');
+        if (addBtn) {
+            addBtn.onclick = () => {
+                syncDraftFromDom();
+                if (draft.length >= 10) {
+                    alert('最多只能配置 10 条 LLM 微调规则。');
+                    return;
+                }
+                draft.push({
+                    id: `llm_tune_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+                    enabled: true,
+                    model: getCurrentGameModelForDebug(),
+                    label: '',
+                    instruction: ''
+                });
+                CYOA._llmDebugDraft = draft;
+                CYOA.renderLlmDebugPanel?.();
+            };
+        }
+
+        const clearCurrentBtn = container.querySelector('#cyoaLlmDebugClearCurrentBtn');
+        if (clearCurrentBtn) {
+            clearCurrentBtn.onclick = () => {
+                syncDraftFromDom();
+                const removed = draft.length;
+                CYOA._llmDebugDraft = [];
+                CYOA.appendSystemMessage?.(`🧪 已清空全部 ${removed} 条草稿规则`);
+                CYOA.renderLlmDebugPanel?.();
+            };
+        }
+
+        const exportBtn = container.querySelector('#cyoaLlmDebugExportBtn');
+        if (exportBtn) {
+            exportBtn.onclick = () => {
+                syncDraftFromDom();
+                const rows = draft
+                    .slice(0, 10)
+                    .map((it) => ({
+                        id: String(it?.id || '').trim() || `llm_tune_${Date.now()}`,
+                        enabled: it?.enabled !== false,
+                        model: String(it?.model || '').trim(),
+                        label: String(it?.label || '').trim(),
+                        instruction: String(it?.instruction || '').trim()
+                    }))
+                    .filter((it) => it.model && it.instruction);
+                const payload = {
+                    version: 1,
+                    exportedAt: new Date().toISOString(),
+                    LLM_TUNINGS: rows
+                };
+                try {
+                    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `cyoa_llm_tunings_${Date.now()}.json`;
+                    document.body.appendChild(a);
+                    a.click();
+                    a.remove();
+                    URL.revokeObjectURL(url);
+                } catch (_) {
+                    alert('导出失败，请稍后重试。');
+                }
+            };
+        }
+
+        const importInput = container.querySelector('#cyoaLlmDebugImportInput');
+        const importBtn = container.querySelector('#cyoaLlmDebugImportBtn');
+        if (importBtn && importInput) {
+            importBtn.onclick = () => importInput.click();
+            importInput.onchange = () => {
+                const file = importInput.files?.[0];
+                if (!file) return;
+                const reader = new FileReader();
+                reader.onload = () => {
+                    try {
+                        syncDraftFromDom();
+                        const raw = String(reader.result || '');
+                        const parsed = JSON.parse(raw);
+                        const incoming = Array.isArray(parsed)
+                            ? parsed
+                            : (Array.isArray(parsed?.LLM_TUNINGS) ? parsed.LLM_TUNINGS : []);
+                        const normalized = typeof CYOA.normalizeLLMTunings === 'function'
+                            ? CYOA.normalizeLLMTunings(incoming)
+                            : incoming;
+                        const merged = draft.concat(normalized || []);
+                        const dedup = [];
+                        const seen = new Set();
+                        merged.forEach((it) => {
+                            const id = String(it?.id || '').trim();
+                            const model = String(it?.model || '').trim();
+                            const inst = String(it?.instruction || '').trim();
+                            const key = id || `${model}::${inst}`;
+                            if (!model || !inst || seen.has(key)) return;
+                            seen.add(key);
+                            dedup.push({
+                                id: id || `llm_tune_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                                enabled: it?.enabled !== false,
+                                model,
+                                label: String(it?.label || '').trim(),
+                                instruction: inst
+                            });
+                        });
+                        CYOA._llmDebugDraft = dedup.slice(0, 10);
+                        CYOA.appendSystemMessage?.(`🧪 已导入 ${CYOA._llmDebugDraft.length} 条微调规则（草稿）`);
+                        CYOA.renderLlmDebugPanel?.();
+                    } catch (_) {
+                        alert('导入失败：JSON 格式不正确。');
+                    } finally {
+                        importInput.value = '';
+                    }
+                };
+                reader.readAsText(file);
+            };
+        }
+
+        const saveBtn = container.querySelector('#cyoaLlmDebugSaveBtn');
+        if (saveBtn) {
+            saveBtn.onclick = () => {
+                syncDraftFromDom();
+                const activeModel = getCurrentGameModelForDebug();
+                const cleaned = draft
+                    .slice(0, 10)
+                    .map((it) => ({
+                        id: String(it?.id || '').trim() || `llm_tune_${Date.now()}`,
+                        enabled: it?.enabled !== false,
+                        model: String(it?.model || activeModel).trim(),
+                        label: String(it?.label || '').trim(),
+                        instruction: String(it?.instruction || '').trim()
+                    }))
+                    .filter((it) => it.model && it.instruction);
+                const current = CYOA.loadPluginSettings?.() || {};
+                current.LLM_TUNINGS = cleaned;
+                const saved = CYOA.savePluginSettings?.(current) || current;
+                CYOA.CONFIG.LLM_TUNINGS = Array.isArray(saved.LLM_TUNINGS) ? saved.LLM_TUNINGS : cleaned;
+                CYOA._llmDebugDraft = CYOA.CONFIG.LLM_TUNINGS.slice(0, 10);
+                CYOA.log?.('LLM_TUNINGS saved:', CYOA._llmDebugDraft.length);
+                CYOA.appendSystemMessage?.(`🧪 已保存 ${CYOA._llmDebugDraft.length} 条模型微调规则`);
+                CYOA.renderLlmDebugPanel?.();
+            };
+        }
+    }
+
+    CYOA.renderLlmDebugPanel = function() {
+        const container = document.getElementById('cyoaLlmdebugPanel');
+        if (!container || !CYOA.currentSave) return;
+        container.innerHTML = buildLlmDebugPanel();
+        bindLlmDebugPanelEvents(container);
+    };
 
     // ========== 牵引/姿势状态面板构建 ==========
     function buildTetherPosturePanel() {
@@ -1446,6 +1887,118 @@
         html += '</div>';
         return html;
     }
+
+    function buildMapQuickTravelPanel() {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !game) return '<div style="color:#888;padding:6px">未开始游戏</div>';
+        const allLocs = Array.isArray(game.locations) ? game.locations : [];
+        if (!allLocs.length) return '<div style="font-size:12px; color:var(--text-light);">未配置地点</div>';
+        const knownIdsRaw = (typeof CYOA.getKnownLocationIds === 'function')
+            ? CYOA.getKnownLocationIds(save)
+            : [String(save.currentLocation || '').trim()];
+        const knownSet = new Set((knownIdsRaw || []).map(v => String(v || '').trim()).filter(Boolean));
+        if (!knownSet.size) {
+            return '<div style="font-size:12px; color:var(--text-light);">暂无已知地点</div>';
+        }
+        const from = String(save.currentLocation || '').trim();
+        const constraints = CYOA.getActiveConstraints?.() || new Set();
+        const isLimited = constraints.has('limited_step');
+        const edgeList = Array.isArray(game.locationEdges) ? game.locationEdges : [];
+        const gameLimitedExtra = Number(game?.travelRules?.limitedStepExtraTurns);
+        const defaultLimitedExtra = Number(CYOA.CONFIG?.LOCATION_DEFAULTS?.limitedStepExtraTurns ?? 2);
+        const rows = allLocs
+            .filter(loc => knownSet.has(String(loc?.id || '').trim()))
+            .map((loc) => {
+                const id = String(loc?.id || '').trim();
+                const name = String(loc?.name || id).trim();
+                const isCurrent = id === from;
+                const regionId = String(loc?.regionId || '').trim();
+                const edge = edgeList.find(e =>
+                    (String(e?.from || '') === from && String(e?.to || '') === id) ||
+                    (String(e?.to || '') === from && String(e?.from || '') === id)
+                );
+                const reachable = !isCurrent && (!edgeList.length || !!edge);
+                const base = Number(edge?.travelTurns ?? CYOA.CONFIG?.LOCATION_DEFAULTS?.defaultTravelTurns ?? 6);
+                const baseTurns = Number.isFinite(base) && base > 0 ? Math.round(base) : 6;
+                const edgeLimitedExtra = Number(edge?.limitedStepExtraTurns);
+                const limitedExtra = Number.isFinite(edgeLimitedExtra)
+                    ? edgeLimitedExtra
+                    : (Number.isFinite(gameLimitedExtra) ? gameLimitedExtra : defaultLimitedExtra);
+                const eta = baseTurns + (isLimited ? Math.max(0, Math.round(limitedExtra)) : 0);
+                return { id, name, regionId, isCurrent, reachable, eta };
+            })
+            .sort((a, b) => (a.isCurrent === b.isCurrent ? a.name.localeCompare(b.name, 'zh-Hans-CN') : (a.isCurrent ? -1 : 1)));
+        const traveling = !!save.travelingTo;
+        const regions = Array.isArray(game?.worldMap?.regions) ? game.worldMap.regions : [];
+        const grouped = [];
+        const used = new Set();
+        const currentRegionId = String((rows.find(x => x.isCurrent)?.regionId) || '').trim();
+        const sortRegionItems = (arr) => arr.slice().sort((a, b) => {
+            if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
+            if (a.reachable !== b.reachable) return a.reachable ? -1 : 1;
+            if (a.eta !== b.eta) return a.eta - b.eta;
+            return a.name.localeCompare(b.name, 'zh-Hans-CN');
+        });
+        regions.forEach((r) => {
+            const rid = String(r?.id || '').trim();
+            const rname = String(r?.name || rid || '未命名区域').trim();
+            const items = sortRegionItems(rows.filter(x => String(x.regionId || '') === rid));
+            if (!items.length) return;
+            used.add(rid);
+            grouped.push({ id: rid, name: rname, items });
+        });
+        const ungrouped = sortRegionItems(rows.filter(x => !String(x.regionId || '').trim() || !used.has(String(x.regionId || '').trim())));
+        if (ungrouped.length) grouped.push({ id: '__ungrouped__', name: '未分区地点', items: ungrouped });
+        grouped.sort((a, b) => {
+            const aCur = a.id !== '__ungrouped__' && a.id === currentRegionId;
+            const bCur = b.id !== '__ungrouped__' && b.id === currentRegionId;
+            if (aCur !== bCur) return aCur ? -1 : 1;
+            if (a.id === '__ungrouped__' && b.id !== '__ungrouped__') return 1;
+            if (b.id === '__ungrouped__' && a.id !== '__ungrouped__') return -1;
+            return a.name.localeCompare(b.name, 'zh-Hans-CN');
+        });
+        const renderItemBtn = (r) => `
+            <button type="button"
+                class="cyoa-btn cyoa-btn-secondary"
+                data-cyoa-map-go="${escapeHtml(r.id)}"
+                ${r.isCurrent || !r.reachable || traveling ? 'disabled' : ''}
+                style="display:flex; justify-content:space-between; align-items:center; padding:5px 8px; font-size:11px; text-align:left;">
+                <span>${r.isCurrent ? '📍 ' : '🧭 '}${escapeHtml(r.name)}</span>
+                <span style="color:var(--text-light);">${r.isCurrent ? '当前位置' : (r.reachable ? `~${r.eta}回合` : '不可直达')}</span>
+            </button>
+        `;
+        return `
+            <div style="font-size:11px; color:var(--text-light); margin-bottom:8px;">仅显示已知（去过）地点；快速到达会消耗同等回合。</div>
+            <div style="display:flex; flex-direction:column; gap:6px;">
+                ${grouped.map(g => `
+                    <div style="border:1px solid var(--border); border-radius:8px; overflow:hidden;">
+                        <div style="padding:5px 8px; font-size:11px; font-weight:600; background:var(--bg);">
+                            ${escapeHtml(g.name)}
+                            ${g.id !== '__ungrouped__' && g.id === currentRegionId ? '<span style="margin-left:6px; font-size:10px; color:var(--primary);">（当前区域）</span>' : ''}
+                        </div>
+                        <div style="display:flex; flex-direction:column; gap:4px; padding:6px; background:var(--bg-light);">
+                            ${g.items.map(renderItemBtn).join('')}
+                        </div>
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    }
+
+    CYOA.renderMapPanel = function() {
+        const container = document.getElementById('cyoaMapPanel');
+        if (!container || !CYOA.currentSave) return;
+        container.innerHTML = buildMapQuickTravelPanel();
+        container.querySelectorAll('[data-cyoa-map-go]').forEach((btn) => {
+            btn.addEventListener('click', () => {
+                const to = String(btn.getAttribute('data-cyoa-map-go') || '').trim();
+                if (!to) return;
+                CYOA.travelTo?.(to);
+                CYOA.renderSidebar?.();
+            });
+        });
+    };
 
     // ========== 习惯度面板 ==========
     function buildHabituationPanel() {
@@ -1869,14 +2422,75 @@
 
         // 装备栏
         let equipContent = '';
+        if (!CYOA.currentSave.equipment || typeof CYOA.currentSave.equipment !== 'object') {
+            CYOA.currentSave.equipment = {};
+        }
+        // 运行时自修复：若“已穿戴”为空，按当前玩家的 startEquipped 规则回填一次
+        // 兼容 ownerId 可能写成角色 id / 角色名 / 为空。
+        const listGame = (Array.isArray(CYOA.games) ? CYOA.games : []).find(g => g && g.id === CYOA.currentGame?.id);
+        const equipCatalog = (Array.isArray(CYOA.currentGame?.equipment) && CYOA.currentGame.equipment.length > 0)
+            ? CYOA.currentGame.equipment
+            : (Array.isArray(listGame?.equipment) ? listGame.equipment : []);
+        if (Object.keys(CYOA.currentSave.equipment).length === 0 && Array.isArray(equipCatalog) && equipCatalog.length > 0) {
+            const pId = String(CYOA.currentSave.playerCharacterId || '').trim();
+            const pName = String(CYOA.currentSave.playerCharacter || '').trim();
+            const fallbackEquips = equipCatalog.filter(eq => {
+                if (!eq?.startEquipped) return false;
+                const owner = String(eq.ownerId || '').trim();
+                if (!owner) return true;
+                return (pId && owner === pId) || (pName && owner === pName);
+            });
+            fallbackEquips.forEach(eq => {
+                const slots = Array.isArray(eq.slots) ? eq.slots : [];
+                const copy = JSON.parse(JSON.stringify(eq));
+                slots.forEach(slot => {
+                    CYOA.currentSave.equipment[slot] = copy;
+                });
+                if (copy.id) {
+                    if (!Array.isArray(CYOA.currentSave.acquiredItemIds)) CYOA.currentSave.acquiredItemIds = [];
+                    if (!CYOA.currentSave.acquiredItemIds.includes(copy.id)) CYOA.currentSave.acquiredItemIds.push(copy.id);
+                }
+            });
+            if (fallbackEquips.length > 0) {
+                try { CYOA.persistSave?.(); } catch (_) {}
+            }
+        }
         const equipped = CYOA.currentSave.equipment || {};
         if (Object.keys(equipped).length === 0) {
             equipContent += `<div class="cyoa-empty-state">${t('ui.empty.noEquipped')}</div>`;
         } else {
-            equipContent += '<div style="display: grid; gap: 8px;">';
+            const slotIconMap = {
+                head: "🪖", eyes: "👁️", ears: "👂", mouth: "👄", nose: "👃", neck: "🧣",
+                chest: "🫀", waist: "🩱", hips: "🩲", crotch: "🔒",
+                shoulder: "🦴", upper_arm: "💪", elbow: "🦾", forearm: "🦾", wrist: "⌚", palm: "✋", fingers: "🤌",
+                thigh: "🦵", knee: "🦿", calf: "🦵", ankle: "🦶", foot: "👣"
+            };
+            const grouped = new Map();
             Object.entries(equipped).forEach(([slot, item]) => {
-                const slotLabel = CONFIG.EQUIPMENT_SLOTS.find(s => s.value === slot)?.label || slot;
+                if (!item) return;
+                const key = item.id ? `id:${item.id}` : `slot:${slot}`;
+                const old = grouped.get(key);
+                if (old) {
+                    old.slots.add(slot);
+                    return;
+                }
+                grouped.set(key, {
+                    slot,
+                    item,
+                    slots: new Set([slot])
+                });
+            });
+            equipContent += '<div style="display: grid; gap: 8px;">';
+            Array.from(grouped.values()).forEach(({ slot, item, slots }) => {
                 const equipDef = CYOA.currentGame?.equipment?.find(e => e.id === item.id);
+                const coveredSlots = Array.isArray(item.slots) && item.slots.length
+                    ? item.slots
+                    : (Array.isArray(equipDef?.slots) && equipDef.slots.length ? equipDef.slots : Array.from(slots));
+                const coveredIcons = coveredSlots.slice(0, 10).map((s) => {
+                    const label = CONFIG.EQUIPMENT_SLOTS.find(x => x.value === s)?.label || s;
+                    const icon = slotIconMap[s] || "•";
+                    return `<span title="${escapeHtml(label)}" style="display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; font-size:12px; border:1px solid var(--border); border-radius:999px; background:var(--bg-light);">${icon}</span>`;
+                }).join('');
                 const isIndestructible = item.indestructible ?? equipDef?.indestructible ?? false;
                 const maxDura = item.maxDurability ?? equipDef?.maxDurability ?? 0;
                 const curDura = item.durability ?? equipDef?.durability ?? 0;
@@ -1894,7 +2508,7 @@
                                 ${lockLv > 0 ? `<span style="font-size:11px; background:${lockLv >= 5 ? '#7c3aed' : lockLv >= 3 ? '#dc2626' : '#f59e0b'}; color:#fff; padding:1px 6px; border-radius:8px;" title="${escapeHtml(lockDef?.desc || '')}">${escapeHtml(lockDef?.label || 'Lv'+lockLv)}</span>` : ''}
                                 ${isIndestructible ? `<span style="font-size:11px; background:#3b82f6; color:#fff; padding:1px 6px; border-radius:8px;">${t('ui.status.indestructible')}</span>` : ''}
                             </div>
-                            <div style="font-size: 11px; color: var(--text-light);">${slotLabel}</div>
+                            <div style="display:flex; align-items:center; gap:4px; margin-top:3px;">${coveredIcons}</div>
                             ${!isIndestructible && maxDura > 0 ? `
                                 <div style="margin-top:3px;">
                                     <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-light); margin-bottom:1px;">
@@ -1903,42 +2517,10 @@
                                     ${progressBar(duraPct, duraColor)}
                                 </div>
                             ` : ''}
-                            ${(() => {
-                                const cList = item.constraints || equipDef?.constraints;
-                                let extraInfo = '';
-                                if (Array.isArray(cList) && cList.includes('limited_step')) {
-                                    const cm = item._degradedStepLimitCm ?? item.stepLimitCm ?? equipDef?.stepLimitCm ?? (CONFIG.LIMITED_STEP_DEFAULTS?.stepLimitCm || 20);
-                                    const pct = item._degradedSpeedModifierPct ?? item.speedModifierPct ?? equipDef?.speedModifierPct ?? (CONFIG.LIMITED_STEP_DEFAULTS?.speedModifierPct || -50);
-                                    const pctStr = pct >= 0 ? '+' + pct + '%' : pct + '%';
-                                    extraInfo += '<div style="font-size: 11px; color: #f59e0b;">' + t('ui.sidebar.stepLimit') + ' ' + cm + 'cm / 速度' + pctStr;
-                                    if (item._degradedStepLimitCm !== undefined) extraInfo += ' <span style="color:#22c55e;">' + t('ui.status.degraded') + '</span>';
-                                    extraInfo += '</div>';
-                                }
-                                const hasBlindConstraint = Array.isArray(cList) && cList.includes('blind');
-                                const vAttachments = (item.attachments || equipDef?.attachments || []);
-                                const vAtt = vAttachments.find(a => a.type === 'vision_modifier' && a.visionType);
-                                if (hasBlindConstraint || vAtt) {
-                                    const vLabel = vAtt ? (CYOA.getVisionTypeLabel?.(vAtt.visionType) || vAtt.visionType) : t('ui.sidebar.fullBlind');
-                                    const colorHex = (vAtt && vAtt.visionType !== 'full_blind') ? '#f59e0b' : '#8b5cf6';
-                                    extraInfo += '<div style="font-size: 11px; color: ' + colorHex + ';">' + t('ui.sidebar.vision') + ' ' + CYOA.escapeHtml(vLabel) + '</div>';
-                                }
-                                const atts = item.attachments || equipDef?.attachments || [];
-                                if (atts.length) {
-                                    const attNames = atts.map(a => {
-                                        let name = CYOA.escapeHtml(a.name || t('ui.status.unnamed'));
-                                        if (a.type === 'd_ring') {
-                                            const posLabel = (CONFIG.D_RING_POSITIONS || []).find(p => p.value === a.dRingPosition)?.label || '';
-                                            name = '🔗' + name + (posLabel ? '(' + posLabel + ')' : '');
-                                        }
-                                        return name;
-                                    }).join(', ');
-                                    extraInfo += '<div style="font-size: 11px; color: #6b7280;">' + t('ui.sidebar.attachments') + ' ' + attNames + '</div>';
-                                }
-                                return extraInfo;
-                            })()}
                         </div>
                         <div style="display:flex; flex-direction:column; gap:3px; align-items:center;">
                             ${lockLv >= 1 && lockLv < 5 ? `<button class="cyoa-btn-icon" onclick="CYOA.handleStruggle('${escapeHtml(slot)}')" title="${t('ui.btn.struggle')}" style="font-size:16px;">✊</button>` : ''}
+                            ${lockLv >= 2 && lockLv < 5 ? `<button class="cyoa-btn-icon" onclick="CYOA.unlockEquipment('${escapeHtml(slot)}')" title="解锁" style="font-size:16px;">🔑</button>` : ''}
                             <button class="cyoa-btn-icon" onclick="CYOA.unequipItem('${escapeHtml(slot)}')" title="${t('ui.btn.unequip')}">⬇️</button>
                         </div>
                     </div>
@@ -1946,7 +2528,14 @@
             });
             equipContent += '</div>';
         }
-        const equipCount = Object.keys(equipped).length;
+        const equipCount = (() => {
+            const ids = new Set();
+            Object.values(equipped).forEach((it) => {
+                const k = String(it?.id || "");
+                if (k) ids.add(k);
+            });
+            return ids.size || Object.keys(equipped).length;
+        })();
         html += wrapCollapsible('panel_equip', t('ui.sidebar.equippedN', {n: equipCount}), equipContent, false);
         
         // 背包
@@ -2005,6 +2594,8 @@
                 win.document.body.textContent = rag;
             }
         });
+        // 背包刷新后同步状态面板
+        CYOA.renderStatusPanel?.();
     };
 
     // ========== 渲染技能面板 ==========

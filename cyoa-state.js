@@ -1,4 +1,4 @@
-﻿/**
+/**
  * cyoa-state.js - 鐘舵€?鏁堟灉绯荤粺妯″潡锛堝叴濂嬪害銆佷範鎯害銆佷钩鑳躲€佹鎬佺瓑锛? * 渚濊禆锛歸indow.CYOA, CYOA.CONFIG, CYOA.persistSave, CYOA.getActiveConstraints 蹇呴』宸插瓨鍦紙cyoa-game.js 鍔犺浇鍚庯級
  */
 (function() {
@@ -80,6 +80,68 @@
         CYOA.persistSave();
         log('刺激器已激活:', equipSlot, attachmentId);
     };
+
+    CYOA.getControllableAttachments = function() {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !game) return [];
+        const out = [];
+        const eqObj = save.equipment || {};
+        const seen = new Set();
+        Object.keys(eqObj).forEach((slot) => {
+            const item = eqObj[slot];
+            if (!item?.id) return;
+            const def = (game.equipment || []).find(e => e.id === item.id) || item;
+            const attachments = Array.isArray(def.attachments) ? def.attachments : (Array.isArray(item.attachments) ? item.attachments : []);
+            attachments.forEach((att) => {
+                const type = String(att?.type || "");
+                if (!type) return;
+                if (!["vibrator", "shock", "inflate", "temp_device"].includes(type)) return;
+                const attId = String(att?.id || `${item.id}_${type}`);
+                const key = `${slot}::${attId}`;
+                if (seen.has(key)) return;
+                seen.add(key);
+                out.push({
+                    key,
+                    slot,
+                    equipId: String(item.id || ""),
+                    equipName: String(def?.name || item?.name || item.id),
+                    attachmentId: attId,
+                    attachmentName: String(att?.name || type),
+                    type,
+                    stimMode: String(att?.stimMode || "off"),
+                    stimIntensity: String(att?.stimIntensity || "medium"),
+                    inflateType: String(att?.inflateType || ""),
+                    tempTool: String(att?.tempTool || "")
+                });
+            });
+        });
+        return out;
+    };
+
+    CYOA.setStimulatorState = function(equipSlot, attachmentId, mode, intensity) {
+        const m = String(mode || "off");
+        if (!equipSlot || !attachmentId) return false;
+        if (m === "off") {
+            CYOA.deactivateStimulator?.(equipSlot, attachmentId);
+            return true;
+        }
+        CYOA.activateStimulator?.(equipSlot, attachmentId, m, intensity || "medium");
+        return true;
+    };
+
+    function syncStimulatorsWithEquipment() {
+        const save = CYOA.currentSave;
+        if (!save) return;
+        const candidates = CYOA.getControllableAttachments?.() || [];
+        const validStimKeys = new Set(
+            candidates
+                .filter(c => c.type === "vibrator" || c.type === "shock")
+                .map(c => `${c.slot}::${c.attachmentId}`)
+        );
+        const prev = Array.isArray(save.activeStimulators) ? save.activeStimulators : [];
+        save.activeStimulators = prev.filter(s => validStimKeys.has(`${s.slot}::${s.attachmentId}`));
+    }
 
     CYOA.deactivateStimulator = function(equipSlot, attachmentId) {
         const save = CYOA.currentSave;
@@ -814,6 +876,64 @@
         CYOA.persistSave();
     };
 
+    CYOA.setInflationLevel = function(deviceId, level) {
+        const save = CYOA.currentSave;
+        if (!save || !deviceId) return false;
+        if (!save.inflationLevels) save.inflationLevels = {};
+        const cfg = CONFIG.INFLATION_CONFIG || {};
+        const maxLv = cfg.maxLevel || 5;
+        const next = Math.max(0, Math.min(maxLv, Number(level || 0)));
+        save.inflationLevels[deviceId] = next;
+        CYOA.persistSave();
+        return true;
+    };
+
+    function applyInflationAndVacuumEffects() {
+        const save = CYOA.currentSave;
+        if (!save) return;
+        const levels = save.inflationLevels && typeof save.inflationLevels === "object" ? save.inflationLevels : {};
+        const defs = Array.isArray(CONFIG.VACUUM_INFLATION_TYPES) ? CONFIG.VACUUM_INFLATION_TYPES : [];
+        let oxygenDelta = 0;
+        let arousalDelta = 0;
+        let painDelta = 0;
+        let depGain = 0;
+
+        Object.entries(levels).forEach(([devId, lvRaw]) => {
+            const lv = Math.max(0, Number(lvRaw || 0));
+            if (lv <= 0) return;
+            const def = defs.find(d => d.value === devId) || {};
+            const name = String(def.label || devId);
+            const isVacuum = /vacuum/.test(devId);
+            const isInflate = /inflate/.test(devId);
+
+            if (isVacuum) {
+                oxygenDelta -= Math.max(1, Math.ceil(lv / 2));
+                depGain += Number(def.deprivation || 0);
+                painDelta += Math.max(0, lv - 2);
+            }
+            if (isInflate) {
+                arousalDelta += Math.max(1, Math.ceil(lv / 2));
+                if (String(def.slot || "") === "mouth") oxygenDelta -= Math.max(1, Math.floor(lv / 2));
+                if (String(def.slot || "") === "anal") painDelta += Math.max(0, Math.floor((lv - 1) / 2));
+                if (devId === "inflate_suit" || devId === "inflate_hood") depGain += 1;
+            }
+
+            if ((save._inflationTurn || 0) % 6 === 0) {
+                CYOA.addKeyEvent?.("inflate_effect", `${name} Lv.${lv} 持续生效`);
+            }
+        });
+
+        if (oxygenDelta) CYOA.modifyOxygen?.(oxygenDelta);
+        if (arousalDelta) CYOA.modifyArousal?.(arousalDelta, "inflation_vacuum");
+        if (painDelta > 0) {
+            save.pain = Math.min((CONFIG.IMPACT_CONFIG?.maxPain || 100), (save.pain || 0) + painDelta);
+        }
+        if (depGain > 0) {
+            save.deprivationDuration = (save.deprivationDuration || 0) + depGain;
+        }
+        save._inflationTurn = Number(save._inflationTurn || 0) + 1;
+    }
+
     // ========== PetPlay / PonyPlay 系统 ==========
     CYOA.setPetplayRole = function(role) {
         const save = CYOA.currentSave;
@@ -987,6 +1107,14 @@
         CYOA.persistSave();
     };
 
+    CYOA.deactivateAllElectro = function() {
+        const save = CYOA.currentSave;
+        if (!save?.electroLatex) return;
+        save.electroLatex.active = false;
+        save.electroLatex.zones = [];
+        CYOA.persistSave();
+    };
+
     // ========== 装备联动姿势系统 (Compound Posture / Gait) ==========
     CYOA.getEquipPostureTags = function() {
         const tags = new Set();
@@ -1155,6 +1283,7 @@
 
     // ========== 每轮综合更新 ==========
     CYOA.updateAllSystems = function() {
+        syncStimulatorsWithEquipment();
         CYOA.calculateTurnArousal();
         CYOA.updateDurations();
         CYOA.updateHabituation();
@@ -1168,6 +1297,7 @@
         CYOA.updateFurniture();
         CYOA.updateIdentityErosion();
         CYOA.updatePanic();
+        applyInflationAndVacuumEffects();
         // 呼吸管对氧气的影响
         const tube = CYOA.currentSave?.breathingTube;
         if (tube?.active) {
@@ -1233,6 +1363,7 @@
         }
 
         // ========== 新系统每轮更新 ==========
+        CYOA.applyAgreementEnforcement?.({ silent: true, source: 'turn' });
         CYOA.updateEquipmentTimers();
         CYOA.updateTravel();
         CYOA.updateDependency();

@@ -24,6 +24,80 @@
     const getSkillsForSelect = CYOA.getSkillsForSelect;
     const t = CYOA.t;
 
+    function ensureEditorCollections() {
+        if (!CYOA.editorTempData || typeof CYOA.editorTempData !== 'object') return;
+        const listKeys = [
+            'attributes', 'items', 'equipment', 'professions', 'skills',
+            'quests', 'characters', 'scenes', 'chapters', 'locations',
+            'equipmentSynergies', 'discoveryRules', 'outfitPresets', 'storyCards'
+        ];
+        listKeys.forEach((k) => {
+            if (!Array.isArray(CYOA.editorTempData[k])) CYOA.editorTempData[k] = [];
+        });
+        if (!CYOA.editorTempData.worldMap || typeof CYOA.editorTempData.worldMap !== 'object') {
+            CYOA.editorTempData.worldMap = { name: t('ui.default.worldMap') || '大地图', regions: [] };
+        } else if (!Array.isArray(CYOA.editorTempData.worldMap.regions)) {
+            CYOA.editorTempData.worldMap.regions = [];
+        }
+    }
+
+    function getTypeDisplayName(type) {
+        const raw = String(getTypeName?.(type) || '').trim();
+        if (raw && !/^ui\.type\./i.test(raw)) return raw;
+        const fallback = {
+            attributes: '属性',
+            items: '物品',
+            equipment: '装备',
+            professions: '职业',
+            skills: '技能',
+            quests: '任务',
+            characters: '角色',
+            scenes: '场景',
+            chapters: '章节',
+            locations: '地点',
+            equipmentSynergies: '装备联动',
+            discoveryRules: '知识迷雾/规则发现',
+            outfitPresets: '服饰预设',
+            storyCards: '故事卡'
+        };
+        return fallback[type] || type;
+    }
+
+    function getDefaultEditorItem(type) {
+        const base = { id: CYOA.generateId() };
+        const defaults = {
+            attributes: { name: '', value: 0, min: 0, max: 100, description: '' },
+            items: { name: '', itemType: 'common', quantity: 1, durability: 0, ownerId: '', description: '' },
+            equipment: { name: '', equipType: t('ui.default.equipType') || '装备', slots: [], constraints: [], layer: 5, durability: 0, maxDurability: 0, ownerId: '' },
+            professions: { name: '', icon: '🎭', traits: '', description: '', skills: [] },
+            skills: { name: '', skillType: 'combat', description: '', effect: '' },
+            quests: { name: '', questType: 'main', description: '', objectives: [], rewards: [] },
+            characters: { name: '', roleType: 'playable', gender: 'female', professions: [], skills: [] },
+            scenes: { name: '', location: '', decoration: '', description: '', interactables: [], quests: [] },
+            chapters: { title: '', order: 1, description: '', scenes: [], transitionConditions: [], initialPosture: 'standing', initialTether: null },
+            locations: { name: '', description: '', features: [], facilities: [], regionId: '', isSafeRoom: false, _edgesStr: '' },
+            equipmentSynergies: { name: '联动', triggers: [], condition: 'always', effect: '', description: '' },
+            discoveryRules: { name: '', description: '', discoverCondition: 'custom', conditionValue: '' },
+            outfitPresets: { name: '', items: [], chapter: '', specialRule: '' },
+            storyCards: { name: t('ui.default.newStoryCard') || '新故事卡', type: 'custom', triggerWords: [], content: '' }
+        };
+        return { ...base, ...(defaults[type] || {}) };
+    }
+
+    CYOA.repairEditingItem = function(type, index) {
+        ensureEditorCollections();
+        if (!CYOA.editorTempData || !Array.isArray(CYOA.editorTempData[type])) return false;
+        const arr = CYOA.editorTempData[type];
+        const cur = arr[index];
+        const patched = { ...getDefaultEditorItem(type), ...(cur && typeof cur === 'object' ? cur : {}) };
+        if (type === 'equipmentSynergies') patched.triggers = Array.isArray(patched.triggers) ? patched.triggers : [];
+        if (type === 'discoveryRules' && !patched.discoverCondition) patched.discoverCondition = 'custom';
+        if (type === 'outfitPresets') patched.items = Array.isArray(patched.items) ? patched.items : [];
+        if (type === 'locations' && typeof patched._edgesStr !== 'string') patched._edgesStr = '';
+        arr[index] = patched;
+        return true;
+    };
+
     // ========== 模态框系统 ==========
     const ModalSystem = {
         currentModal: null,
@@ -80,7 +154,7 @@
     // ========== 渲染缩略表格 ==========
     function renderSummaryTable(items, type) {
         if (!items || items.length === 0) {
-            return `<div class="cyoa-empty-state">${t('ui.empty.noType', {type: getTypeName(type)})}</div>`;
+            return `<div class="cyoa-empty-state">${t('ui.empty.noType', {type: getTypeDisplayName(type)})}</div>`;
         }
         
         let html = '<div class="cyoa-summary-grid">';
@@ -205,6 +279,7 @@
 
     // ========== 刷新列表显示 ==========
     function refreshList(type) {
+        ensureEditorCollections();
         const container = CYOA.$(type + 'List');
         if (!container || !CYOA.editorTempData) return;
         
@@ -218,45 +293,48 @@
     // ========== 绑定列表事件 ==========
     function bindListEvents(container, type) {
         if (!container) return;
-        
-        // 编辑按钮
-        container.querySelectorAll('.edit-item').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
+        if (container.dataset.boundType === type && container.dataset.boundClick === '1') return;
+        container.dataset.boundType = type;
+        container.dataset.boundClick = '1';
+        container.addEventListener('click', (e) => {
+            const target = e.target;
+            const editBtn = target.closest('.edit-item');
+            const delBtn = target.closest('.delete-item');
+            if (!editBtn && !delBtn) return;
+            e.stopPropagation();
+
+            const item = target.closest('.cyoa-summary-item');
+            if (!item) return;
+            const index = Number(item.dataset.index);
+            if (!Number.isInteger(index) || index < 0) return;
+
+            if (editBtn) {
                 if (!CYOA.editorTempData) {
                     alert(t('ui.msg.editorDataError'));
                     return;
                 }
-                const item = e.target.closest('.cyoa-summary-item');
-                if (item) {
-                    const index = parseInt(item.dataset.index);
-                    showEditForm(type, index);
-                }
-            });
-        });
-        
-        // 删除按钮
-        container.querySelectorAll('.delete-item').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!CYOA.editorTempData || !CYOA.editorTempData[type]) {
-                    alert(t('ui.msg.editorDataError'));
-                    return;
-                }
-                if (!confirm(t('ui.msg.confirmDeleteItem'))) return;
-                
-                const item = e.target.closest('.cyoa-summary-item');
-                if (item) {
-                    const index = parseInt(item.dataset.index);
-                    CYOA.editorTempData[type].splice(index, 1);
-                    refreshList(type);
-                }
-            });
+                showEditForm(type, index);
+                return;
+            }
+
+            if (!CYOA.editorTempData || !CYOA.editorTempData[type]) {
+                alert(t('ui.msg.editorDataError'));
+                return;
+            }
+            if (!confirm(t('ui.msg.confirmDeleteItem'))) return;
+            CYOA.editorTempData[type].splice(index, 1);
+            refreshList(type);
         });
     }
 
     // ========== 显示编辑表单 ==========
     function showEditForm(type, index) {
+        ensureEditorCollections();
+        index = Number(index);
+        if (!Number.isInteger(index)) {
+            alert('无效的编辑项索引');
+            return;
+        }
         if (!CYOA.editorTempData || !CYOA.editorTempData[type]) {
             alert(t('ui.msg.editorDataError'));
             return;
@@ -271,75 +349,185 @@
         const formContainer = CYOA.$('editFormContainer');
         if (!formContainer) return;
         
+        if (!arr[index] || typeof arr[index] !== 'object') {
+            CYOA.repairEditingItem(type, index);
+        }
         const item = arr[index];
         let html = '';
-        
-        switch(type) {
-            case 'attributes':
-                html = CYOA.renderAttributeForm(item, index);
-                break;
-            case 'items':
-                html = CYOA.renderItemForm(item, index);
-                break;
-            case 'equipment':
-                html = CYOA.renderEquipmentForm(item, index);
-                break;
-            case 'professions':
-                html = CYOA.renderProfessionForm(item, index);
-                break;
-            case 'skills':
-                html = CYOA.renderSkillForm(item, index);
-                break;
-            case 'quests':
-                html = CYOA.renderQuestForm(item, index);
-                break;
-            case 'characters':
-                html = CYOA.renderCharacterForm(item, index);
-                break;
-            case 'scenes':
-                html = CYOA.renderSceneForm(item, index);
-                break;
-            case 'chapters':
-                html = CYOA.renderChapterForm(item, index);
-                break;
-            case 'locations':
-                html = CYOA.renderLocationForm(item, index);
-                break;
-            case 'equipmentSynergies':
-                html = CYOA.renderSynergyForm(item, index);
-                break;
-            case 'discoveryRules':
-                html = CYOA.renderDiscoveryForm(item, index);
-                break;
-            case 'outfitPresets':
-                html = CYOA.renderPresetForm(item, index);
-                break;
-            case 'storyCards':
-                html = CYOA.renderStoryCardForm(item, index);
-                break;
+
+        try {
+            const localRenderers = {
+                attributes: renderAttributeForm,
+                items: renderItemForm,
+                equipment: renderEquipmentForm,
+                professions: renderProfessionForm,
+                skills: renderSkillForm,
+                quests: renderQuestForm,
+                characters: renderCharacterForm,
+                scenes: renderSceneForm,
+                chapters: renderChapterForm,
+                locations: renderLocationForm,
+                equipmentSynergies: renderSynergyForm,
+                discoveryRules: renderDiscoveryForm,
+                outfitPresets: renderPresetForm,
+                storyCards: renderStoryCardForm
+            };
+            const globalRendererMap = {
+                attributes: CYOA.renderAttributeForm,
+                items: CYOA.renderItemForm,
+                equipment: CYOA.renderEquipmentForm,
+                professions: CYOA.renderProfessionForm,
+                skills: CYOA.renderSkillForm,
+                quests: CYOA.renderQuestForm,
+                characters: CYOA.renderCharacterForm,
+                scenes: CYOA.renderSceneForm,
+                chapters: CYOA.renderChapterForm,
+                locations: CYOA.renderLocationForm,
+                equipmentSynergies: CYOA.renderSynergyForm,
+                discoveryRules: CYOA.renderDiscoveryForm,
+                outfitPresets: CYOA.renderPresetForm,
+                storyCards: CYOA.renderStoryCardForm
+            };
+            const renderer = localRenderers[type] || globalRendererMap[type];
+            if (typeof renderer !== 'function') {
+                throw new Error(`missing renderer for type: ${type}`);
+            }
+            html = renderer(item, index);
+        } catch (e) {
+            console.error('[CYOA] showEditForm 渲染失败', type, e);
+            html = `
+                <div class="cyoa-edit-form">
+                    <h4>编辑器错误</h4>
+                    <div class="cyoa-empty-state">编辑表单加载失败：${escapeHtml(String(e?.message || e || type))}</div>
+                    <div class="cyoa-form-actions" style="margin-top:10px;">
+                        <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.repairEditingItem('${escapeHtml(type)}', ${Number(index || 0)}); CYOA.showEditForm('${escapeHtml(type)}', ${Number(index || 0)});">修复并重试</button>
+                    </div>
+                </div>
+            `;
         }
-        
-        formContainer.innerHTML = html;
+
+        formContainer.innerHTML = html || `<div class="cyoa-empty-state">无可用编辑表单：${escapeHtml(type)}</div>`;
         formContainer.style.display = 'block';
         
         // 绑定表单事件
         bindFormEvents(type, index);
     }
 
+    // ========== 基础表单（属性 / 物品） ==========
+    function renderAttributeForm(attr, index) {
+        const a = attr || {};
+        return `
+            <div class="cyoa-edit-form">
+                <h4>${a.id ? t('ui.editor.editItem', {type: t('ui.type.attributes')}) : t('ui.editor.newItem', {type: t('ui.type.attributes')})}</h4>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.attrName') || '属性名'}</label>
+                    <input type="text" id="editAttrName" class="cyoa-input" value="${escapeHtml(a.name || '')}">
+                </div>
+                <div class="cyoa-form-row" style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;">
+                    <div>
+                        <label>${t('ui.label.currentValue') || '当前值'}</label>
+                        <input type="number" id="editAttrValue" class="cyoa-input" value="${Number(a.value ?? 0)}">
+                    </div>
+                    <div>
+                        <label>${t('ui.label.minValue') || '最小值'}</label>
+                        <input type="number" id="editAttrMin" class="cyoa-input" value="${Number(a.min ?? 0)}">
+                    </div>
+                    <div>
+                        <label>${t('ui.label.maxValue') || '最大值'}</label>
+                        <input type="number" id="editAttrMax" class="cyoa-input" value="${Number(a.max ?? 100)}">
+                    </div>
+                </div>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.desc') || '描述'}</label>
+                    <textarea id="editAttrDesc" class="cyoa-textarea" rows="2">${escapeHtml(a.description || '')}</textarea>
+                </div>
+                <div class="cyoa-form-actions">
+                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel') || '取消'}</button>
+                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveAttribute(${index})">${t('ui.btn.save') || '保存'}</button>
+                </div>
+            </div>
+        `;
+    }
+
+    function renderItemForm(item, index) {
+        const it = item || {};
+        const itemTypeOptions = (CONFIG.ITEM_TYPES || []).map(tp =>
+            `<option value="${tp.value}" ${tp.value === (it.itemType || 'common') ? 'selected' : ''}>${tp.label}</option>`
+        ).join('');
+        const characters = CYOA.editorTempData?.characters || [];
+        const ownerOptions = `<option value="">${t('ui.opt.none') || '无'}</option>` + characters.map(char =>
+            `<option value="${char.id}" ${char.id === it.ownerId ? 'selected' : ''}>${escapeHtml(char.name || char.id)}</option>`
+        ).join('');
+        return `
+            <div class="cyoa-edit-form">
+                <h4>${it.id ? t('ui.editor.editItem', {type: t('ui.type.items')}) : t('ui.editor.newItem', {type: t('ui.type.items')})}</h4>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.itemName') || '物品名'}</label>
+                    <input type="text" id="editItemName" class="cyoa-input" value="${escapeHtml(it.name || '')}">
+                </div>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.itemType') || '类型'}</label>
+                    <select id="editItemType" class="cyoa-select">${itemTypeOptions}</select>
+                </div>
+                <div class="cyoa-form-row" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <div>
+                        <label>${t('ui.label.quantity') || '数量'}</label>
+                        <input type="number" id="editItemQuantity" class="cyoa-input" min="1" value="${Number(it.quantity ?? 1)}">
+                    </div>
+                    <div>
+                        <label>${t('ui.label.durability') || '耐久'}</label>
+                        <input type="number" id="editItemDurability" class="cyoa-input" min="0" value="${Number(it.durability ?? 0)}">
+                    </div>
+                </div>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.owner') || '归属角色'}</label>
+                    <select id="editItemOwner" class="cyoa-select">${ownerOptions}</select>
+                </div>
+                <div class="cyoa-form-row">
+                    <label>${t('ui.label.desc') || '描述'}</label>
+                    <textarea id="editItemDesc" class="cyoa-textarea" rows="2">${escapeHtml(it.description || '')}</textarea>
+                </div>
+                <div class="cyoa-form-actions">
+                    <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel') || '取消'}</button>
+                    <button class="cyoa-btn cyoa-btn-primary" onclick="CYOA.saveItem(${index})">${t('ui.btn.save') || '保存'}</button>
+                </div>
+            </div>
+        `;
+    }
+
     // ========== 装备表单 ==========
     function renderEquipmentForm(equip, index) {
         const items = getItemsForSelect(equip.id);
+        const itemDefs = Array.isArray(CYOA.editorTempData?.items) ? CYOA.editorTempData.items : [];
+        const itemDefMap = new Map(itemDefs.map(it => [String(it.id), it]));
         const unlockOptions = items.map(i => 
-            `<option value="${i.value}" ${i.value === equip.unlockItemId ? 'selected' : ''}>${i.label}</option>`
+            (() => {
+                const def = itemDefMap.get(String(i.value));
+                const tpe = String(def?.itemType || "").toLowerCase();
+                const willConsume = tpe === "consumable" || tpe === "healing" || tpe === "fuel";
+                const suffix = willConsume ? "（解锁会消耗）" : "（解锁不消耗）";
+                return `<option value="${i.value}" ${i.value === equip.unlockItemId ? 'selected' : ''}>${i.label} ${suffix}</option>`;
+            })()
         ).join('');
         
         const selectedSlots = equip.slots || [];
         const commonSlots = CONFIG.EQUIPMENT_SLOTS.filter(s => s.group === 'common' || !s.group);
         const femaleSlots = CONFIG.EQUIPMENT_SLOTS.filter(s => s.group === 'female');
         const maleSlots = CONFIG.EQUIPMENT_SLOTS.filter(s => s.group === 'male');
+        const slotIconMap = {
+            head: "🪖", eyes: "👁️", ears: "👂", mouth: "👄", nose: "👃", neck: "🧣",
+            chest: "🫀", waist: "🩱", hips: "🩲", crotch: "🔒",
+            shoulder: "🦴", upper_arm: "💪", elbow: "🦾", forearm: "🦾", wrist: "⌚", palm: "✋", fingers: "🤌",
+            thigh: "🦵", knee: "🦿", calf: "🦵", ankle: "🦶", foot: "👣"
+        };
         const buildSlotCbs = (slots) => slots.map(slot => {
             const checked = selectedSlots.includes(slot.value) ? 'checked' : '';
-            return `<label class="cyoa-slot-checkbox"><input type="checkbox" class="slot-checkbox" value="${slot.value}" ${checked}> ${slot.label}</label>`;
+            const icon = slotIconMap[slot.value] || "•";
+            return `<label class="cyoa-slot-checkbox" style="display:flex; align-items:center; gap:6px;">
+                <input type="checkbox" class="slot-checkbox" value="${slot.value}" ${checked}>
+                <span title="${escapeHtml(slot.label)}" style="display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; font-size:12px; border:1px solid var(--border); border-radius:999px; background:var(--bg-light);">${icon}</span>
+                <span>${slot.label}</span>
+            </label>`;
         }).join('');
         const slotOptions = buildSlotCbs(commonSlots)
             + (femaleSlots.length ? `<div style="width:100%; border-top:1px dashed var(--border); margin:4px 0; padding-top:4px;"><small style="color:#ec4899;">${t('ui.summary.femaleSlots')}</small></div>` + buildSlotCbs(femaleSlots) : '')
@@ -367,6 +555,37 @@
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.equipType')}</label>
                     <input type="text" id="editEquipType" class="cyoa-input" value="${escapeHtml(equip.equipType || t('ui.default.equipType'))}">
+                </div>
+                <div class="cyoa-form-row">
+                    <label>叙事角色</label>
+                    <select id="editEquipNarrativeRole" class="cyoa-select">
+                        <option value="auto" ${(String(equip.narrativeRole || 'auto') === 'auto') ? 'selected' : ''}>auto（自动判定）</option>
+                        <option value="restraint" ${(String(equip.narrativeRole || '') === 'restraint') ? 'selected' : ''}>restraint（限制类）</option>
+                        <option value="armor" ${(String(equip.narrativeRole || '') === 'armor') ? 'selected' : ''}>armor（防护类）</option>
+                        <option value="mixed" ${(String(equip.narrativeRole || '') === 'mixed') ? 'selected' : ''}>mixed（混合）</option>
+                    </select>
+                    <small style="color:var(--text-light);">用于指导 AI 叙事：限制类强调行动受限；防护类强调硬度/覆盖/防护。</small>
+                </div>
+                <div class="cyoa-form-row" id="equipArmorParams" style="${(String(equip.narrativeRole || 'auto') === 'armor' || String(equip.narrativeRole || '') === 'mixed') ? '' : 'display:none;'}; background:var(--bg); padding:12px; border-radius:var(--radius-sm); border:1px dashed var(--border);">
+                    <label style="font-weight:600; margin-bottom:8px; display:block;">防护参数（盔甲/防具）</label>
+                    <div class="cyoa-grid-2">
+                        <div>
+                            <label>硬度等级（0-100）</label>
+                            <input type="number" id="editEquipArmorHardness" class="cyoa-input" value="${Number(equip.armorHardness ?? 0)}" min="0" max="100" step="1">
+                        </div>
+                        <div>
+                            <label>防护等级（0-100）</label>
+                            <input type="number" id="editEquipArmorProtection" class="cyoa-input" value="${Number(equip.armorProtection ?? 0)}" min="0" max="100" step="1">
+                        </div>
+                        <div>
+                            <label>重量负担（0-100）</label>
+                            <input type="number" id="editEquipArmorWeight" class="cyoa-input" value="${Number(equip.armorWeight ?? 0)}" min="0" max="100" step="1">
+                        </div>
+                        <div>
+                            <label>机动惩罚（-100~0）</label>
+                            <input type="number" id="editEquipArmorMobilityPenalty" class="cyoa-input" value="${Number(equip.armorMobilityPenalty ?? 0)}" min="-100" max="0" step="1">
+                        </div>
+                    </div>
                 </div>
                 <div class="cyoa-form-row">
                     <label>服装/装备层级</label>
@@ -885,6 +1104,14 @@
                     </select>
                 </div>
                 <div class="cyoa-form-row">
+                    <label>人物头像（聊天缩略图）</label>
+                    <input type="text" id="editCharAvatar" class="cyoa-input" value="${escapeHtml(character.avatar || '')}" placeholder="可填图片 URL，或使用下方上传">
+                    <div style="display:flex; gap:8px; align-items:center; margin-top:6px; flex-wrap:wrap;">
+                        <input type="file" id="editCharAvatarFile" accept="image/*" class="cyoa-input" style="max-width:280px;" onchange="CYOA.handleImageFilePick && CYOA.handleImageFilePick('editCharAvatarFile','editCharAvatar','editCharAvatarPreview',2)">
+                        <img id="editCharAvatarPreview" src="${escapeHtml(character.avatar || '')}" alt="character avatar" style="width:36px; height:36px; border-radius:50%; object-fit:cover; border:1px solid var(--border); ${character.avatar ? '' : 'display:none;'}">
+                    </div>
+                </div>
+                <div class="cyoa-form-row">
                     <label>${t('ui.label.profMulti')}</label>
                     <div style="display:flex; gap:8px; flex-wrap:wrap;">
                         <select id="editCharProfessions" class="cyoa-select" multiple size="3" style="flex:1; min-width:180px;">
@@ -1352,6 +1579,7 @@
         ).join('');
         const showVision = att.type === 'vision_modifier' ? '' : 'display:none;';
         const showStats = att.type === 'stat_modifier' ? '' : 'display:none;';
+        const showConstraintMod = att.type === 'constraint_modifier' ? '' : 'display:none;';
         const showDRing = att.type === 'd_ring' ? '' : 'display:none;';
         const showStim = (att.type === 'vibrator' || att.type === 'shock') ? '' : 'display:none;';
         const showBreath = att.type === 'breath_restrict' ? '' : 'display:none;';
@@ -1392,6 +1620,10 @@
                 </div>
                 <div class="attachment-stats-fields" style="${showStats}">
                     <input type="text" class="cyoa-input attachment-stats" value="${escapeHtml(att.statModifiers || '')}" placeholder="${t('ui.ph.statEffect')}" style="width:100px; height:30px; font-size:12px;">
+                </div>
+                <div class="attachment-constraint-mod-fields" style="${showConstraintMod} display:flex; gap:4px; align-items:center;">
+                    <input type="text" class="cyoa-input attachment-add-constraints" value="${escapeHtml((att.addConstraints || []).join(','))}" placeholder="add: no_hands,no_fingers" style="width:165px; height:30px; font-size:12px;" title="Add constraints (comma-separated)">
+                    <input type="text" class="cyoa-input attachment-remove-constraints" value="${escapeHtml((att.removeConstraints || []).join(','))}" placeholder="remove: mute,blind" style="width:165px; height:30px; font-size:12px;" title="Remove constraints (comma-separated)">
                 </div>
                 <div class="attachment-dring-fields" style="${showDRing}">
                     <select class="cyoa-select attachment-dring-pos" style="width:100px; height:30px; font-size:12px;">
@@ -1459,6 +1691,7 @@
         const typeSelect = row.querySelector('.attachment-type');
         const visionFields = row.querySelector('.attachment-vision-fields');
         const statsFields = row.querySelector('.attachment-stats-fields');
+        const constraintModFields = row.querySelector('.attachment-constraint-mod-fields');
         const dRingFields = row.querySelector('.attachment-dring-fields');
         const stimFields = row.querySelector('.attachment-stim-fields');
         const breathFields = row.querySelector('.attachment-breath-fields');
@@ -1470,6 +1703,7 @@
                 const v = typeSelect.value;
                 if (visionFields) visionFields.style.display = v === 'vision_modifier' ? '' : 'none';
                 if (statsFields) statsFields.style.display = v === 'stat_modifier' ? '' : 'none';
+                if (constraintModFields) constraintModFields.style.display = v === 'constraint_modifier' ? '' : 'none';
                 if (dRingFields) dRingFields.style.display = v === 'd_ring' ? '' : 'none';
                 if (stimFields) stimFields.style.display = (v === 'vibrator' || v === 'shock') ? '' : 'none';
                 if (breathFields) breathFields.style.display = v === 'breath_restrict' ? '' : 'none';
@@ -1518,6 +1752,18 @@
             fingersSlotCb.addEventListener('change', () => {
                 fingerRestraintParams.style.display = fingersSlotCb.checked ? 'block' : 'none';
             });
+        }
+
+        // 叙事角色联动：显示/隐藏防护参数
+        const narrativeRoleSel = CYOA.$('editEquipNarrativeRole');
+        const armorParams = CYOA.$('equipArmorParams');
+        if (narrativeRoleSel && armorParams) {
+            const updateArmorUI = () => {
+                const role = String(narrativeRoleSel.value || "auto");
+                armorParams.style.display = (role === "armor" || role === "mixed") ? "block" : "none";
+            };
+            narrativeRoleSel.addEventListener('change', updateArmorUI);
+            updateArmorUI();
         }
 
         // 不可破坏复选框联动
@@ -1852,8 +2098,20 @@
         item.durability = parseInt(CYOA.$('editEquipDurability')?.value) || 0;
         item.maxDurability = parseInt(CYOA.$('editEquipMaxDurability')?.value) || 0;
         item.ownerId = CYOA.$('editEquipOwner')?.value || '';
+        item.narrativeRole = CYOA.$('editEquipNarrativeRole')?.value || 'auto';
         item.slots = slots;
         item.material = (CYOA.$('editEquipMaterial')?.value || '').trim() || undefined;
+        if (item.narrativeRole === 'armor' || item.narrativeRole === 'mixed') {
+            item.armorHardness = Math.max(0, Math.min(100, parseInt(CYOA.$('editEquipArmorHardness')?.value, 10) || 0));
+            item.armorProtection = Math.max(0, Math.min(100, parseInt(CYOA.$('editEquipArmorProtection')?.value, 10) || 0));
+            item.armorWeight = Math.max(0, Math.min(100, parseInt(CYOA.$('editEquipArmorWeight')?.value, 10) || 0));
+            item.armorMobilityPenalty = Math.max(-100, Math.min(0, parseInt(CYOA.$('editEquipArmorMobilityPenalty')?.value, 10) || 0));
+        } else {
+            delete item.armorHardness;
+            delete item.armorProtection;
+            delete item.armorWeight;
+            delete item.armorMobilityPenalty;
+        }
         item.constraints = constraints;
         // 限步约束参数
         if (constraints.includes('limited_step')) {
@@ -1934,6 +2192,19 @@
                 const att = { id: CYOA.generateId(), name, type, description: desc };
                 if (type === 'vision_modifier' && visionType) att.visionType = visionType;
                 if (type === 'stat_modifier' && stats) att.statModifiers = stats;
+                if (type === 'constraint_modifier') {
+                    const addRaw = row.querySelector('.attachment-add-constraints')?.value || '';
+                    const removeRaw = row.querySelector('.attachment-remove-constraints')?.value || '';
+                    const parseList = (src) => String(src || '')
+                        .split(/[,\s]+/g)
+                        .map(s => s.trim())
+                        .filter(Boolean)
+                        .filter((v, i, arr) => arr.indexOf(v) === i);
+                    const addList = parseList(addRaw);
+                    const removeList = parseList(removeRaw);
+                    if (addList.length) att.addConstraints = addList;
+                    if (removeList.length) att.removeConstraints = removeList;
+                }
                 if (type === 'd_ring') {
                     att.dRingPosition = row.querySelector('.attachment-dring-pos')?.value || 'front';
                 }
@@ -2113,6 +2384,7 @@
         item.model = CYOA.$('editCharModel')?.value || '';
         item.gender = CYOA.$('editCharGender')?.value || 'unknown';
         item.roleType = CYOA.$('editCharType')?.value || 'playable';
+        item.avatar = CYOA.$('editCharAvatar')?.value.trim() || '';
         item.personality = personality;
         item.hobbies = hobbies;
         item.background = CYOA.$('editCharBackground')?.value.trim() || '';
@@ -2316,46 +2588,51 @@
     // ========== 绑定章节列表事件 ==========
     function bindChaptersListEvents(container) {
         if (!container) return;
-        
-        container.querySelectorAll('.edit-item').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!CYOA.editorTempData) {
-                    alert(t('ui.msg.editorDataError'));
-                    return;
-                }
-                const item = e.target.closest('.cyoa-summary-item');
-                if (item) {
-                    const index = parseInt(item.dataset.index);
-                    showEditForm('chapters', index);
-                }
-            });
-        });
-        
-        container.querySelectorAll('.delete-item').forEach(btn => {
-            btn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                if (!CYOA.editorTempData) {
-                    alert(t('ui.msg.editorDataError'));
-                    return;
-                }
-                if (!confirm(t('ui.msg.confirmDeleteChapter'))) return;
-                
-                const item = e.target.closest('.cyoa-summary-item');
-                if (item) {
-                    const index = parseInt(item.dataset.index);
-                    CYOA.editorTempData.chapters.splice(index, 1);
-                    refreshChaptersList();
-                }
-            });
+        ensureEditorCollections();
+        if (container.dataset.boundChaptersClick === '1') return;
+        container.dataset.boundChaptersClick = '1';
+        container.addEventListener('click', (e) => {
+            const target = e.target;
+            const editBtn = target.closest('.edit-item');
+            const delBtn = target.closest('.delete-item');
+            if (!editBtn && !delBtn) return;
+            e.stopPropagation();
+            if (!CYOA.editorTempData) {
+                alert(t('ui.msg.editorDataError'));
+                return;
+            }
+            const item = target.closest('.cyoa-summary-item');
+            if (!item) return;
+            const index = Number(item.dataset.index);
+            if (!Number.isInteger(index) || index < 0) return;
+
+            if (editBtn) {
+                showEditForm('chapters', index);
+                return;
+            }
+            if (!confirm(t('ui.msg.confirmDeleteChapter'))) return;
+            CYOA.editorTempData.chapters.splice(index, 1);
+            refreshChaptersList();
         });
     }
 
     // ========== ② 地点编辑表单 ==========
     function renderLocationForm(loc, index) {
+        loc = loc || {};
         const game = CYOA.editorTempData;
         const edges = game?.locationEdges || [];
-        loc._edgesStr = edges.filter(e => e.from === loc.id).map(e => `${e.to}:${e.travelTurns || 6}`).join(', ');
+        const locId = String(loc.id || '');
+        loc._edgesStr = edges
+            .filter(e => String(e?.from || '') === locId)
+            .map(e => {
+                const to = String(e?.to || '').trim();
+                const t = Number(e?.travelTurns || 6);
+                const extra = Number(e?.limitedStepExtraTurns || 0);
+                if (!to) return '';
+                return extra > 0 ? `${to}:${t}:${extra}` : `${to}:${t}`;
+            })
+            .filter(Boolean)
+            .join(', ');
         const wm = game?.worldMap;
         const regions = wm?.regions || [];
         const regionOptions = regions.map(r => `<option value="${escapeHtml(r.id)}" ${loc.regionId === r.id ? 'selected' : ''}>${escapeHtml(r.name || r.id)}</option>`).join('');
@@ -2398,8 +2675,8 @@
             </div>
             <div class="cyoa-form-row" style="background:#eff6ff; padding:10px; border-radius:8px;">
                 <label style="font-weight:600;">${t('ui.label.travelEdges')}</label>
-                <small>${t('ui.hint.travelEdges')}</small>
-                <input type="text" id="editLocEdges" class="cyoa-input" value="${escapeHtml(loc._edgesStr || '')}">
+                <small>${t('ui.hint.travelEdges')}（扩展：地点ID:回合[:受限额外回合]，例 company:6:2,pool:8）</small>
+                <input type="text" id="editLocEdges" class="cyoa-input" value="${escapeHtml(loc._edgesStr || '')}" placeholder="company:6:2,pool:8">
             </div>
             <div class="cyoa-form-actions">
                 <button class="cyoa-btn cyoa-btn-secondary" onclick="CYOA.cancelEdit()">${t('ui.btn.cancel')}</button>
@@ -2511,13 +2788,24 @@
         });
         if (item.facilities.length === 0) delete item.facilities;
         const edgesStr = CYOA.$('editLocEdges')?.value.trim() || '';
-        if (edgesStr) {
+        {
             const game = CYOA.editorTempData;
-            game.locationEdges = (game.locationEdges || []).filter(e => e.from !== item.id && e.to !== item.id);
-            edgesStr.split(',').forEach(part => {
-                const [toId, turns] = part.trim().split(':');
-                if (toId && turns) game.locationEdges.push({ from: item.id, to: toId.trim(), travelTurns: parseInt(turns) || 6 });
-            });
+            // 仅重建“从当前地点出发”的边，保留其他地点的入边/出边
+            game.locationEdges = (game.locationEdges || []).filter(e => String(e.from || '') !== String(item.id || ''));
+            if (edgesStr) {
+                edgesStr.split(',').forEach(part => {
+                    const seg = String(part || '').trim();
+                    if (!seg) return;
+                    const [toIdRaw, turnsRaw, limitedExtraRaw] = seg.split(':').map(s => String(s || '').trim());
+                    const toId = toIdRaw;
+                    const turns = parseInt(turnsRaw, 10);
+                    const limitedExtra = parseInt(limitedExtraRaw, 10);
+                    if (!toId || !Number.isFinite(turns) || turns <= 0) return;
+                    const edge = { from: item.id, to: toId, travelTurns: turns };
+                    if (Number.isFinite(limitedExtra) && limitedExtra > 0) edge.limitedStepExtraTurns = limitedExtra;
+                    game.locationEdges.push(edge);
+                });
+            }
         }
         if (index >= CYOA.editorTempData.locations.length) CYOA.editorTempData.locations.push(item);
         else CYOA.editorTempData.locations[index] = item;
@@ -2526,6 +2814,7 @@
 
     // ========== ⑤ 装备联动编辑表单 ==========
     function renderSynergyForm(syn, index) {
+        syn = syn || {};
         const equipOptions = (CYOA.editorTempData?.equipment || []).map(e =>
             `<option value="${e.id}" ${(syn.triggers || []).includes(e.id) ? 'selected' : ''}>${escapeHtml(e.name)}</option>`
         ).join('');
@@ -2572,6 +2861,7 @@
 
     // ========== ⑥ 知识迷雾编辑表单 ==========
     function renderDiscoveryForm(rule, index) {
+        rule = rule || {};
         const condOptions = (CONFIG.DISCOVERY_CONDITIONS || []).map(c =>
             `<option value="${c.value}" ${rule.discoverCondition === c.value ? 'selected' : ''}>${c.label}</option>`
         ).join('');
@@ -2614,6 +2904,7 @@
 
     // ========== ⑧ 服饰预设编辑表单 ==========
     function renderPresetForm(preset, index) {
+        preset = preset || {};
         const equipOptions = (CYOA.editorTempData?.equipment || []).map(e =>
             `<option value="${e.id}" ${(preset.items || []).includes(e.id) ? 'selected' : ''}>${escapeHtml(e.name)}</option>`
         ).join('');
@@ -2709,6 +3000,20 @@
     CYOA.refreshList = refreshList;
     CYOA.bindListEvents = bindListEvents;
     CYOA.showEditForm = showEditForm;
+    CYOA.renderAttributeForm = renderAttributeForm;
+    CYOA.renderItemForm = renderItemForm;
+    CYOA.renderEquipmentForm = renderEquipmentForm;
+    CYOA.renderProfessionForm = renderProfessionForm;
+    CYOA.renderSkillForm = renderSkillForm;
+    CYOA.renderQuestForm = renderQuestForm;
+    CYOA.renderCharacterForm = renderCharacterForm;
+    CYOA.renderSceneForm = renderSceneForm;
+    CYOA.renderChapterForm = renderChapterForm;
+    CYOA.renderLocationForm = renderLocationForm;
+    CYOA.renderSynergyForm = renderSynergyForm;
+    CYOA.renderDiscoveryForm = renderDiscoveryForm;
+    CYOA.renderPresetForm = renderPresetForm;
+    CYOA.renderStoryCardForm = renderStoryCardForm;
     CYOA.refreshChaptersList = refreshChaptersList;
     CYOA.renderChaptersSummary = renderChaptersSummary;
 
