@@ -72,7 +72,12 @@
                 id: g.id,
                 name: g.name || '未命名',
                 author: g.author || '',
+                version: g.version || '1.0',
                 updatedAt: g.updatedAt || '',
+                attributes: Array.isArray(g.attributes) ? g.attributes.length : 0,
+                items: Array.isArray(g.items) ? g.items.length : 0,
+                skills: Array.isArray(g.skills) ? g.skills.length : 0,
+                quests: Array.isArray(g.quests) ? g.quests.length : 0,
                 characters: Array.isArray(g.characters) ? g.characters.length : 0,
                 scenes: Array.isArray(g.scenes) ? g.scenes.length : 0
             }));
@@ -153,6 +158,22 @@
         await detectStorageMode();
         CYOA._lastSaveGameError = '';
 
+        const saveToLocalFallback = (reason) => {
+            try {
+                DataManager.loadGames();
+                DataManager.saveGame(gameData);
+                // 远端返回异常时，后续读写统一切到本地，避免“已保存但读取到旧远端数据”。
+                _storageMode = 'local';
+                log(`[fallback localStorage] ${reason}，已本地保存: ${gameData.id}`);
+                return true;
+            } catch (localErr) {
+                error('[fallback localStorage] 本地保存失败', localErr);
+                const localMsg = String(localErr?.message || localErr || 'local_fallback_failed');
+                CYOA._lastSaveGameError = `${reason} | local_fallback_failed: ${localMsg}`;
+                return false;
+            }
+        };
+
         if (_storageMode === 'local') {
             try {
                 DataManager.loadGames();
@@ -177,8 +198,8 @@
 
             if (!text || text.trim() === '') {
                 error('API返回空响应');
-                CYOA._lastSaveGameError = 'api_empty_response';
-                return false;
+                CYOA._lastSaveGameError = `api_empty_response_http_${response.status}`;
+                return saveToLocalFallback(CYOA._lastSaveGameError);
             }
 
             try {
@@ -189,23 +210,14 @@
                 } else {
                     error('保存失败:', result.error);
                     CYOA._lastSaveGameError = String(result.error || 'api_save_failed');
-                    // 远端失败时回退本地，避免编辑成果丢失
-                    try {
-                        DataManager.loadGames();
-                        DataManager.saveGame(gameData);
-                        log('[fallback localStorage] 远端保存失败，已本地保存:', gameData.id);
-                        return true;
-                    } catch (localErr) {
-                        error('[fallback localStorage] 本地保存也失败', localErr);
-                        CYOA._lastSaveGameError += ` | local_fallback_failed: ${String(localErr?.message || localErr || '')}`;
-                        return false;
-                    }
+                    return saveToLocalFallback(CYOA._lastSaveGameError);
                 }
             } catch (e) {
                 error('解析响应失败', e);
+                const snippet = String(text || '').replace(/\s+/g, ' ').trim().slice(0, 120);
                 console.error('原始响应:', text.substring(0, 200));
-                CYOA._lastSaveGameError = `api_parse_failed: ${String(e?.message || e || '')}`;
-                return false;
+                CYOA._lastSaveGameError = `api_parse_failed: ${String(e?.message || e || '')}; http=${response.status}; body=${snippet || '[empty]'}`;
+                return saveToLocalFallback(CYOA._lastSaveGameError);
             }
         } catch (e) {
             error('保存游戏失败，回退到 localStorage', e);
@@ -396,7 +408,17 @@
             if (typeof MainApp !== 'undefined' && MainApp.getModels) {
                 const models = MainApp.getModels('chat');
                 if (Array.isArray(models) && models.length > 0) {
-                    return models;
+                    const normalized = models.map((m) => {
+                        if (typeof m === 'string') {
+                            const v = String(m).trim();
+                            return v ? { value: v, label: v } : null;
+                        }
+                        const value = String(m?.value || m?.id || m?.model || m?.name || '').trim();
+                        const label = String(m?.label || m?.name || m?.id || m?.value || value).trim();
+                        if (!value) return null;
+                        return { value, label: label || value };
+                    }).filter(Boolean);
+                    if (normalized.length > 0) return normalized;
                 }
             }
         } catch (e) {

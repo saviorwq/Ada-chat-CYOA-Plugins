@@ -331,6 +331,14 @@
             .replace(/```cyoa_changes[\s\S]*$/ig, "")
             .replace(/```json[\s\S]*?"cyoa_changes"[\s\S]*$/ig, "")
             .trim();
+        // 屏蔽模型“审查/纠偏说明”与任意代码块泄漏
+        text = text
+            .replace(/```json[\s\S]*?```/ig, "")
+            .replace(/```[\s\S]*?```/g, "")
+            .replace(/###\s*Correction Response Ends[\s\S]*$/i, "")
+            .replace(/###\s*视线追踪[\s\S]*$/i, "")
+            .replace(/请回复【[^】]*】/g, "")
+            .trim();
         // 最小净化：仅处理已知污染标记，避免改写正常叙事
         text = text
             .replace(/<\|LOC_\d+\|>/g, "")
@@ -372,6 +380,10 @@
             .filter(line => {
                 const s = String(line || "").trim();
                 if (!s) return true;
+                // 过滤“模型自我解释/规则审查/纠偏过程”元文本
+                if (/^(?:在你的回复中用了|我应该严格遵守|所以，?在\s*analyzing|Correction Response Ends|Your action|Reaction mode)\b/i.test(s)) return false;
+                if (/^(?:\d+\.\s*不能擅自新增事实|\d+\.\s*状态锚点问题|\d+\.\s*叙事边界|\d+\.\s*技能和状态一致性|\d+\.\s*场景描写要符合现实|\d+\.\s*选项限制)/.test(s)) return false;
+                if (/^(?:-+\s*日志部分不能再写|-\s*正文里得删掉)/.test(s)) return false;
                 if (/^(?:okay|ok|note|tips?|instructions?|summary|explanation)\s*[:：]/i.test(s)) return false;
                 if (/^(?:好的|请锁定|以下是|这里是|说明[:：]|注意事项)/.test(s) && /[A-Za-z]{4,}/.test(s)) return false;
                 const latin = (s.match(/[A-Za-z]/g) || []).length;
@@ -759,15 +771,76 @@
         if (!src) return src;
         const options = pickFourOptions(src);
         const lines = src.split(/\r?\n/);
-        const bodyLines = lines.filter((line) => getOptionType(String(line || "").trim()) === "unknown");
+        const bodyLines = lines.filter((line) => {
+            const s = String(line || "").trim();
+            if (getOptionType(s) !== "unknown") return false;
+            // 二次收口：剔除残留元说明与标题行
+            if (!s) return false;
+            if (/^(?:#+\s*|Your action:|Reaction mode:|Correction Response Ends)/i.test(s)) return false;
+            if (/^(?:在你的回复中用了|我应该严格遵守|所以，?在\s*analyzing|请回复【)/i.test(s)) return false;
+            if (/^\{\s*"error"\s*:/.test(s)) return false;
+            return true;
+        });
         const body = bodyLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
+        const compactNarrativeBody = (rawBody) => {
+            const srcBody = String(rawBody || "").trim();
+            if (!srcBody) return "";
+            let cleaned = srcBody
+                .split(/\r?\n/)
+                .map(s => String(s || "").trim())
+                .filter(Boolean)
+                .filter((s) => {
+                    // 终极拦截：剔除模型自解释/规则复述/结构化噪声
+                    if (/^(?:\d+\.\s*)?(?:不能擅自新增事实|状态锚点问题|叙事边界|技能和状态一致性|场景描写要符合现实|选项限制)/.test(s)) return false;
+                    if (/^(?:在你的回复中用了|我应该严格遵守|所以，?在\s*analyzing|Correction Response Ends|Your action|Reaction mode)/i.test(s)) return false;
+                    if (/^(?:json|yaml|xml|markdown|rules?|prompt|system correction)\b/i.test(s)) return false;
+                    if (/^\{.*\}$/.test(s)) return false;
+                    if (/```|^\[?error\]?[:：]/i.test(s)) return false;
+                    return true;
+                })
+                .join(" ");
+            cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
+            if (!cleaned) return "";
+
+            // 中文模式：按句切分后强制压缩成最多 4 句、每句不超过 28 字
+            if (isZhLocale()) {
+                const chunks = cleaned
+                    .split(/(?<=[。！？!?])/)
+                    .map(s => s.trim())
+                    .filter(Boolean);
+                const picked = [];
+                for (let i = 0; i < chunks.length && picked.length < 4; i += 1) {
+                    let c = chunks[i].replace(/^[，。；：、\s]+/, "").trim();
+                    if (!c) continue;
+                    if (c.length > 28) c = `${c.slice(0, 27)}…`;
+                    picked.push(c);
+                }
+                if (!picked.length) {
+                    const fallback = cleaned.length > 28 ? `${cleaned.slice(0, 27)}…` : cleaned;
+                    return fallback;
+                }
+                return picked.join("\n");
+            }
+
+            // 英文模式：最多 3 句，单句最多 18 词
+            const chunks = cleaned.split(/(?<=[.!?])/).map(s => s.trim()).filter(Boolean);
+            const picked = [];
+            for (let i = 0; i < chunks.length && picked.length < 3; i += 1) {
+                const words = chunks[i].split(/\s+/).filter(Boolean);
+                const short = words.length > 18 ? `${words.slice(0, 18).join(" ")}...` : chunks[i];
+                picked.push(short);
+            }
+            return picked.join("\n");
+        };
+        const compactBody = compactNarrativeBody(body);
         const optionLines = [
             `${options[0]?.label || (isZhLocale() ? "观察周围环境" : "Scan the surroundings")}`,
             `${options[1]?.label || (isZhLocale() ? "尝试推进当前目标" : "Push the objective forward")}`,
             `${options[2]?.label || (isZhLocale() ? "询问关键线索" : "Ask for key clues")}`,
             `${options[3]?.label || (isZhLocale() ? "试探对方反应" : "Probe the counterpart's reaction")}`
         ];
-        return `${body}\n\n${optionLines.join("\n")}`.trim();
+        const safeBody = compactBody || (isZhLocale() ? "你先稳住呼吸，快速扫视周围并锁定可验证线索。" : "You steady your breath and lock onto verifiable clues.");
+        return `${safeBody}\n\n${optionLines.join("\n")}`.trim();
     }
 
     function normalizeActionByConstraints(actionText, constraints) {

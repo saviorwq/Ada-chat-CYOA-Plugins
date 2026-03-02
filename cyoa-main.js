@@ -76,8 +76,18 @@
             const narrator = data.narrator || CONFIG.DEFAULT_GAME.narrator;
             
             const models = CYOA.getChatModels();
-            const modelOptions = models.map(m => `<option value="${m.value}" ${m.value === narrator.model ? 'selected' : ''}>${m.label}</option>`).join('');
-            const styleOptions = CONFIG.NARRATOR_STYLES.map(s => `<option value="${s}" ${s === narrator.style ? 'selected' : ''}>${s}</option>`).join('');
+            const narratorModel = String(narrator.model || '').trim();
+            const narratorStyle = String(narrator.style || '').trim();
+            const modelValues = new Set(models.map(m => String(m.value || '').trim()).filter(Boolean));
+            const baseModelOptions = models.map(m => `<option value="${m.value}" ${m.value === narratorModel ? 'selected' : ''}>${m.label}</option>`).join('');
+            const modelOptions = (!modelValues.has(narratorModel) && narratorModel)
+                ? `${baseModelOptions}<option value="${escapeHtml(narratorModel)}" selected>${escapeHtml(narratorModel)}（当前值）</option>`
+                : baseModelOptions;
+            const styleValues = new Set((CONFIG.NARRATOR_STYLES || []).map(s => String(s)));
+            const baseStyleOptions = (CONFIG.NARRATOR_STYLES || []).map(s => `<option value="${s}" ${s === narratorStyle ? 'selected' : ''}>${s}</option>`).join('');
+            const styleOptions = (!styleValues.has(narratorStyle) && narratorStyle)
+                ? `${baseStyleOptions}<option value="${escapeHtml(narratorStyle)}" selected>${escapeHtml(narratorStyle)}（当前值）</option>`
+                : baseStyleOptions;
 
             // 缩略表格
             const attributesSummary = CYOA.renderSummaryTable(data.attributes || [], 'attributes');
@@ -462,6 +472,18 @@
                         case 'chapters':
                             newItem = { id: CYOA.generateId(), title: t('ui.default.newChapter'), order: (CYOA.editorTempData.chapters?.length || 0) + 1, description: '', scenes: [], unlocked: true, unlockCondition: '', transitionConditions: [] };
                             break;
+                        case 'locations':
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newLocation') || '新地点', description: '', features: [], facilities: [], isSafeRoom: false };
+                            break;
+                        case 'equipmentSynergies':
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newSynergy') || '新联动', condition: 'always', triggers: [], effect: '' };
+                            break;
+                        case 'discoveryRules':
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newDiscoveryRule') || '新规则', discoverCondition: 'custom', conditionValue: '', result: '' };
+                            break;
+                        case 'outfitPresets':
+                            newItem = { id: CYOA.generateId(), name: t('ui.default.newOutfitPreset') || '新服饰预设', chapter: '', items: [], specialRule: '' };
+                            break;
                         case 'storyCards':
                             const maxCards = CONFIG.STORY_CARD_MAX_PER_GAME || 20;
                             if ((CYOA.editorTempData.storyCards || []).length >= maxCards) {
@@ -478,7 +500,7 @@
             });
 
             // 初始化列表事件
-            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes', 'storyCards'].forEach(type => {
+            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes', 'locations', 'equipmentSynergies', 'discoveryRules', 'outfitPresets', 'storyCards'].forEach(type => {
                 const container = CYOA.$(type + 'List');
                 if (container) CYOA.bindListEvents(container, type);
             });

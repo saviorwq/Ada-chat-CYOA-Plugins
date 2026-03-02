@@ -2495,12 +2495,81 @@
             if (!f) return reject(new Error("no_file"));
             const limitMB = Number(maxSizeMB || 2);
             const limitBytes = Math.max(256 * 1024, Math.floor(limitMB * 1024 * 1024));
-            if (Number(f.size || 0) > limitBytes) {
+            const isImage = /^image\//i.test(String(f.type || ""));
+            const readAsDataUrl = () => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(String(reader.result || ""));
+                reader.onerror = () => reject(new Error("read_failed"));
+                reader.readAsDataURL(f);
+            };
+            if (Number(f.size || 0) <= limitBytes) {
+                readAsDataUrl();
+                return;
+            }
+            // 超过限制时：图片自动压缩到限制内；非图片仍按超限报错
+            if (!isImage) {
                 return reject(new Error(`file_too_large_${limitMB}mb`));
             }
+            const toBytes = (dataUrl) => {
+                const s = String(dataUrl || "");
+                const i = s.indexOf(",");
+                if (i < 0) return Number.MAX_SAFE_INTEGER;
+                const b64 = s.slice(i + 1);
+                const pad = (b64.match(/=+$/) || [""])[0].length;
+                return Math.floor((b64.length * 3) / 4) - pad;
+            };
             const reader = new FileReader();
-            reader.onload = () => resolve(String(reader.result || ""));
             reader.onerror = () => reject(new Error("read_failed"));
+            reader.onload = () => {
+                const img = new Image();
+                img.onerror = () => reject(new Error("image_decode_failed"));
+                img.onload = () => {
+                    try {
+                        let width = img.width || 0;
+                        let height = img.height || 0;
+                        if (!width || !height) return reject(new Error("image_size_invalid"));
+                        const canvas = document.createElement("canvas");
+                        const ctx = canvas.getContext("2d");
+                        if (!ctx) return reject(new Error("canvas_unavailable"));
+                        const maxDimension = 2048;
+                        if (width > maxDimension || height > maxDimension) {
+                            const ratio = Math.min(maxDimension / width, maxDimension / height);
+                            width = Math.max(1, Math.round(width * ratio));
+                            height = Math.max(1, Math.round(height * ratio));
+                        }
+                        let quality = 0.92;
+                        let attempt = 0;
+                        let out = "";
+                        while (attempt < 16) {
+                            canvas.width = width;
+                            canvas.height = height;
+                            ctx.clearRect(0, 0, width, height);
+                            ctx.drawImage(img, 0, 0, width, height);
+                            out = canvas.toDataURL("image/jpeg", quality);
+                            if (toBytes(out) <= limitBytes) {
+                                resolve(out);
+                                return;
+                            }
+                            // 先降质量，质量过低后再缩分辨率
+                            if (quality > 0.5) {
+                                quality = Math.max(0.5, quality - 0.1);
+                            } else {
+                                width = Math.max(1, Math.round(width * 0.9));
+                                height = Math.max(1, Math.round(height * 0.9));
+                            }
+                            attempt += 1;
+                        }
+                        if (out && toBytes(out) <= limitBytes * 1.05) {
+                            resolve(out);
+                            return;
+                        }
+                        reject(new Error(`compress_failed_over_${limitMB}mb`));
+                    } catch (e) {
+                        reject(new Error(`compress_failed:${String(e?.message || e || "")}`));
+                    }
+                };
+                img.src = String(reader.result || "");
+            };
             reader.readAsDataURL(f);
         });
     }

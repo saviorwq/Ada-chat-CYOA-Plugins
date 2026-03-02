@@ -257,12 +257,50 @@
                     html += `<span class="item-count">📄 ${t('ui.status.nScenes', {n: item.scenes?.length || 0})}</span>`;
                     break;
 
+                case 'locations':
+                    html += `<span class="item-icon">📍</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || item.id || t('ui.status.unnamed'))}</span>`;
+                    if (item.regionId) html += `<span class="item-type">${escapeHtml(item.regionId)}</span>`;
+                    html += `<span class="item-count">🏷️ ${item.features?.length || 0}</span>`;
+                    html += `<span class="item-count">🏢 ${item.facilities?.length || 0}</span>`;
+                    if (item.isSafeRoom) html += `<span class="item-badge">🛡️${t('ui.label.safeRoom') || '安全点'}</span>`;
+                    break;
+
+                case 'equipmentSynergies':
+                    html += `<span class="item-icon">🔗</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || item.id || t('ui.status.unnamed'))}</span>`;
+                    html += `<span class="item-type">${escapeHtml(item.condition || 'always')}</span>`;
+                    html += `<span class="item-count">⚙️ ${item.triggers?.length || 0}</span>`;
+                    if (item.effect) html += `<span class="item-desc">${escapeHtml(String(item.effect).substring(0, 22))}</span>`;
+                    break;
+
+                case 'discoveryRules':
+                    html += `<span class="item-icon">🧩</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || item.id || t('ui.status.unnamed'))}</span>`;
+                    html += `<span class="item-type">${escapeHtml(item.discoverCondition || 'custom')}</span>`;
+                    if (item.conditionValue) html += `<span class="item-desc">${escapeHtml(String(item.conditionValue).substring(0, 22))}</span>`;
+                    break;
+
+                case 'outfitPresets':
+                    html += `<span class="item-icon">👗</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || item.id || t('ui.status.unnamed'))}</span>`;
+                    if (item.chapter) html += `<span class="item-type">${escapeHtml(item.chapter)}</span>`;
+                    html += `<span class="item-count">🧰 ${item.items?.length || 0}</span>`;
+                    if (item.specialRule) html += `<span class="item-desc">${escapeHtml(String(item.specialRule).substring(0, 22))}</span>`;
+                    break;
+
                 case 'storyCards':
                     const cardTypeDef = (CONFIG.STORY_CARD_TYPES || []).find(tp => tp.value === item.type);
                     html += `<span class="item-icon">${cardTypeDef?.label?.charAt(0) || '📝'}</span>`;
                     html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
                     const triggers = Array.isArray(item.triggerWords) ? item.triggerWords : (item.triggerWords || '').split(/[,，\s]+/).filter(Boolean);
                     html += `<span class="item-desc">${escapeHtml((triggers.slice(0, 3).join(', ') + (triggers.length > 3 ? '...' : '')) || t('ui.storyCard.triggers'))}</span>`;
+                    break;
+
+                default:
+                    html += `<span class="item-icon">📄</span>`;
+                    html += `<span class="item-name">${escapeHtml(item.name || item.title || item.id || t('ui.status.unnamed'))}</span>`;
+                    if (item.description) html += `<span class="item-desc">${escapeHtml(String(item.description).substring(0, 22))}</span>`;
                     break;
             }
             
@@ -1054,9 +1092,14 @@
 
     function renderCharacterForm(character, index) {
         const models = getChatModels();
-        const modelOptions = models.map(m => 
-            `<option value="${m.value}" ${m.value === character.model ? 'selected' : ''}>${m.label}</option>`
+        const currentModel = String(character.model || '').trim();
+        const modelValues = new Set(models.map(m => String(m.value || '').trim()).filter(Boolean));
+        const baseModelOptions = models.map(m =>
+            `<option value="${m.value}" ${m.value === currentModel ? 'selected' : ''}>${m.label}</option>`
         ).join('');
+        const modelOptions = (!modelValues.has(currentModel) && currentModel)
+            ? `${baseModelOptions}<option value="${escapeHtml(currentModel)}" selected>${escapeHtml(currentModel)}（当前值）</option>`
+            : baseModelOptions;
         
         const personalityStr = character.personality ? character.personality.join(', ') : '';
         const hobbiesStr = character.hobbies ? character.hobbies.join(', ') : '';
