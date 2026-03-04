@@ -15,11 +15,33 @@
     const error = CYOA.error;
 
     // ========== 后端可用性探测 ==========
-    let _storageMode = null; // null=未检测, 'api'=服务端, 'local'=localStorage
+    // _storageMode: null=未检测, 'api'=服务端可用, 'local'=允许本地回退, 'api_required'=强制远端但当前探测失败
+    let _storageMode = null;
     let _apiBase = '';       // 探测成功后的 API 基础 URL（含 ? 或 &）
+
+    const DEFAULT_PLUGIN_ROUTE_IDS = ['cyoa_v221', 'cyoa'];
+
+    function getPluginRouteIds() {
+        const ids = [];
+        const pushId = (raw) => {
+            const id = String(raw || '').trim();
+            if (!id || ids.includes(id)) return;
+            ids.push(id);
+        };
+
+        pushId(CYOA.pluginMeta?.id);
+        pushId(CYOA.PLUGIN_ID);
+        pushId(CYOA.CONFIG?.PLUGIN_ID);
+        DEFAULT_PLUGIN_ROUTE_IDS.forEach(pushId);
+        return ids;
+    }
 
     function apiUrl(action, extraParams) {
         return `${_apiBase}action=${action}${extraParams ? '&' + extraParams : ''}&_=${Date.now()}`;
+    }
+
+    function allowLocalFallback() {
+        return CYOA.CONFIG?.ALLOW_LOCAL_FALLBACK === true;
     }
 
     async function probeUrl(url) {
@@ -36,12 +58,16 @@
     async function detectStorageMode() {
         if (_storageMode !== null) return _storageMode;
 
-        const candidates = [
-            `api.php?plugin=cyoa&`,                       // 新版插件路由
-            `${CONFIG.API_URL}?plugin=cyoa&`,             // 用户自定义 URL + 插件路由
-            `${CONFIG.API_URL}?`,                         // 旧版直连（api.php 硬编码路由）
-            `cyoa_api.php?`                               // 独立 CYOA API 文件
-        ];
+        const pluginIds = getPluginRouteIds();
+        const candidates = [];
+        pluginIds.forEach(pid => {
+            candidates.push(`api.php?plugin=${encodeURIComponent(pid)}&`);       // 相对路径插件路由
+            candidates.push(`${CONFIG.API_URL}?plugin=${encodeURIComponent(pid)}&`); // 自定义 API_URL + 插件路由
+        });
+        candidates.push(
+            `${CONFIG.API_URL}?`, // 旧版直连（api.php 硬编码路由）
+            `cyoa_api.php?`       // 独立 CYOA API 文件
+        );
         const tried = new Set();
 
         for (const base of candidates) {
@@ -56,9 +82,15 @@
             }
         }
 
-        _storageMode = 'local';
-        log('后端不可用，回退到 localStorage 存储');
-        DataManager.loadGames();
+        _apiBase = candidates[0] || `${CONFIG.API_URL}?`;
+        if (allowLocalFallback()) {
+            _storageMode = 'local';
+            log('后端不可用，回退到 localStorage 存储');
+            DataManager.loadGames();
+            return _storageMode;
+        }
+        _storageMode = 'api_required';
+        error('后端不可用，且已禁用 localStorage 回退。请检查插件后端路由。');
         return _storageMode;
     }
 
@@ -109,9 +141,14 @@
                 CYOA.games = [];
             }
         } catch (e) {
-            error('加载游戏列表失败，回退到 localStorage', e);
-            _storageMode = 'local';
-            return await loadGamesList();
+            if (allowLocalFallback()) {
+                error('加载游戏列表失败，回退到 localStorage', e);
+                _storageMode = 'local';
+                return await loadGamesList();
+            }
+            error('加载游戏列表失败（远端存储模式）', e);
+            CYOA.games = [];
+            return CYOA.games;
         }
         return CYOA.games;
     }
@@ -148,9 +185,13 @@
                 return null;
             }
         } catch (e) {
-            error('加载游戏失败，回退到 localStorage', e);
-            _storageMode = 'local';
-            return await loadGameFromFile(gameId);
+            if (allowLocalFallback()) {
+                error('加载游戏失败，回退到 localStorage', e);
+                _storageMode = 'local';
+                return await loadGameFromFile(gameId);
+            }
+            error('加载游戏失败（远端存储模式）', e);
+            return null;
         }
     }
 
@@ -159,6 +200,10 @@
         CYOA._lastSaveGameError = '';
 
         const saveToLocalFallback = (reason) => {
+            if (!allowLocalFallback()) {
+                CYOA._lastSaveGameError = `${reason} | local_fallback_disabled`;
+                return false;
+            }
             try {
                 DataManager.loadGames();
                 DataManager.saveGame(gameData);
@@ -220,10 +265,14 @@
                 return saveToLocalFallback(CYOA._lastSaveGameError);
             }
         } catch (e) {
-            error('保存游戏失败，回退到 localStorage', e);
             CYOA._lastSaveGameError = `api_request_failed: ${String(e?.message || e || '')}`;
-            _storageMode = 'local';
-            return await saveGameToFile(gameData);
+            if (allowLocalFallback()) {
+                error('保存游戏失败，回退到 localStorage', e);
+                _storageMode = 'local';
+                return await saveGameToFile(gameData);
+            }
+            error('保存游戏失败（远端存储模式）', e);
+            return false;
         }
     }
 
@@ -266,9 +315,13 @@
                 return false;
             }
         } catch (e) {
-            error('删除游戏失败，回退到 localStorage', e);
-            _storageMode = 'local';
-            return await deleteGameFile(gameId);
+            if (allowLocalFallback()) {
+                error('删除游戏失败，回退到 localStorage', e);
+                _storageMode = 'local';
+                return await deleteGameFile(gameId);
+            }
+            error('删除游戏失败（远端存储模式）', e);
+            return false;
         }
     }
 

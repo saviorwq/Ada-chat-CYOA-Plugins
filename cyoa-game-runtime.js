@@ -23,8 +23,62 @@
     const error = CYOA.error || console.error;
     const t = CYOA.t || ((k) => k);
     let isExiting = false;
+    let _localTemplateLibrary = null;
+    let _localTemplateLoadPromise = null;
 
     CYOA.GameRuntime = CYOA.GameRuntime || {};
+
+    function getTemplateLibraryUrls() {
+        const out = [];
+        const push = (u) => {
+            const s = String(u || "").trim();
+            if (!s || out.includes(s)) return;
+            out.push(s);
+        };
+        const fileName = "cyoa-local-templates.json";
+        const cur = document.currentScript;
+        if (cur?.src) {
+            try { push(new URL(fileName, cur.src).href); } catch (_) {}
+        }
+        const scripts = Array.from(document.querySelectorAll('script[src]'));
+        scripts.forEach((s) => {
+            const src = String(s?.src || "");
+            if (!/cyoa-(?:main|game-runtime)\.js(\?|$)/i.test(src)) return;
+            try { push(new URL(fileName, src).href); } catch (_) {}
+        });
+        const pid = String(CYOA.pluginMeta?.id || CYOA.CONFIG?.PLUGIN_ID || "").trim();
+        if (pid) push(`plugins/${pid}/${fileName}`);
+        push(fileName);
+        return out;
+    }
+
+    CYOA.loadLocalTemplateLibrary = async function(force) {
+        if (!force && _localTemplateLibrary) return _localTemplateLibrary;
+        if (!force && _localTemplateLoadPromise) return _localTemplateLoadPromise;
+        const urls = getTemplateLibraryUrls();
+        _localTemplateLoadPromise = (async () => {
+            for (const url of urls) {
+                try {
+                    const resp = await fetch(url, { cache: "no-store" });
+                    if (!resp.ok) continue;
+                    const data = await resp.json();
+                    if (!data || typeof data !== "object") continue;
+                    _localTemplateLibrary = data;
+                    CYOA._localTemplateLibraryUrl = url;
+                    CYOA.invalidateRAG?.();
+                    return _localTemplateLibrary;
+                } catch (_) {}
+            }
+            return null;
+        })();
+        const result = await _localTemplateLoadPromise;
+        _localTemplateLoadPromise = null;
+        return result;
+    };
+
+    CYOA.getLocalTemplateLibrary = function() {
+        return _localTemplateLibrary;
+    };
 
     CYOA.GameRuntime.startGame = async function(gameId, roleName) {
         log('开始游戏', gameId, roleName);
@@ -304,6 +358,15 @@
         lines.push(`[技能] ${skills.join("、") || "无"}`);
         lines.push(`[任务] ${quests.join("、") || "无"}`);
         lines.push(`[属性] ${attrs.join("、") || "无"}`);
+        const tpl = CYOA.getLocalTemplateLibrary?.();
+        const styleGuide = Array.isArray(tpl?.ragReference?.styleGuide) ? tpl.ragReference.styleGuide : [];
+        const examples = Array.isArray(tpl?.ragReference?.exampleReplies) ? tpl.ragReference.exampleReplies : [];
+        if (styleGuide.length) {
+            lines.push(`[本地模板规则] ${styleGuide.slice(0, 6).join("；")}`);
+        }
+        if (examples.length) {
+            lines.push(`[本地模板示例] ${examples.slice(0, 2).join(" / ")}`);
+        }
         return lines.join("\n");
     }
 
@@ -740,6 +803,10 @@
 
         CYOA.renderSidebar?.();
         CYOA._bindInputKeyHandler?.();
+        // 进入游戏即自动触发一次开场叙述：场景 + 状态 + 可互动对象
+        setTimeout(() => {
+            try { CYOA.kickoffOpeningNarration?.(); } catch (_) {}
+        }, 80);
     };
 
     CYOA.beginGame = function(roleName) {
@@ -1045,6 +1112,10 @@
 
         CYOA.renderSidebar();
         CYOA._bindInputKeyHandler();
+        // 欢迎页开始后自动触发一次开场叙述，不等待玩家先输入
+        setTimeout(() => {
+            try { CYOA.kickoffOpeningNarration?.(); } catch (_) {}
+        }, 80);
     };
 
     // ========== 渲染欢迎界面 ==========
@@ -3185,5 +3256,6 @@
     if (typeof CYOA.GameRuntime.exitGame !== 'function') {
         CYOA.GameRuntime.exitGame = CYOA.exitGame;
     }
+    CYOA.loadLocalTemplateLibrary?.();
     CYOA.GameRuntime.__ready = true;
 })();

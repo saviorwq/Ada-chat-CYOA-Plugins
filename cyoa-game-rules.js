@@ -17,7 +17,7 @@
             hand: /用手|伸手|手掌|手指|指尖|抓|握|捏|拧|扳|撬|刮|擦拭|抹|刻|写|开锁|拧开|旋开|按按钮|触碰|抚摸|捡|拣|拾|取|拾取|拾起|拿起|取物|接|接住|抛|抛出|扔|丢|投掷|open|grip|grab|twist|unlock|scratch|wipe|press|handle|pick\s*up|pick|take|catch|throw|toss/i,
             fineFinger: /手指|指尖|捏|拧|扳|撬|刮|刻|写|开锁|按按钮|旋钮|拨片|扣件|捡|拣|拾|取|拾取|拾起|拿起|取物|接|接住|抛|抛出|扔|丢|投掷|grip|twist|unlock|scratch|press|pick\s*up|pick|take|catch|throw|toss/i,
             audio: /听|倾听|聆听|侧耳|听脚步|听声音|听动静|呼喊回应|listen|hear|audio|sound|footstep/i,
-            fastMove: /奔跑|冲刺|狂奔|跳跃|翻越|追赶|快跑|加速移动|run|sprint|jump|dash|chase|leap/i,
+            fastMove: /奔跑|冲刺|狂奔|跳跃|翻越|追赶|快跑|加速移动|大步|跨步|高抬腿|抬腿|踢腿|踢|侧踢|前踢|后踢|鞭腿|膝撞|run|sprint|jump|dash|chase|leap|kick|kicking|high\s*knee|high-knee|step\s*over|lunge/i,
             escapeRange: /逃离|远离|拉开距离|冲出|离开现场|脱离牵引|break away|escape far|run away|leave area/i,
             breathHeavy: /长句|大喊|呼救|持续喊叫|屏息|憋气|猛冲|yell|shout|scream|hold breath|all-out sprint/i,
             chastity: /自慰|抚摸下体|刺激阴蒂|刺激龟头|触碰生殖器|解开贞操|摩擦胯部|masturbat|genital|unlock chastity|touch groin/i,

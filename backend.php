@@ -15,7 +15,11 @@ if (!defined('PLUGIN_DIR')) {
 }
 
 $dataDir = PLUGIN_DIR . 'cyoa_games/';
-$maxBodySize = 2 * 1024 * 1024; // 2MB
+// 默认放宽到 20MB，避免大型世界设定回退到 localStorage。
+// 如宿主希望自定义，可在加载器侧定义 CYOA_MAX_GAME_SIZE 常量（字节）。
+$maxBodySize = defined('CYOA_MAX_GAME_SIZE')
+    ? max(256 * 1024, (int) CYOA_MAX_GAME_SIZE)
+    : (20 * 1024 * 1024);
 
 if (!is_dir($dataDir)) {
     if (!mkdir($dataDir, 0700, true)) {
@@ -57,7 +61,12 @@ switch (PLUGIN_ACTION) {
         $filename = $dataDir . $gameId . '.json';
 
         if (file_put_contents($filename, json_encode($input, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE))) {
-            echo json_encode(['success' => true, 'id' => $gameId]);
+            echo json_encode([
+                'success' => true,
+                'id' => $gameId,
+                'bytes' => strlen($raw),
+                'storage' => 'file'
+            ]);
         } else {
             echo json_encode(['success' => false, 'error' => '无法写入文件']);
         }

@@ -74,6 +74,9 @@
             const travelRules = data.travelRules || {};
             const rules = data.rules || {};
             const narrator = data.narrator || CONFIG.DEFAULT_GAME.narrator;
+            const axiomLines = Array.isArray(data.axioms)
+                ? data.axioms.map(x => String(x || '').trim()).filter(Boolean).join('\n')
+                : '';
             
             const models = CYOA.getChatModels();
             const narratorModel = String(narrator.model || '').trim();
@@ -126,7 +129,10 @@
                     <div class="cyoa-editor-section">
                         <div class="cyoa-section-header">
                             <span>${t('ui.editor.worldSetting')}</span>
-                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm save-section" data-section="world">💾 ${t('ui.btn.save')}</button>
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <button type="button" class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="addWorldEntryBtn">+ 新增条目</button>
+                                <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm save-section" data-section="world">💾 ${t('ui.btn.save')}</button>
+                            </div>
                         </div>
                         <div class="cyoa-section-body">
                             <div class="cyoa-grid-2">
@@ -165,7 +171,10 @@
                     <div class="cyoa-editor-section">
                         <div class="cyoa-section-header">
                             <span>${t('ui.editor.coreMech')}</span>
-                            <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm save-section" data-section="mechanics">💾 ${t('ui.btn.save')}</button>
+                            <div style="display:flex; gap:6px; align-items:center;">
+                                <button type="button" class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="addMechanicsEntryBtn">+ 新增条目</button>
+                                <button class="cyoa-btn cyoa-btn-primary cyoa-btn-sm save-section" data-section="mechanics">💾 ${t('ui.btn.save')}</button>
+                            </div>
                         </div>
                         <div class="cyoa-section-body">
                             <select id="editMechanicsType" class="cyoa-select">
@@ -208,12 +217,59 @@
                                     <select id="narratorStyle" class="cyoa-select"><option value="">${t('ui.label.selectStyle')}</option>${styleOptions}</select>
                                 </div>
                             </div>
+                            <div class="cyoa-grid-2">
+                                <div>
+                                    <label>模型供应商（可选）</label>
+                                    <input type="text" id="narratorProvider" class="cyoa-input" value="${escapeHtml(String(narrator.provider || ''))}" placeholder="openai / anthropic / ollama / deepseek ...">
+                                </div>
+                                <div>
+                                    <label>单次最大输出（max_tokens）</label>
+                                    <input type="number" id="narratorMaxTokens" class="cyoa-input" min="64" max="4096" step="1" value="${Math.max(64, Math.min(4096, Number(narrator.maxTokens || 500)))}">
+                                </div>
+                            </div>
+                            <div class="cyoa-grid-2">
+                                <div>
+                                    <label>回复模式</label>
+                                    <select id="narratorResponseMode" class="cyoa-select">
+                                        <option value="text" ${(String(narrator.responseMode || 'text').toLowerCase() === 'json') ? '' : 'selected'}>text（默认，稳定）</option>
+                                        <option value="json" ${(String(narrator.responseMode || 'text').toLowerCase() === 'json') ? 'selected' : ''}>json（高级）</option>
+                                    </select>
+                                    <small style="font-size:12px;color:var(--text-light);">默认建议 text；仅在你明确使用结构化回包时切换 json。json 模式要求模型仅返回 JSON 对象，若不符合将自动回退 text（并提示）。</small>
+                                </div>
+                            </div>
                             <div class="cyoa-form-row">
                                 <label>${t('ui.label.narratorSetting')}</label>
                                 <div style="display:flex;gap:8px;align-items:flex-start;">
                                     <textarea id="narratorPrompt" class="cyoa-textarea" rows="3" style="flex:1;">${escapeHtml(narrator.prompt || '')}</textarea>
                                     <button type="button" class="cyoa-btn cyoa-btn-sm" style="flex-shrink:0;font-size:11px;white-space:nowrap;" onclick="CYOA.requestAIExpand && CYOA.requestAIExpand('narratorPrompt','narrator')" title="${t('ui.btn.aiExpand')}">✨ AI 扩展</button>
                                 </div>
+                            </div>
+                            <div class="cyoa-form-row">
+                                <label>系统约束模板（system_prompt_template）</label>
+                                <div style="display:flex; justify-content:flex-end; margin:0 0 6px;">
+                                    <button type="button" class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="narratorSystemPromptResetBtn">重置为默认模板</button>
+                                </div>
+                                <textarea id="narratorSystemPromptTemplate" class="cyoa-textarea" rows="10" style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;">${escapeHtml(
+                                    narrator.systemPromptTemplate
+                                    || CYOA.GamePrompts?.DEFAULT_SYSTEM_PROMPT_TEMPLATE
+                                    || ''
+                                )}</textarea>
+                                <small style="font-size:12px;color:var(--text-light);">支持变量：{{roleType}} / {{characterName}} / {{character.background}} / {{character.personality}} / {{character.knowledge}} / {{#each axioms}}{{this}}{{/each}}</small>
+                            </div>
+                            <div class="cyoa-form-row">
+                                <label>公理化压缩（Axiom Distillation）</label>
+                                <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:6px;">
+                                    <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+                                        <input id="narratorAxiomInjectEnabled" type="checkbox" ${narrator.axiomInjectEnabled !== false ? 'checked' : ''}>
+                                        启用每轮公理注入
+                                    </label>
+                                    <label style="display:flex; align-items:center; gap:6px; font-size:13px;">
+                                        最大注入条数
+                                        <input id="narratorAxiomMaxCount" type="number" class="cyoa-input" min="1" max="20" step="1" value="${Math.max(1, Math.min(20, Number(narrator.axiomMaxCount || 10)))}" style="height:30px; width:72px;">
+                                    </label>
+                                </div>
+                                <textarea id="narratorAxioms" class="cyoa-textarea" rows="6" placeholder="每行一条公理，例如：&#10;陆知薇永远不失态&#10;境界压制不可逆&#10;死亡不可逆（除非设定明确允许）">${escapeHtml(axiomLines)}</textarea>
+                                <small style="font-size:12px;color:var(--text-light);">建议 10-20 条核心公理。将自动用于 {{#each axioms}} 变量，优先约束模型在世界边界内叙事。</small>
                             </div>
                             <div class="cyoa-form-row">
                                 <label>天道头像（聊天缩略图）</label>
@@ -421,9 +477,39 @@
 
         // 绑定事件
         attachEvents: function(modal) {
+            const appendLineToTextarea = (textareaId, defaultLine) => {
+                const ta = CYOA.$(textareaId);
+                if (!ta) return;
+                const current = String(ta.value || '').trim();
+                const line = String(defaultLine || '').trim();
+                if (!line) return;
+                ta.value = current ? `${current}\n- ${line}` : `- ${line}`;
+                ta.dispatchEvent(new Event('input', { bubbles: true }));
+                ta.focus();
+            };
+
             // 保存所有按钮
             CYOA.$('modalSaveBtn').onclick = () => this.save(modal);
             CYOA.$('modalCancelBtn').onclick = modal.close;
+            const narratorSystemPromptResetBtn = CYOA.$('narratorSystemPromptResetBtn');
+            if (narratorSystemPromptResetBtn) {
+                narratorSystemPromptResetBtn.onclick = () => {
+                    const ta = CYOA.$('narratorSystemPromptTemplate');
+                    if (!ta) return;
+                    ta.value = String(CYOA.GamePrompts?.DEFAULT_SYSTEM_PROMPT_TEMPLATE || '');
+                    ta.dispatchEvent(new Event('input', { bubbles: true }));
+                    ta.focus();
+                };
+            }
+
+            const addWorldEntryBtn = CYOA.$('addWorldEntryBtn');
+            if (addWorldEntryBtn) {
+                addWorldEntryBtn.onclick = () => appendLineToTextarea('editWorldCustom', '补充一条世界规则/设定条目');
+            }
+            const addMechanicsEntryBtn = CYOA.$('addMechanicsEntryBtn');
+            if (addMechanicsEntryBtn) {
+                addMechanicsEntryBtn.onclick = () => appendLineToTextarea('editMechanicsCustom', '补充一条核心机制条目');
+            }
 
             // 分节保存
             document.querySelectorAll('.save-section').forEach(btn => {
@@ -500,7 +586,7 @@
             });
 
             // 初始化列表事件
-            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes', 'locations', 'equipmentSynergies', 'discoveryRules', 'outfitPresets', 'storyCards'].forEach(type => {
+            ['attributes', 'items', 'equipment', 'professions', 'skills', 'quests', 'characters', 'scenes', 'chapters', 'locations', 'equipmentSynergies', 'discoveryRules', 'outfitPresets', 'storyCards'].forEach(type => {
                 const container = CYOA.$(type + 'List');
                 if (container) CYOA.bindListEvents(container, type);
             });
@@ -554,13 +640,41 @@
                     break;
                     
                 case 'narrator':
+                    {
+                        const responseModeRaw = String(CYOA.$('narratorResponseMode')?.value || 'text').trim().toLowerCase();
+                        const responseMode = responseModeRaw === 'json' ? 'json' : 'text';
+                    const axiomInjectEnabled = !!CYOA.$('narratorAxiomInjectEnabled')?.checked;
+                    const axiomMaxRaw = Number(CYOA.$('narratorAxiomMaxCount')?.value);
+                    const axiomMaxCount = Number.isFinite(axiomMaxRaw) ? Math.max(1, Math.min(20, Math.round(axiomMaxRaw))) : 10;
+                    const axiomList = String(CYOA.$('narratorAxioms')?.value || '')
+                        .split(/\r?\n/)
+                        .map(s => String(s || '').trim())
+                        .filter(Boolean)
+                        .slice(0, 50);
+                    const existingNarrator = (CYOA.editorTempData.narrator && typeof CYOA.editorTempData.narrator === 'object')
+                        ? CYOA.editorTempData.narrator
+                        : {};
+                    const defaultTemplate = String(CYOA.GamePrompts?.DEFAULT_SYSTEM_PROMPT_TEMPLATE || '').trim();
+                    const inputTemplateRaw = String(CYOA.$('narratorSystemPromptTemplate')?.value || '').trim();
+                    const normalizedSystemTemplate = (!inputTemplateRaw || (defaultTemplate && inputTemplateRaw === defaultTemplate))
+                        ? ''
+                        : inputTemplateRaw;
                     CYOA.editorTempData.narrator = {
+                        ...existingNarrator,
                         enabled: true,
                         model: CYOA.$('narratorModel')?.value || '',
+                        provider: String(CYOA.$('narratorProvider')?.value || '').trim().toLowerCase(),
                         style: CYOA.$('narratorStyle')?.value || '情感细腻',
                         prompt: CYOA.$('narratorPrompt')?.value.trim() || CONFIG.DEFAULT_GAME.narrator.prompt,
-                        avatar: CYOA.$('narratorAvatar')?.value.trim() || ''
+                        systemPromptTemplate: normalizedSystemTemplate,
+                        axiomInjectEnabled,
+                        axiomMaxCount,
+                        maxTokens: Math.max(64, Math.min(4096, Number(CYOA.$('narratorMaxTokens')?.value || existingNarrator?.maxTokens || CONFIG.DEFAULT_GAME.narrator.maxTokens || 500))),
+                        avatar: CYOA.$('narratorAvatar')?.value.trim() || '',
+                        responseMode
                     };
+                    CYOA.editorTempData.axioms = axiomList;
+                    }
                     break;
                     
                 case 'rules':
@@ -603,7 +717,7 @@
                 await CYOA.loadGamesList();
                 const listContainer = CYOA.$('cyoaGameList');
                 if (listContainer) {
-                    renderGameListItems(listContainer);
+                    CYOA.renderGameListItems?.(listContainer);
                 }
             } else {
                 const reason = String(CYOA._lastSaveGameError || '').trim();
@@ -632,426 +746,7 @@
         }
     };
 
-    // ========== 设置面板渲染 ==========
-    CYOA.renderSettings = function(container) {
-        if (!container) {
-            setTimeout(() => {
-                const retryContainer = CYOA.$('pluginSettingsContent');
-                if (retryContainer) CYOA.renderSettings(retryContainer);
-            }, 500);
-            return;
-        }
-        
-        container.innerHTML = `
-            <div class="cyoa-container" style="padding:20px;">
-                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:24px;">
-                    <div>
-                        <h2 style="margin:0;">${t('ui.panel.gameLib')}</h2>
-                        <p style="margin:4px 0 0; color:var(--text-light);">${t('ui.panel.gameLibDesc')}</p>
-                    </div>
-                    <div style="display:flex; gap:12px; align-items:center;">
-                        <button class="cyoa-btn cyoa-btn-primary" id="cyoaNewGameBtn">${t('ui.btn.newGame')}</button>
-                        <button class="cyoa-btn cyoa-btn-secondary" id="cyoaAIGenerateBtn" title="${t('ui.btn.aiGenerateGame')}">✨ ${t('ui.btn.aiGenerateGame')}</button>
-                        <button class="cyoa-btn cyoa-btn-secondary" id="cyoaImportGameBtn">${t('ui.btn.importGame')}</button>
-                        <button class="cyoa-btn cyoa-btn-secondary" id="cyoaWordFilterBtn" title="${t('ui.panel.wordFilter')}">${t('ui.btn.wordFilter')}</button>
-                    </div>
-                </div>
-                <div style="margin:-8px 0 16px; padding:10px 12px; border:1px solid var(--border); border-radius:10px; background:var(--bg-light);">
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
-                        <input id="cyoaBypassCostToggle" type="checkbox" ${CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER !== false ? 'checked' : ''}>
-                        <span>关闭省钱策略（CYOA 直通模型，减少乱码/污染回复）</span>
-                    </label>
-                    <div style="font-size:12px; color:var(--text-light); margin-top:6px;">
-                        开启后会跳过 Ada Chat 的省钱优化链路；默认开启。
-                    </div>
-                    <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; margin-top:10px;">
-                        <input id="cyoaWordFilterEnabledToggle" type="checkbox" ${CYOA.CONFIG?.WORD_FILTER_ENABLED !== false ? 'checked' : ''}>
-                        <span>启用屏蔽词过滤（发送前替换、回包后还原）</span>
-                    </label>
-                </div>
-                <div id="cyoaGameList" class="cyoa-game-list"></div>
-            </div>
-        `;
-        
-        CYOA.$('cyoaNewGameBtn').onclick = () => GameEditor.open('new');
-        CYOA.$('cyoaAIGenerateBtn').onclick = () => openAIGenerateModal(container);
-        CYOA.$('cyoaImportGameBtn').onclick = () => CYOA.importGame(container);
-        CYOA.$('cyoaWordFilterBtn').onclick = () => openWordFilterEditor();
-        const bypassToggle = CYOA.$('cyoaBypassCostToggle');
-        if (bypassToggle) {
-            bypassToggle.onchange = () => {
-                const enabled = !!bypassToggle.checked;
-                if (typeof CYOA.setAiBypassCostOptimizer === 'function') {
-                    CYOA.setAiBypassCostOptimizer(enabled);
-                } else {
-                    CYOA.CONFIG.AI_BYPASS_COST_OPTIMIZER = enabled;
-                }
-                CYOA.log?.('AI_BYPASS_COST_OPTIMIZER =', enabled);
-            };
-        }
-        const wordFilterToggle = CYOA.$('cyoaWordFilterEnabledToggle');
-        if (wordFilterToggle) {
-            wordFilterToggle.onchange = () => {
-                const enabled = !!wordFilterToggle.checked;
-                CYOA.CONFIG.WORD_FILTER_ENABLED = enabled;
-                try {
-                    const current = CYOA.loadPluginSettings?.() || {};
-                    current.WORD_FILTER_ENABLED = enabled;
-                    CYOA.savePluginSettings?.(current);
-                } catch (_) {}
-                CYOA.log?.('WORD_FILTER_ENABLED =', enabled);
-            };
-        }
-
-        CYOA.loadGamesList().then(() => {
-            renderGameListItems(CYOA.$('cyoaGameList'));
-        });
-    };
-
-    async function ensureGameRuntimeReady() {
-        if (typeof CYOA.startGame === 'function') return true;
-        const src = `plugins/cyoa/cyoa-game.js?v=${Date.now()}`;
-        try {
-            await new Promise((resolve, reject) => {
-                const s = document.createElement('script');
-                s.src = src;
-                s.async = true;
-                s.onload = resolve;
-                s.onerror = () => reject(new Error(`load failed: ${src}`));
-                document.head.appendChild(s);
-            });
-        } catch (e) {
-            console.error('[CYOA] 运行模块补载失败', e);
-        }
-        return typeof CYOA.startGame === 'function';
-    }
-
-    function renderGameListItems(listContainer) {
-        if (!listContainer) return;
-        listContainer.innerHTML = '';
-        
-        if (CYOA.games.length === 0) {
-            listContainer.innerHTML = `<div class="cyoa-empty-state">${t('ui.empty.noGames')}</div>`;
-            return;
-        }
-        
-        const countOf = (v) => {
-            if (Array.isArray(v)) return v.length;
-            if (typeof v === 'number' && Number.isFinite(v)) return v;
-            return 0;
-        };
-
-        CYOA.games.forEach(game => {
-            const item = document.createElement('div');
-            item.className = 'cyoa-game-card';
-            
-            item.innerHTML = `
-                <div class="cyoa-card-header">
-                    <h3 class="cyoa-card-title">${escapeHtml(game.name)}</h3>
-                    <span class="cyoa-badge cyoa-badge-primary">${countOf(game.characters)} ${t('ui.type.characters')}</span>
-                </div>
-                <div class="cyoa-card-meta">✍️ ${escapeHtml(game.author || t('ui.status.unknownAuthor'))} • v${game.version || '1.0'}</div>
-                <div class="cyoa-card-stats" style="grid-template-columns:repeat(4,1fr);">
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.attributes)}</span><span class="cyoa-stat-label">${t('ui.type.attributes')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.items)}</span><span class="cyoa-stat-label">${t('ui.type.items')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.skills)}</span><span class="cyoa-stat-label">${t('ui.type.skills')}</span></div>
-                    <div class="cyoa-stat"><span class="cyoa-stat-value">${countOf(game.quests)}</span><span class="cyoa-stat-label">${t('ui.type.quests')}</span></div>
-                </div>
-                <div class="cyoa-card-actions">
-                    <button class="cyoa-btn cyoa-btn-primary play-game" data-id="${game.id}">${t('ui.btn.start')}</button>
-                    <button class="cyoa-btn cyoa-btn-secondary edit-game" data-id="${game.id}">✏️ ${t('ui.btn.edit')}</button>
-                    <button class="cyoa-btn cyoa-btn-secondary export-game" data-id="${game.id}" title="${t('ui.btn.export')}">📤</button>
-                    <button class="cyoa-btn cyoa-btn-danger delete-game" data-id="${game.id}" title="${t('ui.btn.delete')}">🗑️</button>
-                </div>
-            `;
-            
-            item.querySelector('.play-game').addEventListener('click', async () => {
-                const ok = await ensureGameRuntimeReady();
-                if (!ok || typeof CYOA.startGame !== 'function') {
-                    alert('CYOA 游戏运行模块未加载，请刷新页面后重试。');
-                    return;
-                }
-                CYOA.startGame(game.id);
-            });
-            
-            item.querySelector('.edit-game').addEventListener('click', () => GameEditor.open(game.id));
-            
-            item.querySelector('.export-game').addEventListener('click', () => CYOA.exportGame(game.id));
-            
-            item.querySelector('.delete-game').addEventListener('click', async () => {
-                if (confirm(t('ui.msg.confirmDeleteGame', {name: game.name}))) {
-                    const success = await CYOA.deleteGameFile(game.id);
-                    if (success) {
-                        CYOA.games = CYOA.games.filter(g => g.id !== game.id);
-                        renderGameListItems(listContainer);
-                    }
-                }
-            });
-            
-            listContainer.appendChild(item);
-        });
-    }
-    CYOA.renderGameListItems = renderGameListItems;
-
-    // ========== AI 智能创建游戏 ==========
-    function openAIGenerateModal(container) {
-        const models = CYOA.getChatModels?.() || [];
-        const modelOptions = models.map(m => `<option value="${escapeHtml(m.value)}">${escapeHtml(m.label)}</option>`).join('');
-        const defaultModel = (typeof MainApp !== 'undefined' && MainApp.getModels) ? (MainApp.getModels('chat')?.[0]?.value || '') : (models[0]?.value || '');
-
-        const contentHtml = `
-            <div class="cyoa-ai-generate-form" style="padding:16px;">
-                <div class="cyoa-form-row" style="margin-bottom:12px;">
-                    <label style="display:block;margin-bottom:6px;">${t('ui.label.aiGenerateMode')}</label>
-                    <div style="display:flex;gap:16px;">
-                        <label class="cyoa-radio"><input type="radio" name="aiGenMode" value="creative" checked> ${t('ui.opt.aiModeCreative')}</label>
-                        <label class="cyoa-radio"><input type="radio" name="aiGenMode" value="rules"> ${t('ui.opt.aiModeRules')}</label>
-                    </div>
-                </div>
-                <div class="cyoa-form-row" style="margin-bottom:12px;">
-                    <label id="aiGenInputLabel">${t('ui.label.aiGenerateIdea')}</label>
-                    <textarea id="aiGenerateIdea" class="cyoa-textarea" rows="3" placeholder="${t('ui.ph.aiGenerateIdea')}" style="width:100%;resize:vertical;"></textarea>
-                    <p id="aiGenModeHint" style="margin:4px 0 0;font-size:11px;color:var(--text-light);">${t('ui.hint.aiGenerateGame')}</p>
-                </div>
-                <div class="cyoa-form-row" style="margin-bottom:12px;">
-                    <label>${t('ui.label.aiModel')}</label>
-                    <select id="aiGenerateModel" class="cyoa-select" style="width:100%;">
-                        <option value="">${t('ui.label.selectModel')}</option>
-                        ${modelOptions}
-                    </select>
-                </div>
-                <div id="aiGenerateStatus" style="font-size:12px;color:var(--text-light);margin-top:8px;min-height:20px;"></div>
-            </div>
-        `;
-        const footerHtml = `
-            <button class="cyoa-btn cyoa-btn-secondary" id="aiGenerateCancel">${t('ui.btn.cancel')}</button>
-            <button class="cyoa-btn cyoa-btn-primary" id="aiGenerateBtn" disabled>✨ ${t('ui.btn.aiGenerate')}</button>
-        `;
-
-        const modal = CYOA.ModalSystem.open(t('ui.aiGenerate.title'), contentHtml, footerHtml, {
-            icon: '✨',
-            size: 'medium',
-            closeOnOverlay: true
-        });
-
-        const ideaEl = CYOA.$('aiGenerateIdea');
-        const modelEl = CYOA.$('aiGenerateModel');
-        const statusEl = CYOA.$('aiGenerateStatus');
-        const genBtn = CYOA.$('aiGenerateBtn');
-
-        if (modelEl && defaultModel) {
-            modelEl.value = defaultModel;
-        }
-        ideaEl?.addEventListener('input', () => {
-            if (genBtn) genBtn.disabled = !(ideaEl?.value?.trim());
-        });
-
-        const modeCreative = document.querySelector('input[name="aiGenMode"][value="creative"]');
-        const modeRules = document.querySelector('input[name="aiGenMode"][value="rules"]');
-        const inputLabel = document.getElementById('aiGenInputLabel');
-        const modeHint = document.getElementById('aiGenModeHint');
-        const updateModeUI = () => {
-            const isRules = modeRules?.checked;
-            if (ideaEl) ideaEl.rows = isRules ? 10 : 3;
-            if (ideaEl) ideaEl.placeholder = isRules ? (t('ui.ph.aiGenerateRules') || '粘贴完整规则说明书…') : t('ui.ph.aiGenerateIdea');
-            if (inputLabel) inputLabel.textContent = isRules ? (t('ui.label.aiGenerateRules') || '规则说明书') : t('ui.label.aiGenerateIdea');
-            if (modeHint) modeHint.textContent = isRules ? (t('ui.hint.aiGenerateRules') || '') : t('ui.hint.aiGenerateGame');
-        };
-        modeCreative?.addEventListener('change', updateModeUI);
-        modeRules?.addEventListener('change', updateModeUI);
-
-        CYOA.$('aiGenerateCancel').onclick = () => modal.close();
-        genBtn.onclick = async () => {
-            const idea = ideaEl?.value?.trim();
-            const modelVal = modelEl?.value;
-            const useRulesMode = modeRules?.checked || false;
-            if (!idea) {
-                alert(t('ui.msg.aiExpandEmpty'));
-                return;
-            }
-            if (!modelVal) {
-                alert(t('ui.msg.noSelectModel'));
-                return;
-            }
-            genBtn.disabled = true;
-            statusEl.textContent = t('ui.msg.aiGenerating') || 'AI 生成中，请稍候…';
-            try {
-                const gameData = await CYOA.generateGameWithAI(idea, modelVal, useRulesMode, (msg) => {
-                    if (statusEl) statusEl.textContent = msg;
-                });
-                if (gameData) {
-                    modal.close();
-                    GameEditor.openWithData(gameData);
-                    if (container) CYOA.renderSettings(container);
-                } else {
-                    statusEl.textContent = t('ui.msg.aiGenerateFailed') || '生成失败，请重试。';
-                    genBtn.disabled = false;
-                }
-            } catch (e) {
-                console.error('[CYOA] AI 生成失败', e);
-                statusEl.textContent = (e.message || t('ui.msg.aiGenerateFailed')) + '';
-                genBtn.disabled = false;
-            }
-        };
-    }
-
-    // ========== 敏感词过滤编辑器 ==========
-    function openWordFilterEditor() {
-        const defaults = CONFIG.DEFAULT_WORD_FILTER || [];
-        let userList = [];
-        try {
-            const stored = localStorage.getItem(CONFIG.STORAGE_KEYS.WORD_FILTER);
-            if (stored) userList = JSON.parse(stored);
-        } catch (e) { userList = []; }
-        if (!Array.isArray(userList)) userList = [];
-
-        const merged = new Map();
-        defaults.forEach(item => merged.set(item.sensitive, { safe: item.safe, source: 'default' }));
-        userList.forEach(item => {
-            if (item.sensitive && item.safe) merged.set(item.sensitive, { safe: item.safe, source: 'user' });
-        });
-
-        let rows = '';
-        merged.forEach((val, key) => {
-            const isUser = val.source === 'user';
-            const badge = isUser ? `<span style="font-size:10px; color:#3b82f6;">${t('ui.status.custom')}</span>` : `<span style="font-size:10px; color:#9ca3af;">${t('ui.status.default')}</span>`;
-            rows += `
-                <tr data-source="${val.source}">
-                    <td style="padding:6px 8px;">${badge}</td>
-                    <td style="padding:6px 8px;"><input type="text" class="cyoa-input wf-sensitive" value="${escapeHtml(key)}" style="width:100%; height:28px; font-size:12px;"></td>
-                    <td style="padding:6px 8px;"><input type="text" class="cyoa-input wf-safe" value="${escapeHtml(val.safe)}" style="width:100%; height:28px; font-size:12px;"></td>
-                    <td style="padding:6px 4px; text-align:center;"><button class="cyoa-btn-icon danger wf-del" type="button" style="font-size:13px;">🗑️</button></td>
-                </tr>`;
-        });
-
-        const content = `
-            <div style="margin-bottom:12px; color:var(--text-light); font-size:13px;">
-                ${t('ui.hint.filterDesc1')}<br>
-                ${t('ui.hint.filterDesc2')}
-            </div>
-            <div style="max-height:400px; overflow-y:auto; border:1px solid var(--border); border-radius:var(--radius-sm);">
-                <table style="width:100%; border-collapse:collapse; font-size:13px;" id="wfTable">
-                    <thead style="background:var(--bg); position:sticky; top:0;">
-                        <tr>
-                            <th style="padding:8px; text-align:left; width:60px;">${t('ui.label.source')}</th>
-                            <th style="padding:8px; text-align:left;">${t('ui.label.sensitiveWord')}</th>
-                            <th style="padding:8px; text-align:left;">${t('ui.label.replacement')}</th>
-                            <th style="padding:8px; width:40px;"></th>
-                        </tr>
-                    </thead>
-                    <tbody id="wfBody">${rows}</tbody>
-                </table>
-            </div>
-            <div style="margin-top:10px; display:flex; gap:8px;">
-                <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="wfAddRow">${t('ui.btn.addEntry')}</button>
-                <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="wfResetDefaults">${t('ui.btn.resetDefault')}</button>
-                <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="wfExport">${t('ui.btn.exportFilter')}</button>
-                <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" id="wfImport">${t('ui.btn.importFilter')}</button>
-            </div>
-        `;
-
-        const footer = `
-            <button class="cyoa-btn cyoa-btn-secondary" id="wfCancel">${t('ui.btn.cancel')}</button>
-            <button class="cyoa-btn cyoa-btn-primary" id="wfSave">💾 ${t('ui.btn.save')}</button>
-        `;
-
-        const ModalSystem = CYOA.ModalSystem || window.CYOA_ModalSystem;
-        if (!ModalSystem) {
-            alert(t('ui.msg.modalNotLoaded'));
-            return;
-        }
-        const modal = ModalSystem.open(t('ui.panel.wordFilter'), content, footer, { size: 'lg' });
-
-        function bindDeleteBtns() {
-            document.querySelectorAll('#wfBody .wf-del').forEach(btn => {
-                btn.onclick = () => btn.closest('tr').remove();
-            });
-        }
-        bindDeleteBtns();
-
-        const addRowBtn = document.getElementById('wfAddRow');
-        if (addRowBtn) addRowBtn.onclick = () => {
-            const tbody = document.getElementById('wfBody');
-            if (!tbody) return;
-            const tr = document.createElement('tr');
-            tr.dataset.source = 'user';
-            tr.innerHTML = `
-                <td style="padding:6px 8px;"><span style="font-size:10px; color:#3b82f6;">${t('ui.status.custom')}</span></td>
-                <td style="padding:6px 8px;"><input type="text" class="cyoa-input wf-sensitive" value="" style="width:100%; height:28px; font-size:12px;" placeholder="${t('ui.ph.sensitiveWord')}"></td>
-                <td style="padding:6px 8px;"><input type="text" class="cyoa-input wf-safe" value="" style="width:100%; height:28px; font-size:12px;" placeholder="${t('ui.ph.replacement')}"></td>
-                <td style="padding:6px 4px; text-align:center;"><button class="cyoa-btn-icon danger wf-del" type="button" style="font-size:13px;">🗑️</button></td>
-            `;
-            tbody.appendChild(tr);
-            bindDeleteBtns();
-            tr.querySelector('.wf-sensitive').focus();
-        };
-
-        const resetBtn = document.getElementById('wfResetDefaults');
-        if (resetBtn) resetBtn.onclick = () => {
-            if (confirm(t('ui.msg.confirmResetFilter'))) {
-                localStorage.removeItem(CONFIG.STORAGE_KEYS.WORD_FILTER);
-                ModalSystem.close();
-                openWordFilterEditor();
-            }
-        };
-
-        const exportBtn = document.getElementById('wfExport');
-        if (exportBtn) exportBtn.onclick = () => {
-            const list = collectTableRows();
-            const blob = new Blob([JSON.stringify(list, null, 2)], { type: 'application/json' });
-            const a = document.createElement('a');
-            a.href = URL.createObjectURL(blob);
-            a.download = 'cyoa_word_filter.json';
-            a.click();
-        };
-
-        const importBtn = document.getElementById('wfImport');
-        if (importBtn) importBtn.onclick = () => {
-            const input = document.createElement('input');
-            input.type = 'file';
-            input.accept = '.json';
-            input.onchange = (e) => {
-                const file = e.target.files[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = (ev) => {
-                    try {
-                        const imported = JSON.parse(ev.target.result);
-                        if (!Array.isArray(imported)) { alert(t('ui.msg.invalidFilter')); return; }
-                        CYOA.saveWordFilter(imported);
-                        CYOA.invalidateRAG?.();
-                        alert(t('ui.msg.importSuccess', {count: imported.length}));
-                        ModalSystem.close();
-                        openWordFilterEditor();
-                    } catch (ex) { alert(t('ui.msg.parseFailed', {error: ex.message})); }
-                };
-                reader.readAsText(file);
-            };
-            input.click();
-        };
-
-        function collectTableRows() {
-            const list = [];
-            document.querySelectorAll('#wfBody tr').forEach(tr => {
-                const s = tr.querySelector('.wf-sensitive')?.value.trim();
-                const r = tr.querySelector('.wf-safe')?.value.trim();
-                if (s && r) list.push({ sensitive: s, safe: r });
-            });
-            return list;
-        }
-
-        const saveBtn = document.getElementById('wfSave');
-        if (saveBtn) saveBtn.onclick = () => {
-            const list = collectTableRows();
-            CYOA.saveWordFilter(list);
-            CYOA.invalidateRAG?.();
-            alert(t('ui.msg.filterSaved', {count: list.length}));
-            ModalSystem.close();
-        };
-
-        const cancelBtn = document.getElementById('wfCancel');
-        if (cancelBtn) cancelBtn.onclick = () => ModalSystem.close();
-    }
+    // 设置面板与相关弹窗已拆分到 `cyoa-main-settings.js`
 
     // ========== 导出游戏 ==========
     CYOA.exportGame = function(gameId) {
@@ -1103,1832 +798,68 @@
         input.click();
     };
 
-    // ========== 渲染侧边栏 ==========
-    CYOA.renderSidebar = function() {
-        if (!CYOA.currentGame || !CYOA.currentSave) return;
-        
-        const oldSidebar = document.getElementById('cyoa-sidebar-container');
-        if (oldSidebar) oldSidebar.remove();
-        
-        const sidebarContainer = document.createElement('div');
-        sidebarContainer.id = 'cyoa-sidebar-container';
-        sidebarContainer.style.width = '320px';
-        sidebarContainer.style.background = 'var(--bg-light)';
-        sidebarContainer.style.borderLeft = '1px solid var(--border)';
-        sidebarContainer.style.height = '100%';
-        sidebarContainer.style.overflow = 'hidden';
-        sidebarContainer.style.flexShrink = '0';
-        
-        // 纵向可折叠列表：各分区为独立折叠块
-        if (!CYOA._sidebarAccordion) CYOA._sidebarAccordion = { tree: true, attributes: false, status: true, inventory: false, map: false, llmdebug: false, skills: false, quests: false, chapters: false, saves: false };
-        const acc = CYOA._sidebarAccordion;
-        const sections = [
-            { tab: 'tree', label: t('ui.panel.storyTree'), defaultOpen: acc.tree },
-            { tab: 'attributes', label: t('ui.panel.attributes'), defaultOpen: acc.attributes },
-            { tab: 'status', label: '🩺 状态', defaultOpen: acc.status },
-            { tab: 'inventory', label: t('ui.panel.inventory'), defaultOpen: acc.inventory },
-            { tab: 'map', label: '🗺️ 地图', defaultOpen: acc.map },
-            { tab: 'llmdebug', label: '🧪 AI实时调试', defaultOpen: acc.llmdebug },
-            { tab: 'skills', label: t('ui.panel.skills'), defaultOpen: acc.skills },
-            { tab: 'quests', label: t('ui.panel.quests'), defaultOpen: acc.quests },
-            { tab: 'chapters', label: t('ui.panel.chapters'), defaultOpen: acc.chapters },
-            { tab: 'saves', label: t('ui.panel.saves'), defaultOpen: acc.saves }
-        ];
-        let accordionHtml = '<div class="cyoa-sidebar" style="display:flex; flex-direction:column; height:100%; overflow:hidden;"><div class="cyoa-sidebar-accordion" style="flex:1; overflow-y:auto; padding:8px;">';
-        sections.forEach(s => {
-            const open = acc[s.tab];
-            const chevron = open ? '▼' : '▶';
-            accordionHtml += `
-                <div class="cyoa-accordion-section" data-tab="${s.tab}" style="margin-bottom:4px;">
-                    <div class="cyoa-accordion-header" data-tab="${s.tab}" style="display:flex; align-items:center; justify-content:space-between; padding:10px 12px; background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-md); cursor:pointer; font-size:13px; font-weight:600; user-select:none;">
-                        <span>${s.label}</span>
-                        <span class="cyoa-accordion-chevron" style="font-size:11px; color:var(--text-light);">${chevron}</span>
-                    </div>
-                    <div class="cyoa-accordion-body" id="cyoa${s.tab.charAt(0).toUpperCase() + s.tab.slice(1)}Panel" style="display:${open ? 'block' : 'none'}; padding:10px 12px; background:var(--bg-light); border:1px solid var(--border); border-top:none; border-radius:0 0 var(--radius-md) var(--radius-md); max-height:280px; overflow-y:auto;"></div>
-                </div>`;
-        });
-        accordionHtml += '</div></div>';
-        sidebarContainer.innerHTML = accordionHtml;
-        
-        const appElement = document.querySelector('.app');
-        if (appElement) {
-            appElement.style.display = 'flex';
-            appElement.style.flexDirection = 'row';
-            
-            const mainElement = document.querySelector('.main');
-            if (mainElement) {
-                mainElement.style.flex = '1';
-                mainElement.style.display = 'flex';
-                mainElement.style.flexDirection = 'column';
-                appElement.appendChild(sidebarContainer);
-            } else {
-                appElement.appendChild(sidebarContainer);
-            }
-        } else {
-            document.body.appendChild(sidebarContainer);
-        }
-        
-        CYOA.renderTreePanel();
-        CYOA.renderAttributesPanel();
-        CYOA.renderStatusPanel();
-        CYOA.renderInventoryPanel();
-        CYOA.renderMapPanel?.();
-        CYOA.renderLlmDebugPanel?.();
-        CYOA.renderSkillsPanel();
-        CYOA.renderQuestsPanel();
-        CYOA.renderChaptersPanel();
-        CYOA.renderSavesPanel();
-        
-        sidebarContainer.querySelectorAll('.cyoa-accordion-header').forEach(header => {
-            header.addEventListener('click', (e) => {
-                const tab = e.currentTarget.dataset.tab;
-                if ((tab === 'inventory') && CYOA.currentSave && CYOA.getActiveConstraints?.()?.has('no_hands')) {
-                    alert(t('ui.msg.handsRestricted'));
-                    return;
-                }
-                const section = header.closest('.cyoa-accordion-section');
-                const body = section?.querySelector('.cyoa-accordion-body');
-                const chevron = header?.querySelector('.cyoa-accordion-chevron');
-                const isOpen = body?.style.display !== 'none';
-                CYOA._sidebarAccordion[tab] = !isOpen;
-                if (body) body.style.display = isOpen ? 'none' : 'block';
-                if (chevron) chevron.textContent = isOpen ? '▶' : '▼';
-            });
-        });
-    };
+    // Sidebar shell extracted to `cyoa-main-sidebar.js`.
 
-    // ========== 渲染剧情树面板 ==========
-    CYOA.renderTreePanel = function() {
-        const container = document.getElementById('cyoaTreePanel');
-        if (!container || !CYOA.currentSave || !CYOA.currentSave.nodes) return;
-        
-        let html = '<div class="cyoa-tree">';
-        
-        const nodes = CYOA.currentSave.nodes;
-        const rootNodes = Object.values(nodes).filter(node => !node.parentId);
-        
-        function renderNode(node, depth = 0) {
-            const isCurrent = node.id === CYOA.currentNodeId;
-            const hasChildren = node.childrenIds && node.childrenIds.length > 0;
-            
-            let nodeHtml = `<div class="cyoa-tree-node" style="margin-left: ${depth * 20}px; ${isCurrent ? 'background: rgba(16, 185, 129, 0.1); border-left: 3px solid var(--primary);' : ''}">`;
-            nodeHtml += `<div class="cyoa-node-header" onclick="CYOA.jumpToNode('${escapeHtml(node.id)}')" style="display: flex; align-items: center; padding: 8px; cursor: pointer;">`;
-            nodeHtml += `<span class="cyoa-node-indicator">${hasChildren ? '📂' : '📄'}</span>`;
-            nodeHtml += `<span class="cyoa-node-title" style="flex: 1; margin-left: 8px;">${escapeHtml(node.summary || t('ui.status.unnamedNode'))}</span>`;
-            nodeHtml += `<span class="cyoa-node-time" style="font-size: 11px; color: var(--text-light);">${new Date(node.createdAt).toLocaleTimeString()}</span>`;
-            nodeHtml += `</div>`;
-            
-            if (node.assistantMessage) {
-                nodeHtml += `<div class="cyoa-node-preview" style="font-size: 12px; color: var(--text-light); padding: 4px 8px 8px 32px; max-height: 60px; overflow: hidden; text-overflow: ellipsis;">`;
-                nodeHtml += escapeHtml(node.assistantMessage.substring(0, 100)) + (node.assistantMessage.length > 100 ? '...' : '');
-                nodeHtml += `</div>`;
-            }
-            
-            nodeHtml += `</div>`;
-            
-            if (hasChildren) {
-                node.childrenIds.forEach(childId => {
-                    const childNode = nodes[childId];
-                    if (childNode) {
-                        nodeHtml += renderNode(childNode, depth + 1);
-                    }
-                });
-            }
-            
-            return nodeHtml;
-        }
-        
-        if (rootNodes.length === 0) {
-            html += `<div class="cyoa-empty-state">${t('ui.empty.noNodes')}</div>`;
-        } else {
-            rootNodes.forEach(node => {
-                html += renderNode(node);
-            });
-        }
-        
-        html += '</div>';
-        container.innerHTML = html;
-    };
+    // Sidebar panels part A extracted to `cyoa-main-sidebar-panels-a.js`.
 
-    // ========== 渲染属性面板 ==========
-    CYOA.renderAttributesPanel = function() {
-        const container = document.getElementById('cyoaAttributesPanel');
-        if (!container || !CYOA.currentSave) return;
-        
-        let html = '';
+    // Sidebar panels part B extracted to `cyoa-main-sidebar-panels-b.js`.
 
-        // 角色职业信息
-        const pCharId = CYOA.currentSave.playerCharacterId || '';
-        const pChar = pCharId ? CYOA.currentGame?.characters?.find(c => c.id === pCharId) : null;
-        const profLabels = [];
-        if (pChar?.professions?.length && CYOA.currentGame?.professions?.length) {
-            pChar.professions.forEach(pid => {
-                const pDef = CYOA.currentGame.professions.find(p => p.id === pid);
-                if (pDef) profLabels.push(`${pDef.icon || '🎭'} ${escapeHtml(pDef.name)}`);
-            });
-        }
-        if (pChar?.customProfessions?.length) {
-            pChar.customProfessions.forEach(cp => profLabels.push(`🎭 ${escapeHtml(cp)}`));
-        }
-        if (profLabels.length) {
-            html += `<div style="background:var(--bg); border-radius:var(--radius-md); padding:10px 12px; border:1px solid var(--border); margin-bottom:12px;">`;
-            html += `<div style="font-weight:600; font-size:13px; margin-bottom:4px;">${t('ui.sidebar.profLabel')}</div>`;
-            html += `<div style="display:flex; gap:6px; flex-wrap:wrap;">`;
-            profLabels.forEach(l => {
-                html += `<span style="background:var(--primary-light,#ede9fe); color:var(--primary); padding:2px 8px; border-radius:12px; font-size:12px;">${l}</span>`;
-            });
-            html += `</div></div>`;
-        }
+    // Sidebar panels part C extracted to `cyoa-main-sidebar-panels-c.js`.
 
-        // 监控警戒度指示器
-        if (CYOA.isChapterMonitored?.()) {
-            const alertVal = CYOA.getObserverAlert?.() || 0;
-            const alertLevel = CYOA.getObserverAlertLevel?.();
-            const alertPct = Math.min(100, alertVal);
-            const alertColor = alertVal >= 100 ? '#dc2626' : alertVal >= 75 ? '#f59e0b' : alertVal >= 50 ? '#eab308' : alertVal >= 25 ? '#3b82f6' : '#6b7280';
-            const pulseAnim = alertVal >= 75 ? 'animation:pulse 1.5s infinite;' : '';
-            html += `<div style="background:linear-gradient(135deg,#1a1a2e,#16213e); border-radius:var(--radius-md); padding:12px; border:1px solid ${alertColor}; margin-bottom:12px; ${pulseAnim}">`;
-            html += `<div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:6px;">`;
-            html += `<span style="font-weight:600; font-size:13px; color:#e2e8f0;">${t('ui.panel.monitoring')}</span>`;
-            html += `<span style="font-size:12px; font-weight:700; color:${alertColor};">${alertLevel ? alertLevel.label : '📡 未触发'} ${alertVal}/100</span>`;
-            html += `</div>`;
-            html += `<div style="height:6px; background:#334155; border-radius:3px; overflow:hidden; margin-bottom:4px;">`;
-            html += `<div style="height:100%; width:${alertPct}%; background:${alertColor}; border-radius:3px; transition:width 0.5s ease;"></div>`;
-            html += `</div>`;
-            if (alertLevel) {
-                html += `<div style="font-size:11px; color:#94a3b8;">${escapeHtml(alertLevel.desc)}</div>`;
-            }
-            html += `</div>`;
-        }
+    // Sidebar panels part D extracted to `cyoa-main-sidebar-panels-d.js`.
 
-        // 人性平衡（当游戏启用时）
-        if (CYOA.currentGame?.humanityBalanceEnabled) {
-            const hi = CYOA.currentSave.humanityIndex ?? 70;
-            const dp = CYOA.currentSave.divinePermission ?? 20;
-            const lockLv = CYOA.currentSave.humanityBalanceLock ?? 0;
-            const hiColor = hi >= 60 ? '#22c55e' : hi >= 30 ? '#f59e0b' : '#ef4444';
-            const dpColor = dp <= 40 ? '#22c55e' : dp <= 80 ? '#f59e0b' : '#ef4444';
-            html += `<div style="background:linear-gradient(135deg,#1e293b,#0f172a); border-radius:var(--radius-md); padding:12px; border:1px solid var(--border); margin-bottom:12px;">`;
-            html += `<div style="font-weight:600; font-size:13px; margin-bottom:8px;">${t('ui.sidebar.humanityBalance')}</div>`;
-            html += `<div style="display:flex; justify-content:space-between; font-size:12px; margin-bottom:4px;"><span>${t('ui.sidebar.humanityIndex')}</span><span style="color:${hiColor}; font-weight:600;">${hi}%</span></div>`;
-            html += `<div style="height:4px; background:#334155; border-radius:2px; overflow:hidden; margin-bottom:8px;"><div style="height:100%; width:${hi}%; background:${hiColor}; border-radius:2px;"></div></div>`;
-            html += `<div style="display:flex; justify-content:space-between; font-size:12px;"><span>${t('ui.sidebar.divinePermission')}</span><span style="color:${dpColor}; font-weight:600;">${dp}%</span></div>`;
-            html += `<div style="height:4px; background:#334155; border-radius:2px; overflow:hidden;">`;
-            html += `<div style="height:100%; width:${dp}%; background:${dpColor}; border-radius:2px;"></div></div>`;
-            if (lockLv > 0) {
-                const lockDef = (CONFIG.HUMANITY_BALANCE_CONFIG?.lockLevels || [])[lockLv];
-                html += `<div style="font-size:11px; color:#f59e0b; margin-top:8px;">${t('ui.sidebar.humanityLock')}：${lockDef?.label || lockLv}</div>`;
-            }
-            html += `</div>`;
-        }
+    // Sidebar inventory panel extracted to `cyoa-main-sidebar-inventory.js`.
 
-        if (!CYOA.currentSave.attributes || CYOA.currentSave.attributes.length === 0) {
-            html = `<div class="cyoa-empty-state">${t('ui.empty.noAttrs')}</div>`;
-        } else {
-            if (!CYOA._attrExpand) CYOA._attrExpand = {};
-            (CYOA.currentSave.attributes || []).forEach((attr, idx) => {
-                const range = attr.max - attr.min;
-                const percent = range > 0 ? ((attr.value - attr.min) / range) * 100 : 0;
-                const expandId = 'attr_' + (attr.id || 'i' + idx);
-                const expanded = CYOA._attrExpand[expandId] !== false;
-                const chevron = expanded ? '▼' : '▶';
-                html += `
-                    <div class="cyoa-attr-card" data-attr-id="${escapeHtml(expandId)}" style="margin-bottom:8px; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">
-                        <div class="cyoa-attr-header" role="button" tabindex="0" style="display:flex; align-items:center; justify-content:space-between; padding:8px 10px; background:var(--bg); cursor:pointer; user-select:none; font-size:13px;">
-                            <span style="font-weight:600;">${escapeHtml(attr.name)}</span>
-                            <span style="display:flex; align-items:center; gap:6px;">
-                                <span style="color:var(--primary); font-weight:600;">${attr.value}</span>
-                                <span class="cyoa-attr-chevron" style="font-size:10px; color:var(--text-light);">${chevron}</span>
-                            </span>
-                        </div>
-                        <div class="cyoa-attr-body" style="display:${expanded ? 'block' : 'none'}; padding:10px 12px; background:var(--bg-light); border-top:1px solid var(--border);">
-                            <div style="height: 8px; background: var(--border); border-radius: 4px; overflow: hidden; margin-bottom: 4px;">
-                                <div style="height: 100%; width: ${percent}%; background: var(--primary); border-radius: 4px;"></div>
-                            </div>
-                            <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-light);">
-                                <span>${attr.min}</span>
-                                <span>${attr.max}</span>
-                            </div>
-                            ${attr.description ? `<div style="font-size: 12px; color: var(--text-light); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);">${escapeHtml(attr.description)}</div>` : ''}
-                        </div>
-                    </div>
-                `;
-            });
-        }
-        
-        container.innerHTML = html;
-        container.querySelectorAll('.cyoa-attr-header').forEach(h => {
-            h.addEventListener('click', function() {
-                const card = this.closest('.cyoa-attr-card');
-                if (!card) return;
-                const id = card.dataset.attrId;
-                const body = card.querySelector('.cyoa-attr-body');
-                const ch = card.querySelector('.cyoa-attr-chevron');
-                CYOA._attrExpand[id] = body?.style.display === 'none';
-                if (body) body.style.display = CYOA._attrExpand[id] ? 'block' : 'none';
-                if (ch) ch.textContent = CYOA._attrExpand[id] ? '▼' : '▶';
-            });
-        });
-        // 属性刷新后同步状态面板
-        CYOA.renderStatusPanel?.();
-    };
+    // Sidebar skills/quests panel extracted to `cyoa-main-sidebar-skills-quests.js`.
 
-    // ========== 渲染状态面板（侧栏专用） ==========
-    CYOA.renderStatusPanel = function() {
-        const container = document.getElementById('cyoaStatusPanel');
-        const save = CYOA.currentSave;
-        if (!container || !save) return;
-        const constraints = CYOA.getActiveConstraints?.() || new Set();
-        const cList = Array.from(constraints || []);
-
-        // 身体状态
-        const bodyRows = [];
-        const pain = Number(save.pain || 0);
-        if (pain > 0) bodyRows.push(`疼痛：${pain}/100`);
-        const oxy = Number(save.oxygen ?? 100);
-        if (oxy < 100) bodyRows.push(`氧气：${oxy}/100`);
-        if (Array.isArray(save.marks) && save.marks.length > 0) bodyRows.push(`伤痕：${save.marks.length} 处`);
-        if (save.predicament?.type) bodyRows.push(`困境束缚：${save.predicament.type}`);
-        if (Array.isArray(save.blockedPostures) && save.blockedPostures.length) {
-            const pDefs = CONFIG.POSTURES || [];
-            const labels = save.blockedPostures.map(v => pDefs.find(p => p.value === v)?.label || v);
-            bodyRows.push(`受限姿势：${labels.join('、')}`);
-        }
-        if (save.currentGait && String(save.currentGait) !== 'normal') bodyRows.push(`步态：${save.currentGait}`);
-        if (Array.isArray(save.injuries) && save.injuries.length) bodyRows.push(`受伤部位：${save.injuries.map(i => i.part || i.type || i).join('、')}`);
-        if (Array.isArray(save.disabilities) && save.disabilities.length) bodyRows.push(`残疾状态：${save.disabilities.map(d => d.name || d.type || d).join('、')}`);
-        if (save.disabilities && !Array.isArray(save.disabilities) && typeof save.disabilities === 'object') {
-            const active = Object.keys(save.disabilities).filter(k => !!save.disabilities[k]);
-            if (active.length) bodyRows.push(`残疾状态：${active.join('、')}`);
-        }
-
-        // 限制状态
-        const cRows = cList.map(c => CYOA.getConstraintLabel?.(c) || c);
-        const posture = save.posture || 'standing';
-        if (posture) {
-            const pDef = (CONFIG.POSTURES || []).find(p => p.value === posture);
-            cRows.unshift(`当前姿势：${pDef?.label || posture}`);
-        }
-        if (save.tether?.active) cRows.push('牵引：生效中');
-
-        const renderList = (arr, emptyText) => {
-            if (!arr.length) return `<div style="font-size:11px; color:var(--text-light);">${escapeHtml(emptyText)}</div>`;
-            return `<div style="display:flex; flex-direction:column; gap:4px;">${arr.map(x => `<div style="font-size:11px;">• ${escapeHtml(String(x))}</div>`).join('')}</div>`;
-        };
-
-        let html = '';
-        html += `<div style="margin-bottom:10px; border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">`;
-        html += `<div style="padding:8px 10px; background:var(--bg); font-size:12px; font-weight:600;">身体状态</div>`;
-        html += `<div style="padding:8px 10px; background:var(--bg-light);">${renderList(bodyRows, '暂无明显伤病/残疾状态')}</div>`;
-        html += `</div>`;
-
-        html += `<div style="border:1px solid var(--border); border-radius:var(--radius-md); overflow:hidden;">`;
-        html += `<div style="padding:8px 10px; background:var(--bg); font-size:12px; font-weight:600;">限制状态</div>`;
-        html += `<div style="padding:8px 10px; background:var(--bg-light);">${renderList(cRows, '当前无额外限制')}</div>`;
-        html += `</div>`;
-
-        container.innerHTML = html;
-    };
-
-    // ========== 可折叠面板封装 ==========
-    if (!CYOA._panelStates) CYOA._panelStates = {};
-    function wrapCollapsible(id, title, content, defaultOpen) {
-        if (!content || content.trim() === '') return '';
-        const isOpen = id in CYOA._panelStates ? CYOA._panelStates[id] : (defaultOpen || false);
-        const arrow = isOpen ? '▾' : '▸';
-        const display = isOpen ? 'block' : 'none';
-        const toggleJS = `CYOA._panelStates['${id}']=${isOpen ? 'false' : 'true'};CYOA.renderInventoryPanel();`;
-        return `<div style="margin-bottom:4px;">` +
-            `<div onclick="${toggleJS}" ` +
-            `style="padding:6px 10px; cursor:pointer; display:flex; align-items:center; justify-content:space-between; user-select:none; font-size:12px; font-weight:600; color:var(--text); background:var(--bg); border:1px solid var(--border); border-radius:var(--radius-sm);">` +
-            `<span>${title}</span><span style="font-size:10px; color:var(--text-light);">${arrow}</span></div>` +
-            `<div style="display:${display};">${content}</div></div>`;
-    }
-
-    function getEnabledChatModelsForDebug() {
-        return (CYOA.getChatModels?.() || [])
-            .filter(m => String(m?.value || '').trim())
-            .map(m => ({ value: String(m.value), label: String(m.label || m.value) }));
-    }
-
-    function ensureLlmDebugDraft() {
-        if (!Array.isArray(CYOA._llmDebugDraft)) {
-            const settings = CYOA.loadPluginSettings?.() || {};
-            const rows = Array.isArray(settings.LLM_TUNINGS) ? settings.LLM_TUNINGS : [];
-            CYOA._llmDebugDraft = rows.slice(0, 10).map(r => ({ ...r }));
-        }
-        return CYOA._llmDebugDraft;
-    }
-
-    function getCurrentGameModelForDebug() {
-        const fallback = (getEnabledChatModelsForDebug()[0] || {}).value || '';
-        const model = String(window.gameModeModel || document.getElementById('model')?.value || fallback).trim();
-        return model;
-    }
-
-    function getNpcNamesForDebug() {
-        const game = CYOA.currentGame || {};
-        const save = CYOA.currentSave || {};
-        const chars = Array.isArray(game.characters) ? game.characters : [];
-        const playerId = String(save.playerCharacterId || '').trim();
-        const playerName = String(save.playerCharacter || '').trim();
-        return chars
-            .filter((c) => {
-                const roleType = String(c?.roleType || '').trim().toLowerCase();
-                const role = String(c?.role || '').trim().toLowerCase();
-                const cid = String(c?.id || '').trim();
-                const cname = String(c?.name || '').trim();
-                if ((playerId && cid === playerId) || (playerName && cname === playerName)) return false;
-                if (roleType === 'playable' || role === 'playable') return false;
-                return !!(cid || cname);
-            })
-            .map((c) => String(c?.name || c?.id || '').trim())
-            .filter(Boolean)
-            .slice(0, 16);
-    }
-
-    function buildLlmDebugPanel() {
-        const draft = ensureLlmDebugDraft();
-        CYOA._llmDebugDraft = draft.slice(0, 10);
-        const currentModel = getCurrentGameModelForDebug();
-        const npcNames = getNpcNamesForDebug();
-        const npcText = npcNames.length
-            ? npcNames.map(n => `<span style="display:inline-flex;align-items:center;padding:2px 6px;border:1px solid var(--border);border-radius:999px;font-size:11px;background:var(--bg);">${escapeHtml(n)}</span>`).join(' ')
-            : `<span style="font-size:11px;color:var(--text-light);">暂无可识别 NPC（仍可配置天道叙事规则）</span>`;
-        const rowsHtml = draft.length
-            ? draft.map((row, idx) => {
-                const rid = String(row?.id || `llm_tune_${idx}`);
-                return `
-                    <div data-llm-row="${escapeHtml(rid)}" style="border:1px solid var(--border); border-radius:8px; padding:8px; margin-top:8px;">
-                        <div style="display:flex; gap:8px; align-items:center; margin-bottom:6px; flex-wrap:wrap;">
-                            <label style="display:flex; gap:6px; align-items:center; font-size:12px;">
-                                <input type="checkbox" data-llm-field="enabled" ${row.enabled !== false ? 'checked' : ''}>
-                                启用
-                            </label>
-                            <span style="font-size:11px;color:var(--text-light);background:var(--bg);border:1px solid var(--border);border-radius:999px;padding:2px 8px;">对象：NPC / 天道</span>
-                            <input class="cyoa-input" data-llm-field="label" value="${escapeHtml(String(row.label || ''))}" placeholder="规则名（可选）" style="min-width:140px; height:28px;">
-                            <button class="cyoa-btn cyoa-btn-danger" data-llm-del="${escapeHtml(rid)}" style="padding:2px 8px; font-size:11px;">删除</button>
-                        </div>
-                        <textarea class="cyoa-textarea" data-llm-field="instruction" rows="2" placeholder="例如：禁止开头寒暄；优先短句；不得输出英文注释等">${escapeHtml(String(row.instruction || ''))}</textarea>
-                    </div>
-                `;
-            }).join('')
-            : `<div style="font-size:12px; color:var(--text-light); margin-top:8px;">暂无规则。可新增并作用于 NPC/天道叙事。</div>`;
-
-        return `
-            <div style="font-size:12px; color:var(--text-light); margin-bottom:8px;">规则仅面向游戏中的 NPC/天道叙事，不再按模型列表配置（保存后下一条消息生效）。</div>
-            <div style="display:flex; flex-direction:column; gap:6px; margin-bottom:8px;">
-                <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">
-                    <span style="font-size:11px; color:var(--text-light);">NPC：</span>
-                    ${npcText}
-                </div>
-            </div>
-            <div id="cyoaLlmDebugList">${rowsHtml}</div>
-            <div style="display:flex; gap:8px; margin-top:10px; flex-wrap:nowrap; overflow-x:auto; padding-bottom:2px;">
-                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugAddBtn" style="white-space:nowrap; flex:0 0 auto;">+ 新增规则</button>
-                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugClearCurrentBtn" style="white-space:nowrap; flex:0 0 auto;">清空全部规则</button>
-                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugExportBtn" style="white-space:nowrap; flex:0 0 auto;">导出规则</button>
-                <button class="cyoa-btn cyoa-btn-secondary" id="cyoaLlmDebugImportBtn" style="white-space:nowrap; flex:0 0 auto;">导入规则</button>
-                <button class="cyoa-btn cyoa-btn-primary" id="cyoaLlmDebugSaveBtn" style="white-space:nowrap; flex:0 0 auto;">保存微调</button>
-            </div>
-            <input id="cyoaLlmDebugImportInput" type="file" accept=".json,application/json" style="display:none;">
-        `;
-    }
-
-    function bindLlmDebugPanelEvents(container) {
-        if (!container) return;
-        const draft = ensureLlmDebugDraft();
-
-        const syncDraftFromDom = () => {
-            const activeModel = getCurrentGameModelForDebug();
-            container.querySelectorAll('#cyoaLlmDebugList [data-llm-row]').forEach((rowEl) => {
-                const rid = String(rowEl.getAttribute('data-llm-row') || '');
-                const rowRef = draft.find(x => String(x?.id || '') === rid);
-                if (!rowRef) return;
-                const enabledEl = rowEl.querySelector('[data-llm-field="enabled"]');
-                const labelEl = rowEl.querySelector('[data-llm-field="label"]');
-                const insEl = rowEl.querySelector('[data-llm-field="instruction"]');
-                rowRef.enabled = !!enabledEl?.checked;
-                rowRef.model = activeModel;
-                rowRef.label = String(labelEl?.value || '').trim();
-                rowRef.instruction = String(insEl?.value || '').trim();
-            });
-        };
-
-        container.querySelectorAll('#cyoaLlmDebugList [data-llm-del]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                syncDraftFromDom();
-                const rid = String(btn.getAttribute('data-llm-del') || '');
-                CYOA._llmDebugDraft = draft.filter(x => String(x?.id || '') !== rid);
-                CYOA.renderLlmDebugPanel?.();
-            });
-        });
-
-        const addBtn = container.querySelector('#cyoaLlmDebugAddBtn');
-        if (addBtn) {
-            addBtn.onclick = () => {
-                syncDraftFromDom();
-                if (draft.length >= 10) {
-                    alert('最多只能配置 10 条 LLM 微调规则。');
-                    return;
-                }
-                draft.push({
-                    id: `llm_tune_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-                    enabled: true,
-                    model: getCurrentGameModelForDebug(),
-                    label: '',
-                    instruction: ''
-                });
-                CYOA._llmDebugDraft = draft;
-                CYOA.renderLlmDebugPanel?.();
-            };
-        }
-
-        const clearCurrentBtn = container.querySelector('#cyoaLlmDebugClearCurrentBtn');
-        if (clearCurrentBtn) {
-            clearCurrentBtn.onclick = () => {
-                syncDraftFromDom();
-                const removed = draft.length;
-                CYOA._llmDebugDraft = [];
-                CYOA.appendSystemMessage?.(`🧪 已清空全部 ${removed} 条草稿规则`);
-                CYOA.renderLlmDebugPanel?.();
-            };
-        }
-
-        const exportBtn = container.querySelector('#cyoaLlmDebugExportBtn');
-        if (exportBtn) {
-            exportBtn.onclick = () => {
-                syncDraftFromDom();
-                const rows = draft
-                    .slice(0, 10)
-                    .map((it) => ({
-                        id: String(it?.id || '').trim() || `llm_tune_${Date.now()}`,
-                        enabled: it?.enabled !== false,
-                        model: String(it?.model || '').trim(),
-                        label: String(it?.label || '').trim(),
-                        instruction: String(it?.instruction || '').trim()
-                    }))
-                    .filter((it) => it.model && it.instruction);
-                const payload = {
-                    version: 1,
-                    exportedAt: new Date().toISOString(),
-                    LLM_TUNINGS: rows
-                };
-                try {
-                    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
-                    const url = URL.createObjectURL(blob);
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `cyoa_llm_tunings_${Date.now()}.json`;
-                    document.body.appendChild(a);
-                    a.click();
-                    a.remove();
-                    URL.revokeObjectURL(url);
-                } catch (_) {
-                    alert('导出失败，请稍后重试。');
-                }
-            };
-        }
-
-        const importInput = container.querySelector('#cyoaLlmDebugImportInput');
-        const importBtn = container.querySelector('#cyoaLlmDebugImportBtn');
-        if (importBtn && importInput) {
-            importBtn.onclick = () => importInput.click();
-            importInput.onchange = () => {
-                const file = importInput.files?.[0];
-                if (!file) return;
-                const reader = new FileReader();
-                reader.onload = () => {
-                    try {
-                        syncDraftFromDom();
-                        const raw = String(reader.result || '');
-                        const parsed = JSON.parse(raw);
-                        const incoming = Array.isArray(parsed)
-                            ? parsed
-                            : (Array.isArray(parsed?.LLM_TUNINGS) ? parsed.LLM_TUNINGS : []);
-                        const normalized = typeof CYOA.normalizeLLMTunings === 'function'
-                            ? CYOA.normalizeLLMTunings(incoming)
-                            : incoming;
-                        const merged = draft.concat(normalized || []);
-                        const dedup = [];
-                        const seen = new Set();
-                        merged.forEach((it) => {
-                            const id = String(it?.id || '').trim();
-                            const model = String(it?.model || '').trim();
-                            const inst = String(it?.instruction || '').trim();
-                            const key = id || `${model}::${inst}`;
-                            if (!model || !inst || seen.has(key)) return;
-                            seen.add(key);
-                            dedup.push({
-                                id: id || `llm_tune_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
-                                enabled: it?.enabled !== false,
-                                model,
-                                label: String(it?.label || '').trim(),
-                                instruction: inst
-                            });
-                        });
-                        CYOA._llmDebugDraft = dedup.slice(0, 10);
-                        CYOA.appendSystemMessage?.(`🧪 已导入 ${CYOA._llmDebugDraft.length} 条微调规则（草稿）`);
-                        CYOA.renderLlmDebugPanel?.();
-                    } catch (_) {
-                        alert('导入失败：JSON 格式不正确。');
-                    } finally {
-                        importInput.value = '';
-                    }
-                };
-                reader.readAsText(file);
-            };
-        }
-
-        const saveBtn = container.querySelector('#cyoaLlmDebugSaveBtn');
-        if (saveBtn) {
-            saveBtn.onclick = () => {
-                syncDraftFromDom();
-                const activeModel = getCurrentGameModelForDebug();
-                const cleaned = draft
-                    .slice(0, 10)
-                    .map((it) => ({
-                        id: String(it?.id || '').trim() || `llm_tune_${Date.now()}`,
-                        enabled: it?.enabled !== false,
-                        model: String(it?.model || activeModel).trim(),
-                        label: String(it?.label || '').trim(),
-                        instruction: String(it?.instruction || '').trim()
-                    }))
-                    .filter((it) => it.model && it.instruction);
-                const current = CYOA.loadPluginSettings?.() || {};
-                current.LLM_TUNINGS = cleaned;
-                const saved = CYOA.savePluginSettings?.(current) || current;
-                CYOA.CONFIG.LLM_TUNINGS = Array.isArray(saved.LLM_TUNINGS) ? saved.LLM_TUNINGS : cleaned;
-                CYOA._llmDebugDraft = CYOA.CONFIG.LLM_TUNINGS.slice(0, 10);
-                CYOA.log?.('LLM_TUNINGS saved:', CYOA._llmDebugDraft.length);
-                CYOA.appendSystemMessage?.(`🧪 已保存 ${CYOA._llmDebugDraft.length} 条模型微调规则`);
-                CYOA.renderLlmDebugPanel?.();
-            };
-        }
-    }
-
-    CYOA.renderLlmDebugPanel = function() {
-        const container = document.getElementById('cyoaLlmdebugPanel');
-        if (!container || !CYOA.currentSave) return;
-        container.innerHTML = buildLlmDebugPanel();
-        bindLlmDebugPanelEvents(container);
-    };
-
-    // ========== 牵引/姿势状态面板构建 ==========
-    function buildTetherPosturePanel() {
-        const save = CYOA.currentSave;
-        if (!save) return '';
-        let html = '';
-
-        // 姿势
-        const posture = save.posture || 'standing';
-        const postureDef = (CONFIG.POSTURES || []).find(p => p.value === posture);
-        const isTetherForced = save.tether?.active && (save.tether.type === 'suspended' || (() => {
-            if (save.tether.type !== 'fixed_anchor') return false;
-            const ah = (CONFIG.ANCHOR_HEIGHTS || []).find(h => h.forcedPosture === posture);
-            return !!ah;
-        })());
-        html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">';
-        html += `<span style="font-size:11px; color:var(--text-light);">${t('ui.sidebar.posture')}</span>`;
-        html += `<span style="font-weight:600;">${postureDef?.label || posture}</span>`;
-        if (isTetherForced) {
-            html += `<span style="font-size:10px; background:#ef4444; color:#fff; padding:1px 5px; border-radius:8px;">${t('ui.sidebar.tetherForced')}</span>`;
-        }
-        html += '</div>';
-
-        // 姿势切换（非牵引强制时）
-        if (!isTetherForced) {
-            html += '<div style="display:flex; flex-wrap:wrap; gap:3px; margin-bottom:8px;">';
-            (CONFIG.POSTURES || []).forEach(p => {
-                const isActive = p.value === posture;
-                html += `<button class="cyoa-btn-icon" onclick="CYOA.setPosture('${p.value}')" style="font-size:10px; padding:2px 6px; border-radius:4px; ${isActive ? 'background:var(--primary); color:#fff;' : ''}" title="${escapeHtml(p.label)}">${p.label.charAt(0)}${p.label.charAt(1)}</button>`;
-            });
-            html += '</div>';
-        }
-
-        // 牵引
-        if (save.tether?.active) {
-            const t = save.tether;
-            const tetherDef = (CONFIG.TETHER_TYPES || []).find(x => x.value === t.type);
-            const chainDef = (CONFIG.TETHER_CHAIN_LENGTHS || []).find(x => x.value === t.chainLength);
-            html += '<div style="background:linear-gradient(135deg,#fef2f2,#fee2e2); border:1px solid #fca5a5; border-radius:var(--radius-sm); padding:8px; margin-top:4px;">';
-            html += `<div style="font-size:12px; font-weight:600; color:#dc2626; margin-bottom:4px;">${tetherDef?.label || CYOA.t('ui.sidebar.tethered')}</div>`;
-            if (t.targetName) html += `<div style="font-size:11px; color:#7f1d1d;">${CYOA.t('ui.sidebar.target')} ${escapeHtml(t.targetName)}</div>`;
-            if (chainDef) html += `<div style="font-size:11px; color:#7f1d1d;">${CYOA.t('ui.sidebar.chainLen')} ${chainDef.label}</div>`;
-            if (t.sourceSlot) {
-                const slotLabel = CONFIG.EQUIPMENT_SLOTS?.find(s => s.value === t.sourceSlot)?.label || t.sourceSlot;
-                html += `<div style="font-size:11px; color:#7f1d1d;">${CYOA.t('ui.sidebar.connection')} ${escapeHtml(slotLabel)}</div>`;
-            }
-            html += '</div>';
-        } else {
-            html += `<div style="font-size:11px; color:var(--text-light); margin-top:4px;">${t('ui.status.freeState')}</div>`;
-        }
-
-        // D环列表
-        const dRings = CYOA.getActiveDRings?.() || [];
-        if (dRings.length > 0) {
-            html += '<div style="margin-top:8px; font-size:11px; color:var(--text-light);">';
-            html += `<span style="font-weight:600;">${t('ui.sidebar.dRingEquipped')}</span> `;
-            html += dRings.map(d => {
-                const posLabel = (CONFIG.D_RING_POSITIONS || []).find(p => p.value === d.dRingPosition)?.label || '';
-                return escapeHtml(d.equipName) + (posLabel ? '(' + posLabel + ')' : '');
-            }).join(', ');
-            html += '</div>';
-        }
-
-        return html;
-    }
-
-    // ========== 兴奋度状态面板构建 ==========
-    function buildArousalPanel() {
-        const save = CYOA.currentSave;
-        if (!save) return '';
-        const val = save.arousal || 0;
-        const tier = CYOA.getArousalTier?.() || { value: 'calm', label: '😌 平静', color: '#22c55e' };
-        const pct = Math.min(100, val);
-
-        let html = '';
-
-        // 进度条
-        html += '<div style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">';
-        html += `<div style="flex:1; height:8px; background:var(--border); border-radius:4px; overflow:hidden;">`;
-        html += `<div style="height:100%; width:${pct}%; background:${tier.color}; border-radius:4px; transition:width 0.5s;"></div>`;
-        html += '</div>';
-        html += `<span style="font-size:12px; font-weight:600; color:${tier.color}; min-width:45px; text-align:right;">${val}/100</span>`;
-        html += '</div>';
-
-        // 阶段标签
-        html += `<div style="display:flex; align-items:center; gap:6px; margin-bottom:6px;">`;
-        html += `<span style="font-size:11px; color:var(--text-light);">${t('ui.sidebar.phase')}</span>`;
-        html += `<span style="font-size:12px; font-weight:600; color:${tier.color};">${tier.label}</span>`;
-        html += '</div>';
-
-        // 活跃刺激器
-        const stims = save.activeStimulators || [];
-        const activeStims = stims.filter(s => s.mode !== 'off');
-        if (activeStims.length > 0) {
-            html += '<div style="margin-top:6px; padding:6px 8px; background:linear-gradient(135deg,#fef3c7,#fde68a); border:1px solid #f59e0b; border-radius:var(--radius-sm);">';
-            html += `<div style="font-size:11px; font-weight:600; color:#92400e; margin-bottom:3px;">${t('ui.sidebar.activeStim')}</div>`;
-            activeStims.forEach(s => {
-                const modeDef = (CONFIG.STIMULATOR_MODES || []).find(m => m.value === s.mode);
-                const intDef = (CONFIG.STIMULATOR_INTENSITIES || []).find(i => i.value === s.intensity);
-                const icon = s.stimType === 'shock' ? '⚡' : '🔔';
-                html += `<div style="font-size:10px; color:#78350f;">${icon} ${escapeHtml(s.attachmentName)} — ${modeDef?.label || s.mode} / ${intDef?.label || s.intensity}</div>`;
-            });
-            html += '</div>';
-        }
-
-        // 贞操锁警告
-        const constraints = CYOA.getActiveConstraints?.() || new Set();
-        if (constraints.has('chastity') && val >= 41) {
-            html += `<div style="margin-top:6px; font-size:10px; color:#dc2626; font-style:italic;">${t('ui.sidebar.chastityBlock')}</div>`;
-        }
-
-        return html;
-    }
-
-    // ========== 纪律状态面板 ==========
-    function buildDisciplinePanel() {
-        const save = CYOA.currentSave;
-        const game = CYOA.currentGame;
-        if (!save || !game) return '';
-        const npcChars = game.characters?.filter(c => c.roleType !== 'playable' && (c.disciplineRules?.length > 0 || c.customRules?.length > 0)) || [];
-        if (npcChars.length === 0) return '';
-
-        const obAttr = save.attributes?.find(a => a.name === 'obedience');
-        const fnAttr = save.attributes?.find(a => a.name === 'fondness');
-        const recentV = (save.violations || []).slice(-5);
-
-        let html = '';
-
-        if (obAttr) {
-            const obPct = Math.round((obAttr.value / (obAttr.max || 100)) * 100);
-            const obColor = obPct >= 70 ? '#22c55e' : obPct >= 40 ? '#f59e0b' : '#ef4444';
-            html += `<div style="margin-bottom:4px; font-size:11px;">${t('ui.sidebar.obedience')}<span style="color:${obColor}; font-weight:600;">${obAttr.value}/${obAttr.max || 100}</span></div>`;
-        }
-        if (fnAttr) {
-            const fnPct = Math.round((fnAttr.value / (fnAttr.max || 100)) * 100);
-            const fnColor = fnPct >= 70 ? '#ec4899' : fnPct >= 40 ? '#f59e0b' : '#94a3b8';
-            html += `<div style="margin-bottom:6px; font-size:11px;">${t('ui.sidebar.affection')}<span style="color:${fnColor}; font-weight:600;">${fnAttr.value}/${fnAttr.max || 100}</span></div>`;
-        }
-
-        npcChars.forEach(npc => {
-            html += `<div style="font-size:11px; color:var(--text-light); margin-bottom:2px;">[${escapeHtml(npc.name)}]</div>`;
-            html += '<div style="display:flex; flex-wrap:wrap; gap:3px; margin-bottom:4px;">';
-            (npc.disciplineRules || []).forEach(rv => {
-                const rd = (CONFIG.DISCIPLINE_RULES || []).find(r => r.value === rv);
-                if (!rd) return;
-                const sevDef = CONFIG.DISCIPLINE_SEVERITY?.[rd.severity] || {};
-                html += `<span style="font-size:10px; padding:1px 5px; background:${sevDef.color || '#666'}22; color:${sevDef.color || '#666'}; border-radius:3px; border:1px solid ${sevDef.color || '#666'}44;" title="${escapeHtml(rd.description)}">${escapeHtml(rd.label)}</span>`;
-            });
-            (npc.customRules || []).forEach(cr => {
-                html += `<span style="font-size:10px; padding:1px 5px; background:#6366f122; color:#6366f1; border-radius:3px; border:1px solid #6366f144;" title="${escapeHtml(cr)}">${t('ui.sidebar.customBadge')}</span>`;
-            });
-            html += '</div>';
-        });
-
-        if (recentV.length > 0) {
-            html += '<div style="font-size:10px; color:#ef4444; margin-top:4px;">' + t('ui.sidebar.recentViolation') + recentV.map(v => {
-                const rd = (CONFIG.DISCIPLINE_RULES || []).find(r => r.value === v.rule);
-                return escapeHtml(rd?.label || v.rule);
-            }).join(', ') + '</div>';
-        }
-
-        return html;
-    }
-
-    // ========== RAG 知识库面板 ==========
-    function buildRAGPanel() {
-        const save = CYOA.currentSave;
-        if (!save) return '<div style="color:#888;padding:6px">未开始游戏</div>';
-        const ragText = save._ragCache || '';
-        const ragTime = save._ragVersion ? new Date(save._ragVersion).toLocaleTimeString() : '--';
-        const ragLen = ragText.length;
-
-        const memCfg = CYOA.CONFIG?.MEMORY_CONFIG || {};
-        const history = save.conversationHistory || [];
-        const turns = Math.floor(history.length / 2);
-        const summary = save.storySummary || '';
-        const chSummaries = save.chapterSummaries || [];
-        const keyEvents = save.keyEvents || [];
-
-        let html = '<div style="padding:6px;font-size:12px;line-height:1.6">';
-        html += `<div style="margin-bottom:6px">📦 <b>RAG缓存</b>：${ragLen > 0 ? ragLen + '字' : '<span style="color:#f44">未生成</span>'}`;
-        if (ragLen > 0) html += ` <span style="color:#888">(${ragTime})</span>`;
-        html += '</div>';
-
-        html += `<div style="margin-bottom:6px">💬 <b>对话轮次</b>：${turns} / ${memCfg.recentTurns || 6}</div>`;
-        html += `<div style="margin-bottom:6px">📝 <b>故事摘要</b>：${summary ? summary.length + '字' : '<span style="color:#888">无</span>'}</div>`;
-        html += `<div style="margin-bottom:6px">📖 <b>章节摘要</b>：${chSummaries.length}条</div>`;
-        html += `<div style="margin-bottom:8px">⭐ <b>关键事件</b>：${keyEvents.length}条</div>`;
-
-        html += '<div style="display:flex;gap:6px">';
-        html += '<button id="cyoa-rag-rebuild" class="cyoa-btn" style="flex:1;padding:4px 8px;font-size:11px">🔄 重建RAG</button>';
-        html += '<button id="cyoa-rag-view" class="cyoa-btn" style="flex:1;padding:4px 8px;font-size:11px">👁️ 查看RAG</button>';
-        html += '</div>';
-        html += '</div>';
-        return html;
-    }
-
-    function buildMapQuickTravelPanel() {
-        const save = CYOA.currentSave;
-        const game = CYOA.currentGame;
-        if (!save || !game) return '<div style="color:#888;padding:6px">未开始游戏</div>';
-        const allLocs = Array.isArray(game.locations) ? game.locations : [];
-        if (!allLocs.length) return '<div style="font-size:12px; color:var(--text-light);">未配置地点</div>';
-        const knownIdsRaw = (typeof CYOA.getKnownLocationIds === 'function')
-            ? CYOA.getKnownLocationIds(save)
-            : [String(save.currentLocation || '').trim()];
-        const knownSet = new Set((knownIdsRaw || []).map(v => String(v || '').trim()).filter(Boolean));
-        if (!knownSet.size) {
-            return '<div style="font-size:12px; color:var(--text-light);">暂无已知地点</div>';
-        }
-        const from = String(save.currentLocation || '').trim();
-        const constraints = CYOA.getActiveConstraints?.() || new Set();
-        const isLimited = constraints.has('limited_step');
-        const edgeList = Array.isArray(game.locationEdges) ? game.locationEdges : [];
-        const gameLimitedExtra = Number(game?.travelRules?.limitedStepExtraTurns);
-        const defaultLimitedExtra = Number(CYOA.CONFIG?.LOCATION_DEFAULTS?.limitedStepExtraTurns ?? 2);
-        const rows = allLocs
-            .filter(loc => knownSet.has(String(loc?.id || '').trim()))
-            .map((loc) => {
-                const id = String(loc?.id || '').trim();
-                const name = String(loc?.name || id).trim();
-                const isCurrent = id === from;
-                const regionId = String(loc?.regionId || '').trim();
-                const edge = edgeList.find(e =>
-                    (String(e?.from || '') === from && String(e?.to || '') === id) ||
-                    (String(e?.to || '') === from && String(e?.from || '') === id)
-                );
-                const reachable = !isCurrent && (!edgeList.length || !!edge);
-                const base = Number(edge?.travelTurns ?? CYOA.CONFIG?.LOCATION_DEFAULTS?.defaultTravelTurns ?? 6);
-                const baseTurns = Number.isFinite(base) && base > 0 ? Math.round(base) : 6;
-                const edgeLimitedExtra = Number(edge?.limitedStepExtraTurns);
-                const limitedExtra = Number.isFinite(edgeLimitedExtra)
-                    ? edgeLimitedExtra
-                    : (Number.isFinite(gameLimitedExtra) ? gameLimitedExtra : defaultLimitedExtra);
-                const eta = baseTurns + (isLimited ? Math.max(0, Math.round(limitedExtra)) : 0);
-                return { id, name, regionId, isCurrent, reachable, eta };
-            })
-            .sort((a, b) => (a.isCurrent === b.isCurrent ? a.name.localeCompare(b.name, 'zh-Hans-CN') : (a.isCurrent ? -1 : 1)));
-        const traveling = !!save.travelingTo;
-        const regions = Array.isArray(game?.worldMap?.regions) ? game.worldMap.regions : [];
-        const grouped = [];
-        const used = new Set();
-        const currentRegionId = String((rows.find(x => x.isCurrent)?.regionId) || '').trim();
-        const sortRegionItems = (arr) => arr.slice().sort((a, b) => {
-            if (a.isCurrent !== b.isCurrent) return a.isCurrent ? -1 : 1;
-            if (a.reachable !== b.reachable) return a.reachable ? -1 : 1;
-            if (a.eta !== b.eta) return a.eta - b.eta;
-            return a.name.localeCompare(b.name, 'zh-Hans-CN');
-        });
-        regions.forEach((r) => {
-            const rid = String(r?.id || '').trim();
-            const rname = String(r?.name || rid || '未命名区域').trim();
-            const items = sortRegionItems(rows.filter(x => String(x.regionId || '') === rid));
-            if (!items.length) return;
-            used.add(rid);
-            grouped.push({ id: rid, name: rname, items });
-        });
-        const ungrouped = sortRegionItems(rows.filter(x => !String(x.regionId || '').trim() || !used.has(String(x.regionId || '').trim())));
-        if (ungrouped.length) grouped.push({ id: '__ungrouped__', name: '未分区地点', items: ungrouped });
-        grouped.sort((a, b) => {
-            const aCur = a.id !== '__ungrouped__' && a.id === currentRegionId;
-            const bCur = b.id !== '__ungrouped__' && b.id === currentRegionId;
-            if (aCur !== bCur) return aCur ? -1 : 1;
-            if (a.id === '__ungrouped__' && b.id !== '__ungrouped__') return 1;
-            if (b.id === '__ungrouped__' && a.id !== '__ungrouped__') return -1;
-            return a.name.localeCompare(b.name, 'zh-Hans-CN');
-        });
-        const renderItemBtn = (r) => `
-            <button type="button"
-                class="cyoa-btn cyoa-btn-secondary"
-                data-cyoa-map-go="${escapeHtml(r.id)}"
-                ${r.isCurrent || !r.reachable || traveling ? 'disabled' : ''}
-                style="display:flex; justify-content:space-between; align-items:center; padding:5px 8px; font-size:11px; text-align:left;">
-                <span>${r.isCurrent ? '📍 ' : '🧭 '}${escapeHtml(r.name)}</span>
-                <span style="color:var(--text-light);">${r.isCurrent ? '当前位置' : (r.reachable ? `~${r.eta}回合` : '不可直达')}</span>
-            </button>
-        `;
-        return `
-            <div style="font-size:11px; color:var(--text-light); margin-bottom:8px;">仅显示已知（去过）地点；快速到达会消耗同等回合。</div>
-            <div style="display:flex; flex-direction:column; gap:6px;">
-                ${grouped.map(g => `
-                    <div style="border:1px solid var(--border); border-radius:8px; overflow:hidden;">
-                        <div style="padding:5px 8px; font-size:11px; font-weight:600; background:var(--bg);">
-                            ${escapeHtml(g.name)}
-                            ${g.id !== '__ungrouped__' && g.id === currentRegionId ? '<span style="margin-left:6px; font-size:10px; color:var(--primary);">（当前区域）</span>' : ''}
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:4px; padding:6px; background:var(--bg-light);">
-                            ${g.items.map(renderItemBtn).join('')}
-                        </div>
-                    </div>
-                `).join('')}
-            </div>
-        `;
-    }
-
-    CYOA.renderMapPanel = function() {
-        const container = document.getElementById('cyoaMapPanel');
-        if (!container || !CYOA.currentSave) return;
-        container.innerHTML = buildMapQuickTravelPanel();
-        container.querySelectorAll('[data-cyoa-map-go]').forEach((btn) => {
-            btn.addEventListener('click', () => {
-                const to = String(btn.getAttribute('data-cyoa-map-go') || '').trim();
-                if (!to) return;
-                CYOA.travelTo?.(to);
-                CYOA.renderSidebar?.();
-            });
-        });
-    };
-
-    // ========== 习惯度面板 ==========
-    function buildHabituationPanel() {
-        const save = CYOA.currentSave;
-        if (!save) return '';
-        const habEntries = Object.entries(save.habituation || {}).filter(([, v]) => v > 5);
-        const withdrawals = save.withdrawalEffects || [];
-        if (habEntries.length === 0 && withdrawals.length === 0) return '';
-
-        let html = '';
-
-        habEntries.sort((a, b) => b[1] - a[1]);
-        habEntries.forEach(([cType, val]) => {
-            const tier = CYOA.getHabituationTier(cType);
-            const label = CYOA.getConstraintLabel?.(cType) || cType;
-            const pct = Math.round((val / (CONFIG.HABITUATION_CONFIG?.maxLevel || 100)) * 100);
-            const tierColors = { none: '#94a3b8', adjusting: '#3b82f6', familiar: '#22c55e', dependent: '#f59e0b', addicted: '#ef4444' };
-            const barColor = tierColors[tier.value] || '#94a3b8';
-            html += '<div style="margin-bottom:4px;">';
-            html += `<div style="display:flex; justify-content:space-between; font-size:10px; margin-bottom:2px;"><span>${escapeHtml(label)}</span><span style="color:${barColor}; font-weight:600;">${tier.label} (${val})</span></div>`;
-            html += `${progressBar(pct, barColor)}`;
-            html += '</div>';
-        });
-
-        if (withdrawals.length > 0) {
-            html += '<div style="margin-top:6px; border-top:1px solid var(--border); padding-top:6px;">';
-            html += `<div style="font-size:11px; color:#ef4444; font-weight:600; margin-bottom:4px;">${t('ui.sidebar.withdrawal')}</div>`;
-            withdrawals.forEach(w => {
-                const label = CYOA.getConstraintLabel?.(w.constraintType) || w.constraintType;
-                const sevColor = w.severity === 'severe' ? '#ef4444' : w.severity === 'moderate' ? '#f59e0b' : '#94a3b8';
-                html += `<div style="font-size:10px; margin-bottom:2px; color:${sevColor};">`;
-                html += `${escapeHtml(label)}（${w.severity}）- ${t('ui.sidebar.turnsLeft', {n: w.turnsRemaining})}`;
-                html += '</div>';
-            });
-            html += '</div>';
-        }
-
-        // 姿势不适指示
-        const posture = save.posture || 'standing';
-        const pDur = save.postureDuration || 0;
-        const dEff = CONFIG.DURATION_EFFECTS?.postureDiscomfort?.[posture];
-        if (dEff && pDur >= dEff.startTurn) {
-            const disc = Math.min(dEff.maxDiscomfort, (pDur - dEff.startTurn) * dEff.perTurn);
-            if (disc > 0) {
-                const discPct = Math.round((disc / dEff.maxDiscomfort) * 100);
-                const discColor = discPct >= 70 ? '#ef4444' : discPct >= 40 ? '#f59e0b' : '#94a3b8';
-                html += '<div style="margin-top:6px; border-top:1px solid var(--border); padding-top:6px;">';
-                html += `<div style="font-size:11px; margin-bottom:2px;">${t('ui.sidebar.postureDiscomfort')} <span style="color:${discColor}; font-weight:600;">${disc}/${dEff.maxDiscomfort}</span> <span style="font-size:10px; color:var(--text-light);">(${pDur}轮)</span></div>`;
-                html += `${progressBar(discPct, discColor)}`;
-                html += '</div>';
-            }
-        }
-
-        return html;
-    }
-
-    // ========== 综合状态面板 ==========
-    function buildComprehensiveStatusPanel() {
-        const save = CYOA.currentSave;
-        if (!save) return '';
-        let sections = [];
-
-        // 羞耻面板
-        const shameVal = save.shame || 0;
-        if (shameVal > 5) {
-            const tier = CYOA.getShameTier();
-            const pct = Math.round((shameVal / (CONFIG.SHAME_CONFIG?.max || 100)) * 100);
-            sections.push(`<div style="margin-bottom:6px;"><div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.shame')}</span><span style="color:${tier.color}; font-weight:600;">${tier.label} (${shameVal})</span></div>${progressBar(pct, tier.color)}</div>`);
-        }
-
-        // 口塞/口水面板
-        const droolVal = save.drool || 0;
-        const gagDef = CYOA.getActiveGagType?.();
-        if (gagDef || droolVal > 5) {
-            const droolCfg = CONFIG.DROOL_CONFIG || {};
-            const droolPct = Math.round((droolVal / (droolCfg.maxDrool || 100)) * 100);
-            let droolColor = '#94a3b8';
-            let droolLabel = t('ui.sidebar.droolNormal');
-            if (droolVal >= (droolCfg.heavyThreshold || 70)) { droolColor = '#ef4444'; droolLabel = t('ui.sidebar.droolHeavy'); }
-            else if (droolVal >= (droolCfg.messThreshold || 30)) { droolColor = '#f59e0b'; droolLabel = t('ui.sidebar.droolStarting'); }
-            else if (droolVal > 5) { droolColor = '#84cc16'; droolLabel = t('ui.sidebar.droolTrace'); }
-            let gagHtml = '<div style="margin-bottom:6px;">';
-            if (gagDef) {
-                let tagHtml = '';
-                if (gagDef.forcedOpen) tagHtml += ` <span style="color:#ef4444; font-weight:600;">${t('ui.sidebar.forcedOpen')}</span>`;
-                if (gagDef.suppressDrool) tagHtml += ` <span style="color:#06b6d4; font-weight:600;">${t('ui.sidebar.droolDivert')}</span>`;
-                gagHtml += `<div style="font-size:11px; margin-bottom:2px;">${escapeHtml(gagDef.label)}${tagHtml}</div>`;
-            }
-            if (gagDef?.suppressDrool) {
-                gagHtml += `<div style="font-size:10px; color:#06b6d4; margin-bottom:1px;">${t('ui.sidebar.droolDivertActive')}</div>`;
-            } else if (droolVal > 5) {
-                gagHtml += `<div style="display:flex; justify-content:space-between; font-size:10px; margin-bottom:1px;"><span>${t('ui.sidebar.drool')}</span><span style="color:${droolColor};">${droolLabel}</span></div>`;
-                gagHtml += `${progressBar(droolPct, droolColor, 3)}`;
-            }
-            gagHtml += '</div>';
-            sections.push(gagHtml);
-        }
-
-        // 耳部装置面板
-        const earDev = CYOA.getActiveEarDevice?.();
-        if (earDev) {
-            let modeColor = '#94a3b8';
-            let modeLabel = earDev.modeLabel || earDev.mode;
-            if (earDev.deaf && !earDev.hearController) modeColor = '#ef4444';
-            else if (earDev.deaf && earDev.hearController) modeColor = '#f59e0b';
-            else modeColor = '#22c55e';
-            let earHtml = '<div style="margin-bottom:6px;">';
-            earHtml += `<div style="font-size:11px; margin-bottom:2px;">${escapeHtml(earDev.label)} <span style="color:${modeColor}; font-weight:600;">[${escapeHtml(modeLabel)}]</span></div>`;
-            earHtml += `<div style="font-size:9px; color:var(--text-light);">${escapeHtml(earDev.modeDesc || '')}</div>`;
-            earHtml += '</div>';
-            sections.push(earHtml);
-        }
-
-        // 手指约束面板
-        const fingerDef = CYOA.getActiveFingerRestraint?.();
-        if (fingerDef) {
-            let fingerHtml = '<div style="margin-bottom:6px;">';
-            fingerHtml += `<div style="font-size:11px; margin-bottom:2px;">${escapeHtml(fingerDef.label)} <span style="color:#f59e0b; font-weight:600;">[${escapeHtml(fingerDef.shapeLabel || fingerDef.shape)}]</span></div>`;
-            fingerHtml += `<div style="font-size:9px; color:var(--text-light);">${escapeHtml(fingerDef.desc || '')}</div>`;
-            fingerHtml += '</div>';
-            sections.push(fingerHtml);
-        }
-
-        // 头颈约束面板
-        const headR = CYOA.getActiveHeadRestrictions?.() || { canTurn: true, canNod: true };
-        if (!headR.canTurn || !headR.canNod) {
-            let headHtml = '<div style="margin-bottom:6px; font-size:11px;">';
-            headHtml += `<div style="margin-bottom:2px;">${t('ui.sidebar.headNeck')}</div>`;
-            const restrictions = [];
-            if (!headR.canTurn) restrictions.push(`<span style="color:#ef4444;">${t('ui.sidebar.noTurn')}</span>`);
-            if (!headR.canNod) restrictions.push(`<span style="color:#ef4444;">${t('ui.sidebar.noNod')}</span>`);
-            headHtml += `<div style="font-size:10px;">${restrictions.join(' · ')}</div>`;
-            headHtml += '</div>';
-            sections.push(headHtml);
-        }
-
-        // 氧气面板
-        const oxyVal = save.oxygen ?? 100;
-        if (oxyVal < 95) {
-            const tier = CYOA.getOxygenTier();
-            const pct = Math.round(oxyVal);
-            sections.push(`<div style="margin-bottom:6px;"><div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.oxygen')}</span><span style="color:${tier.color}; font-weight:600;">${tier.label} (${oxyVal})</span></div>${progressBar(pct, tier.color)}</div>`);
-        }
-
-        // 痛感面板
-        const painVal = save.pain || 0;
-        if (painVal > 0) {
-            const painPct = Math.round((painVal / (CONFIG.IMPACT_CONFIG?.maxPain || 100)) * 100);
-            const painColor = painPct >= 70 ? '#ef4444' : painPct >= 40 ? '#f59e0b' : '#94a3b8';
-            sections.push(`<div style="margin-bottom:6px;"><div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.pain')}</span><span style="color:${painColor}; font-weight:600;">${painVal}/100</span></div>${progressBar(painPct, painColor)}</div>`);
-        }
-
-        // 痕迹
-        if (save.marks?.length > 0) {
-            let markHtml = `<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:3px;">${t('ui.sidebar.bodyMarks')}</div>`;
-            save.marks.forEach(m => {
-                const mDef = CONFIG.MARK_TYPES?.[m.type];
-                const zDef = (CONFIG.IMPACT_ZONES || []).find(z => z.value === m.zone);
-                markHtml += `<div style="font-size:10px; color:var(--text-light); padding-left:8px;">• ${escapeHtml(zDef?.label || m.zone)}：${escapeHtml(mDef?.label || m.type)}（${m.turnsRemaining}轮）</div>`;
-            });
-            markHtml += '</div>';
-            sections.push(markHtml);
-        }
-
-        // 温度
-        const activeTemps = Object.entries(save.bodyTemp || {}).filter(([, v]) => v !== 0);
-        if (activeTemps.length > 0) {
-            let tempHtml = `<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:3px;">${t('ui.sidebar.tempDev')}</div>`;
-            activeTemps.forEach(([zone, temp]) => {
-                const zDef = (CONFIG.TEMP_ZONES || []).find(z => z.value === zone);
-                const tColor = temp > 0 ? '#ef4444' : '#3b82f6';
-                const tLabel = temp > 0 ? `+${temp}°` : `${temp}°`;
-                tempHtml += `<div style="font-size:10px; padding-left:8px; color:${tColor};">• ${escapeHtml(zDef?.label || zone)}：${tLabel}</div>`;
-            });
-            tempHtml += '</div>';
-            sections.push(tempHtml);
-        }
-
-        // 困境束缚
-        if (save.predicament) {
-            const pred = save.predicament;
-            const pDef = (CONFIG.PREDICAMENT_TYPES || []).find(p => p.value === pred.type);
-            const predPct = Math.round((pred.painAccum / (CONFIG.PREDICAMENT_CONFIG?.maxPain || 100)) * 100);
-            const predColor = predPct >= 70 ? '#ef4444' : predPct >= 40 ? '#f59e0b' : '#94a3b8';
-            sections.push(`<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:2px;">${t('ui.sidebar.predicament')}${escapeHtml(pDef?.label || pred.type)}</div><div style="font-size:10px; color:var(--text-light); margin-bottom:2px;">${escapeHtml(pDef?.desc || '')}</div><div style="display:flex; justify-content:space-between; font-size:10px; margin-bottom:2px;"><span>${t('ui.sidebar.cumPain')}</span><span style="color:${predColor};">${pred.painAccum}/100</span></div>${progressBar(predPct, predColor, 3)}<div style="font-size:10px; color:var(--text-light);">${t('ui.sidebar.duration', {n: pred.turnsActive})}</div></div>`);
-        }
-
-        // 训练进度
-        const trainEntries = Object.entries(save.trainings || {}).filter(([, v]) => v.level > 0);
-        if (trainEntries.length > 0) {
-            let trainHtml = `<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:3px;">${t('ui.sidebar.training')}</div>`;
-            trainEntries.forEach(([type, data]) => {
-                const tDef = (CONFIG.TRAINING_TYPES || []).find(t => t.value === type);
-                const lvLabel = CONFIG.TRAINING_LEVEL_LABELS?.[data.level] || data.level;
-                const progPct = data.progress;
-                trainHtml += `<div style="font-size:10px; display:flex; justify-content:space-between; padding-left:8px; margin-bottom:1px;"><span>${escapeHtml(tDef?.label || type)}</span><span>Lv.${data.level}(${lvLabel}) ${progPct}%</span></div>`;
-            });
-            trainHtml += '</div>';
-            sections.push(trainHtml);
-        }
-
-        // 感官剥夺
-        const depLevel = CYOA.getDeprivationLevel?.();
-        if (depLevel) {
-            const depDur = save.deprivationDuration || 0;
-            sections.push(`<div style="margin-bottom:6px;"><div style="font-size:11px; color:#7c3aed; font-weight:600;">🕳️ ${escapeHtml(depLevel.label)}</div><div style="font-size:10px; color:var(--text-light);">${escapeHtml(depLevel.desc)} (${depDur}轮)</div></div>`);
-        }
-        if ((save.sensoryOverload || 0) > 0) {
-            sections.push(`<div style="margin-bottom:6px; font-size:11px; color:#ef4444; font-weight:600;">${t('ui.sidebar.sensoryOverload')}（${save.sensoryOverload}轮）</div>`);
-        }
-
-        // 乳胶封闭（含层叠、紧度、护理、汗液、颜色、开口）
-        if ((save.latexCoverage || 0) > 10) {
-            const covTier = CYOA.getLatexCoverageTier?.();
-            const heatTier = CYOA.getLatexHeatTier?.();
-            const heatVal = save.latexHeat || 0;
-            const heatPct = Math.round((heatVal / (CONFIG.LATEX_ENCLOSURE_CONFIG?.maxHeat || 50)) * 100);
-            let lxHtml = '<div style="margin-bottom:6px;">';
-            // 颜色标识
-            let colorLabel = '';
-            if (save.latexColor) {
-                const colorDef = (CONFIG.LATEX_COLORS || []).find(c => c.value === save.latexColor);
-                if (colorDef) colorLabel = ` <span style="color:${colorDef.colorHex}; font-weight:600;">${colorDef.label}</span>`;
-            }
-            lxHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.latex')} ${save.latexCoverage}%（${covTier?.label || ''}）${(save.latexLayers || 0) > 1 ? ' ×' + save.latexLayers + '层' : ''}${colorLabel}</span><span style="color:${heatTier?.color || '#94a3b8'}; font-weight:600;">${heatTier?.label || ''}</span></div>`;
-            lxHtml += `${progressBar(heatPct, heatTier?.color || '#94a3b8')}`;
-            // 汗液条
-            if ((save.latexSweat || 0) > 10) {
-                const swTier = CYOA.getLatexSweatTier?.() || {};
-                const swPct = Math.round(((save.latexSweat || 0) / (CONFIG.LATEX_SWEAT_CONFIG?.maxSweat || 100)) * 100);
-                lxHtml += `<div style="display:flex; justify-content:space-between; font-size:10px; margin-top:2px;"><span>${t('ui.sidebar.sweat')}</span><span style="color:${swTier.color || '#94a3b8'};">${swTier.label || ''} (${save.latexSweat})</span></div>`;
-                lxHtml += `${progressBar(swPct, swTier.color || '#94a3b8', 3)}`;
-            }
-            // 自紧度
-            if ((save.latexTightness || 0) > 10) {
-                const tTier = CYOA.getTightnessTier?.() || {};
-                const tPct = Math.round(((save.latexTightness || 0) / (CONFIG.LATEX_TIGHTENING_CONFIG?.maxTightness || 100)) * 100);
-                lxHtml += `<div style="display:flex; justify-content:space-between; font-size:10px; margin-top:2px;"><span>${t('ui.sidebar.tightness')}</span><span style="color:${tTier.color || '#94a3b8'};">${tTier.label || ''} (${save.latexTightness})</span></div>`;
-                lxHtml += `${progressBar(tPct, tTier.color || '#94a3b8', 3)}`;
-            }
-            // 护理状态
-            const cond = save.latexCondition ?? 100;
-            if (cond < 80) {
-                const condPct = Math.round(cond);
-                const condColor = cond < 25 ? '#ef4444' : cond < 50 ? '#f59e0b' : '#94a3b8';
-                lxHtml += `<div style="display:flex; justify-content:space-between; font-size:10px; margin-top:2px;"><span>${t('ui.sidebar.maintenance')}</span><span style="color:${condColor};">${cond}/100</span></div>`;
-                lxHtml += `${progressBar(condPct, condColor, 3)}`;
-            }
-            // 开口状态
-            const openings = save.latexOpenings || {};
-            const openEntries = Object.entries(openings);
-            if (openEntries.length > 0) {
-                const openLabels = openEntries.map(([type, state]) => {
-                    const oDef = (CONFIG.LATEX_OPENING_TYPES || []).find(o => o.value === type);
-                    const sDef = (CONFIG.LATEX_OPENING_STATES || {})[state];
-                    const stateIcon = state === 'open' ? '🔓' : state === 'locked' ? '🔒' : '🔗';
-                    return `${stateIcon}${oDef?.label?.replace(/^.+\s/, '') || type}`;
-                });
-                lxHtml += `<div style="font-size:10px; margin-top:2px; color:var(--text-light);">${t('ui.sidebar.zipper')} ${openLabels.join(' ')}</div>`;
-            }
-            lxHtml += '</div>';
-            sections.push(lxHtml);
-        }
-
-        // 身份侵蚀
-        if ((save.identityErosion || 0) > 10) {
-            const idTier = CYOA.getIdentityTier?.() || {};
-            const idPct = Math.round(((save.identityErosion || 0) / (CONFIG.IDENTITY_EROSION_CONFIG?.maxErosion || 100)) * 100);
-            const idColors = { human: '#22c55e', slipping: '#84cc16', fading: '#eab308', doll: '#f97316', object: '#7c3aed' };
-            const idColor = idColors[idTier.value] || '#94a3b8';
-            let idHtml = '<div style="margin-bottom:6px;">';
-            idHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.identity')}</span><span style="color:${idColor}; font-weight:600;">${idTier.label || ''} (${save.identityErosion})</span></div>`;
-            idHtml += `${progressBar(idPct, idColor)}`;
-            idHtml += `<div style="font-size:10px; color:var(--text-light);">${escapeHtml(idTier.desc || '')}</div>`;
-            idHtml += '</div>';
-            sections.push(idHtml);
-        }
-
-        // 恐慌
-        if ((save.panic || 0) > 15) {
-            const pTier = CYOA.getPanicTier?.() || {};
-            const pPct = Math.round(((save.panic || 0) / (CONFIG.PANIC_CONFIG?.maxPanic || 100)) * 100);
-            let pHtml = '<div style="margin-bottom:6px;">';
-            pHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.panic')}</span><span style="color:${pTier.color || '#94a3b8'}; font-weight:600;">${pTier.label || ''} (${save.panic})</span></div>`;
-            pHtml += `${progressBar(pPct, pTier.color || '#94a3b8')}`;
-            pHtml += `<div style="font-size:10px; color:var(--text-light);">${escapeHtml(pTier.desc || '')}</div>`;
-            pHtml += '</div>';
-            sections.push(pHtml);
-        }
-
-        // 呼吸管
-        const tube = save.breathingTube;
-        if (tube?.active) {
-            const levels = CONFIG.BREATHING_TUBE_CONFIG?.flowLevels || {};
-            const lv = levels[tube.flowLevel] || {};
-            const tubeColors = { full: '#22c55e', restricted: '#eab308', minimal: '#f97316', blocked: '#ef4444' };
-            sections.push(`<div style="margin-bottom:6px;"><div style="font-size:11px;">${t('ui.sidebar.breathTube')}<span style="color:${tubeColors[tube.flowLevel] || '#94a3b8'}; font-weight:600;">${lv.label || tube.flowLevel}</span></div><div style="font-size:10px; color:var(--text-light);">${escapeHtml(lv.desc || '')}</div></div>`);
-        }
-
-        // 导电乳胶
-        const electro = save.electroLatex;
-        if (electro?.active && electro.zones?.length > 0) {
-            const eCfg = CONFIG.ELECTRO_LATEX_CONFIG || {};
-            let elHtml = `<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:3px;">${t('ui.sidebar.electroLatex')}</div>`;
-            electro.zones.forEach(z => {
-                const zoneDef = (eCfg.zones || []).find(zd => zd.value === z.zone);
-                const intDef = (eCfg.intensityLevels || []).find(i => i.value === z.intensity);
-                const intColors = { tingle: '#84cc16', pulse: '#eab308', strong: '#f97316', max: '#ef4444' };
-                elHtml += `<div style="font-size:10px; padding-left:8px; display:flex; justify-content:space-between;"><span>${escapeHtml(zoneDef?.label || z.zone)}</span><span style="color:${intColors[z.intensity] || '#94a3b8'};">${escapeHtml(intDef?.label || z.intensity)}</span></div>`;
-            });
-            elHtml += '</div>';
-            sections.push(elHtml);
-        }
-
-        // 充气装置
-        const infEntries = Object.entries(save.inflationLevels || {}).filter(([, v]) => v > 0);
-        if (infEntries.length > 0) {
-            let infHtml = `<div style="margin-bottom:6px;"><div style="font-size:11px; margin-bottom:3px;">${t('ui.sidebar.inflation')}</div>`;
-            infEntries.forEach(([devId, lv]) => {
-                const dDef = (CONFIG.VACUUM_INFLATION_TYPES || []).find(d => d.value === devId);
-                const pct = Math.round((lv / 5) * 100);
-                infHtml += `<div style="font-size:10px; display:flex; justify-content:space-between; padding-left:8px;"><span>${escapeHtml(dDef?.label || devId)}</span><span>Lv.${lv}/5</span></div>`;
-                infHtml += `<div style="height:3px; background:var(--border); border-radius:2px; overflow:hidden; margin:1px 0 2px 8px;"><div style="height:100%; width:${pct}%; background:#e879f9; border-radius:2px;"></div></div>`;
-            });
-            infHtml += '</div>';
-            sections.push(infHtml);
-        }
-
-        // PetPlay / PonyPlay
-        if (save.petplayRole) {
-            const rDef = (CONFIG.PETPLAY_ROLES || []).find(r => r.value === save.petplayRole);
-            const immTier = CYOA.getPetplayImmersionTier?.();
-            const immPct = Math.round(((save.petplayImmersion || 0) / (CONFIG.PETPLAY_CONFIG?.maxImmersion || 100)) * 100);
-            const immColors = { resistant: '#94a3b8', awkward: '#eab308', adapting: '#22c55e', immersed: '#3b82f6', deep: '#7c3aed' };
-            const immColor = immColors[immTier?.value] || '#94a3b8';
-            let petHtml = '<div style="margin-bottom:6px;">';
-            petHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>🐾 ${escapeHtml(rDef?.label || save.petplayRole)}</span><span style="color:${immColor}; font-weight:600;">${immTier?.label || ''} (${save.petplayImmersion || 0})</span></div>`;
-            petHtml += `${progressBar(immPct, immColor)}`;
-            petHtml += '</div>';
-            sections.push(petHtml);
-        }
-
-        // 家具化
-        if (save.furnitureRole) {
-            const fDef = (CONFIG.FURNITURE_ROLES || []).find(f => f.value === save.furnitureRole);
-            const cfg = CONFIG.FURNITURE_CONFIG || {};
-            const endPct = Math.round(((save.furnitureEndurance || 0) / (cfg.maxEndurance || 100)) * 100);
-            const endColor = endPct >= 70 ? '#ef4444' : endPct >= 40 ? '#f59e0b' : '#94a3b8';
-            let furHtml = '<div style="margin-bottom:6px;">';
-            furHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>🪑 ${escapeHtml(fDef?.label || save.furnitureRole)}</span><span style="color:${endColor}; font-weight:600;">${t('ui.sidebar.stamina')} ${endPct}%</span></div>`;
-            furHtml += `${progressBar(endPct, endColor)}`;
-            if (endPct >= 70) furHtml += `<div style="font-size:10px; color:#ef4444;">${t('ui.sidebar.trembling')}</div>`;
-            furHtml += '</div>';
-            sections.push(furHtml);
-        }
-
-        // 步态 / 姿势限制
-        const gait = CYOA.getCurrentGait?.();
-        if (gait && gait.value !== 'normal') {
-            const gaitColors = { careful: '#84cc16', mincing: '#eab308', hobbling: '#f97316', tottering: '#f97316', helpless: '#ef4444', immobile: '#7c3aed' };
-            const gColor = gaitColors[gait.value] || '#94a3b8';
-            let gaitHtml = '<div style="margin-bottom:6px;">';
-            gaitHtml += `<div style="display:flex; justify-content:space-between; font-size:11px; margin-bottom:2px;"><span>${t('ui.sidebar.gait')}</span><span style="color:${gColor}; font-weight:600;">${gait.label}</span></div>`;
-            gaitHtml += `<div style="font-size:10px; color:var(--text-light);">${escapeHtml(gait.desc)} 速度×${gait.speedMod}</div>`;
-            if (gait.fallChance > 0) {
-                gaitHtml += `<div style="font-size:10px; color:#ef4444;">${t('ui.sidebar.fallRisk')} ${Math.round(gait.fallChance * 100)}%/轮</div>`;
-            }
-            const blocked = save.blockedPostures || [];
-            if (blocked.length > 0) {
-                const allP = CONFIG.POSTURES || [];
-                const blockedLabels = blocked.map(bv => allP.find(p => p.value === bv)?.label || bv);
-                gaitHtml += `<div style="font-size:10px; color:var(--text-light); margin-top:2px;">🚫 ${blockedLabels.join('、')}</div>`;
-            }
-            const tags = save.activePostureTags || [];
-            if (tags.length > 0) {
-                const tagDefs = CONFIG.EQUIP_POSTURE_TAGS || [];
-                const tagLabels = tags.map(tv => tagDefs.find(td => td.value === tv)?.label || tv);
-                gaitHtml += `<div style="font-size:10px; color:var(--text-light); margin-top:2px; display:flex; flex-wrap:wrap; gap:3px;">`;
-                tagLabels.forEach(tl => { gaitHtml += `<span style="background:var(--border); padding:1px 5px; border-radius:8px; font-size:9px;">${escapeHtml(tl)}</span>`; });
-                gaitHtml += '</div>';
-            }
-            gaitHtml += '</div>';
-            sections.push(gaitHtml);
-        }
-
-        if (sections.length === 0) return '';
-        return sections.join('');
-    }
-
-    // ========== 渲染背包面板 ==========
-    CYOA.renderInventoryPanel = function() {
-        const container = document.getElementById('cyoaInventoryPanel');
-        if (!container || !CYOA.currentSave) return;
-        
-        let html = '<div class="cyoa-inventory" style="display: flex; flex-direction: column; gap: 20px;">';
-        
-        // 监控警示横幅
-        if (CYOA.isChapterMonitored?.()) {
-            const av = CYOA.getObserverAlert?.() || 0;
-            const barColor = av >= 75 ? '#ef4444' : av >= 50 ? '#f59e0b' : '#3b82f6';
-            html += `<div style="background:linear-gradient(90deg,#0f172a,#1e293b); color:#cbd5e1; padding:6px 10px; border-radius:var(--radius-sm); margin-bottom:10px; font-size:11px; display:flex; align-items:center; gap:6px; border:1px solid ${barColor};">`;
-            html += `<span style="color:${barColor}; font-size:14px;">📹</span>`;
-            html += `<span>${t('ui.status.monitoring')}</span>`;
-            html += `<div style="flex:1; height:3px; background:#334155; border-radius:2px; overflow:hidden;"><div style="height:100%; width:${Math.min(100,av)}%; background:${barColor}; transition:width 0.5s;"></div></div>`;
-            html += `<span style="color:${barColor}; font-weight:600;">${av}%</span>`;
-            html += `</div>`;
-        }
-
-        // 姿势 / 牵引状态面板
-        html += wrapCollapsible('panel_tether', t('ui.sidebar.postureTether'), buildTetherPosturePanel(), false);
-
-        // 兴奋度状态面板
-        html += wrapCollapsible('panel_arousal', t('ui.sidebar.arousal'), buildArousalPanel(), false);
-
-        // 纪律 + 习惯度面板
-        html += wrapCollapsible('panel_discipline', t('ui.sidebar.discipline'), buildDisciplinePanel(), false);
-        html += wrapCollapsible('panel_habituation', t('ui.sidebar.habituation'), buildHabituationPanel(), false);
-
-        // 综合状态面板（羞耻/氧气/痛感/温度/困境/训练/感官剥夺）
-        html += wrapCollapsible('panel_status', t('ui.sidebar.bodyStatus'), buildComprehensiveStatusPanel(), false);
-
-        // 装备栏
-        let equipContent = '';
-        if (!CYOA.currentSave.equipment || typeof CYOA.currentSave.equipment !== 'object') {
-            CYOA.currentSave.equipment = {};
-        }
-        // 运行时自修复：若“已穿戴”为空，按当前玩家的 startEquipped 规则回填一次
-        // 兼容 ownerId 可能写成角色 id / 角色名 / 为空。
-        const listGame = (Array.isArray(CYOA.games) ? CYOA.games : []).find(g => g && g.id === CYOA.currentGame?.id);
-        const equipCatalog = (Array.isArray(CYOA.currentGame?.equipment) && CYOA.currentGame.equipment.length > 0)
-            ? CYOA.currentGame.equipment
-            : (Array.isArray(listGame?.equipment) ? listGame.equipment : []);
-        if (Object.keys(CYOA.currentSave.equipment).length === 0 && Array.isArray(equipCatalog) && equipCatalog.length > 0) {
-            const pId = String(CYOA.currentSave.playerCharacterId || '').trim();
-            const pName = String(CYOA.currentSave.playerCharacter || '').trim();
-            const fallbackEquips = equipCatalog.filter(eq => {
-                if (!eq?.startEquipped) return false;
-                const owner = String(eq.ownerId || '').trim();
-                if (!owner) return true;
-                return (pId && owner === pId) || (pName && owner === pName);
-            });
-            fallbackEquips.forEach(eq => {
-                const slots = Array.isArray(eq.slots) ? eq.slots : [];
-                const copy = JSON.parse(JSON.stringify(eq));
-                slots.forEach(slot => {
-                    CYOA.currentSave.equipment[slot] = copy;
-                });
-                if (copy.id) {
-                    if (!Array.isArray(CYOA.currentSave.acquiredItemIds)) CYOA.currentSave.acquiredItemIds = [];
-                    if (!CYOA.currentSave.acquiredItemIds.includes(copy.id)) CYOA.currentSave.acquiredItemIds.push(copy.id);
-                }
-            });
-            if (fallbackEquips.length > 0) {
-                try { CYOA.persistSave?.(); } catch (_) {}
-            }
-        }
-        const equipped = CYOA.currentSave.equipment || {};
-        if (Object.keys(equipped).length === 0) {
-            equipContent += `<div class="cyoa-empty-state">${t('ui.empty.noEquipped')}</div>`;
-        } else {
-            const slotIconMap = {
-                head: "🪖", eyes: "👁️", ears: "👂", mouth: "👄", nose: "👃", neck: "🧣",
-                chest: "🫀", waist: "🩱", hips: "🩲", crotch: "🔒",
-                shoulder: "🦴", upper_arm: "💪", elbow: "🦾", forearm: "🦾", wrist: "⌚", palm: "✋", fingers: "🤌",
-                thigh: "🦵", knee: "🦿", calf: "🦵", ankle: "🦶", foot: "👣"
-            };
-            const grouped = new Map();
-            Object.entries(equipped).forEach(([slot, item]) => {
-                if (!item) return;
-                const key = item.id ? `id:${item.id}` : `slot:${slot}`;
-                const old = grouped.get(key);
-                if (old) {
-                    old.slots.add(slot);
-                    return;
-                }
-                grouped.set(key, {
-                    slot,
-                    item,
-                    slots: new Set([slot])
-                });
-            });
-            equipContent += '<div style="display: grid; gap: 8px;">';
-            Array.from(grouped.values()).forEach(({ slot, item, slots }) => {
-                const equipDef = CYOA.currentGame?.equipment?.find(e => e.id === item.id);
-                const coveredSlots = Array.isArray(item.slots) && item.slots.length
-                    ? item.slots
-                    : (Array.isArray(equipDef?.slots) && equipDef.slots.length ? equipDef.slots : Array.from(slots));
-                const coveredIcons = coveredSlots.slice(0, 10).map((s) => {
-                    const label = CONFIG.EQUIPMENT_SLOTS.find(x => x.value === s)?.label || s;
-                    const icon = slotIconMap[s] || "•";
-                    return `<span title="${escapeHtml(label)}" style="display:inline-flex; align-items:center; justify-content:center; width:16px; height:16px; font-size:12px; border:1px solid var(--border); border-radius:999px; background:var(--bg-light);">${icon}</span>`;
-                }).join('');
-                const isIndestructible = item.indestructible ?? equipDef?.indestructible ?? false;
-                const maxDura = item.maxDurability ?? equipDef?.maxDurability ?? 0;
-                const curDura = item.durability ?? equipDef?.durability ?? 0;
-                const duraPct = maxDura > 0 ? Math.round((curDura / maxDura) * 100) : 0;
-                const duraColor = duraPct > 50 ? '#22c55e' : duraPct > 25 ? '#f59e0b' : '#ef4444';
-                const lockLv = typeof item.lockLevel === 'number' ? item.lockLevel : (typeof equipDef?.lockLevel === 'number' ? equipDef.lockLevel : (item.locked === true || equipDef?.locked === true ? 3 : 0));
-                const lockDef = CONFIG.LOCK_LEVELS?.find(l => l.value === lockLv);
-
-                equipContent += `
-                    <div style="display: flex; align-items: flex-start; gap: 8px; background: var(--bg); padding: 8px 12px; border-radius: var(--radius-md); border: 1px solid var(--border);">
-                        <span style="font-size: 18px; margin-top:2px;">${item.icon || '⚔️'}</span>
-                        <div style="flex: 1; min-width:0;">
-                            <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
-                                <span style="font-weight: 600;">${escapeHtml(item.name)}</span>
-                                ${lockLv > 0 ? `<span style="font-size:11px; background:${lockLv >= 5 ? '#7c3aed' : lockLv >= 3 ? '#dc2626' : '#f59e0b'}; color:#fff; padding:1px 6px; border-radius:8px;" title="${escapeHtml(lockDef?.desc || '')}">${escapeHtml(lockDef?.label || 'Lv'+lockLv)}</span>` : ''}
-                                ${isIndestructible ? `<span style="font-size:11px; background:#3b82f6; color:#fff; padding:1px 6px; border-radius:8px;">${t('ui.status.indestructible')}</span>` : ''}
-                            </div>
-                            <div style="display:flex; align-items:center; gap:4px; margin-top:3px;">${coveredIcons}</div>
-                            ${!isIndestructible && maxDura > 0 ? `
-                                <div style="margin-top:3px;">
-                                    <div style="display:flex; justify-content:space-between; font-size:10px; color:var(--text-light); margin-bottom:1px;">
-                                        <span>${t('ui.sidebar.dur')}</span><span>${curDura}/${maxDura} (${duraPct}%)</span>
-                                    </div>
-                                    ${progressBar(duraPct, duraColor)}
-                                </div>
-                            ` : ''}
-                        </div>
-                        <div style="display:flex; flex-direction:column; gap:3px; align-items:center;">
-                            ${lockLv >= 1 && lockLv < 5 ? `<button class="cyoa-btn-icon" onclick="CYOA.handleStruggle('${escapeHtml(slot)}')" title="${t('ui.btn.struggle')}" style="font-size:16px;">✊</button>` : ''}
-                            ${lockLv >= 2 && lockLv < 5 ? `<button class="cyoa-btn-icon" onclick="CYOA.unlockEquipment('${escapeHtml(slot)}')" title="解锁" style="font-size:16px;">🔑</button>` : ''}
-                            <button class="cyoa-btn-icon" onclick="CYOA.unequipItem('${escapeHtml(slot)}')" title="${t('ui.btn.unequip')}">⬇️</button>
-                        </div>
-                    </div>
-                `;
-            });
-            equipContent += '</div>';
-        }
-        const equipCount = (() => {
-            const ids = new Set();
-            Object.values(equipped).forEach((it) => {
-                const k = String(it?.id || "");
-                if (k) ids.add(k);
-            });
-            return ids.size || Object.keys(equipped).length;
-        })();
-        html += wrapCollapsible('panel_equip', t('ui.sidebar.equippedN', {n: equipCount}), equipContent, false);
-        
-        // 背包
-        let bagContent = '';
-        if (!CYOA.currentSave.inventory || CYOA.currentSave.inventory.length === 0) {
-            bagContent += `<div class="cyoa-empty-state">${t('ui.empty.bagEmpty')}</div>`;
-        } else {
-            bagContent += '<div style="display: grid; gap: 8px;">';
-            CYOA.currentSave.inventory.forEach((item, index) => {
-                const itemTypeLabel = getItemTypeLabel(item.itemType);
-                const pCharId = CYOA.currentSave.playerCharacterId || '';
-                const isEquippable = CYOA.currentGame.equipment && CYOA.currentGame.equipment.some(e => e.id === item.id && (!e.ownerId || e.ownerId === pCharId || (CYOA.currentSave.acquiredItemIds || []).includes(e.id)));
-                const isConsumable = item.itemType === 'consumable' || item.itemType === 'healing' || item.itemType === 'fuel';
-                
-                const qty = item.quantity || 1;
-                const qtyBadge = qty > 1 ? `<span style="position:absolute; top:-4px; right:-4px; background:var(--primary); color:#fff; font-size:10px; font-weight:700; min-width:18px; height:18px; line-height:18px; text-align:center; border-radius:9px; padding:0 4px;">×${qty}</span>` : '';
-                
-                bagContent += `
-                    <div style="display: flex; align-items: center; gap: 8px; background: var(--bg); padding: 8px 12px; border-radius: var(--radius-md); border: 1px solid var(--border);">
-                        <span style="font-size: 18px; position:relative;">${item.icon || '📦'}${qtyBadge}</span>
-                        <div style="flex: 1;">
-                            <div style="font-weight: 600;">${escapeHtml(item.name)}${qty > 1 ? ' <span style="color:var(--text-light);font-weight:400;font-size:12px;">×' + qty + '</span>' : ''}</div>
-                            <div style="font-size: 11px; color: var(--text-light);">${itemTypeLabel}</div>
-                            ${item.durability ? `<div style="font-size: 11px; color: var(--text-light);">${t('ui.sidebar.durability')} ${item.durability}</div>` : ''}
-                            ${item.description ? `<div style="font-size: 11px; color: var(--text-light);">${escapeHtml(item.description)}</div>` : ''}
-                        </div>
-                        <div style="display: flex; gap: 4px;">
-                            ${isEquippable ? `<button class="cyoa-btn-icon" onclick="CYOA.equipItem(${index})" title="${t('ui.btn.equip')}">⬆️</button>` : ''}
-                            ${isConsumable ? `<button class="cyoa-btn-icon" onclick="CYOA.useConsumable(${index})" title="${t('ui.btn.use')}">✨</button>` : ''}
-                        </div>
-                    </div>
-                `;
-            });
-            bagContent += '</div>';
-        }
-        const bagCount = CYOA.currentSave.inventory?.length || 0;
-        html += wrapCollapsible('panel_bag', t('ui.sidebar.inventoryN', {n: bagCount}), bagContent, false);
-
-        // RAG + AI记忆面板
-        html += wrapCollapsible('panel_rag', '📚 AI知识库', buildRAGPanel(), false);
-
-        html += '</div>';
-        container.innerHTML = html;
-
-        // RAG面板按钮绑定
-        container.querySelector('#cyoa-rag-rebuild')?.addEventListener('click', () => {
-            CYOA.generateRAG?.();
-            CYOA.renderInventoryPanel?.();
-        });
-        container.querySelector('#cyoa-rag-view')?.addEventListener('click', () => {
-            const rag = CYOA.getRAG?.() || '（空）';
-            const win = window.open('', '_blank', 'width=700,height=600');
-            if (win) {
-                win.document.title = 'RAG 知识库预览';
-                win.document.body.style.cssText = 'font-family:monospace;white-space:pre-wrap;padding:20px;background:#1a1a2e;color:#e0e0e0;';
-                win.document.body.textContent = rag;
-            }
-        });
-        // 背包刷新后同步状态面板
-        CYOA.renderStatusPanel?.();
-    };
-
-    // ========== 渲染技能面板 ==========
-    CYOA.renderSkillsPanel = function() {
-        const container = document.getElementById('cyoaSkillsPanel');
-        if (!container || !CYOA.currentSave) return;
-        
-        const maxLv = CYOA.CONFIG.SKILL_MAX_LEVEL || 9;
-        const perLv = CYOA.CONFIG.SKILL_PROFICIENCY_PER_LEVEL || 100;
-        const levelLabels = CYOA.CONFIG.SKILL_LEVEL_LABELS || {};
-        
-        let html = '<div class="cyoa-skills" style="display: flex; flex-direction: column; gap: 16px;">';
-        
-        if (!CYOA.currentSave.skills || CYOA.currentSave.skills.length === 0) {
-            html += `<div class="cyoa-empty-state">${t('ui.empty.noSkills')}</div>`;
-        } else {
-            CYOA.currentSave.skills.forEach(skill => {
-                const lv = skill.level || 1;
-                const prof = typeof skill.proficiency === 'number' ? skill.proficiency : 0;
-                const profPercent = perLv > 0 ? Math.min(100, (prof / perLv) * 100) : 0;
-                const tag = levelLabels[lv] || '';
-                const isMaxLevel = lv >= maxLv;
-                const typeIcon = { magic: '✨', combat: '⚔️', passive: '🛡️', craft: '🔨', social: '💬', special: '🌟' }[skill.skillType] || '📘';
-                
-                html += `
-                    <div class="cyoa-skill-item" style="background: var(--bg); border-radius: var(--radius-md); padding: 12px; border: 1px solid var(--border);">
-                        <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 6px;">
-                            <span style="font-size: 20px;">${typeIcon}</span>
-                            <span style="font-weight: 600; flex:1;">${escapeHtml(skill.name)}</span>
-                            <span style="font-size: 13px; font-weight: 700; color: var(--primary); background: var(--cyoa-primary-light); padding: 2px 8px; border-radius: 10px;">LV${lv}${tag ? ' ' + tag : ''}</span>
-                            <span class="cyoa-badge cyoa-badge-primary">${getSkillTypeLabel(skill.skillType)}</span>
-                        </div>
-                        <div style="margin-bottom: 6px;">
-                            <div style="display: flex; justify-content: space-between; font-size: 11px; color: var(--text-light); margin-bottom: 2px;">
-                                <span>${t('ui.sidebar.skillProficiency')}</span>
-                                <span>${isMaxLevel ? 'MAX' : prof + ' / ' + perLv}</span>
-                            </div>
-                            <div style="height: 6px; background: var(--border); border-radius: 3px; overflow: hidden;">
-                                <div style="height: 100%; width: ${isMaxLevel ? 100 : profPercent}%; background: ${isMaxLevel ? 'linear-gradient(90deg, #f59e0b, #ef4444)' : 'var(--primary)'}; border-radius: 3px; transition: width 0.3s;"></div>
-                            </div>
-                        </div>
-                        ${skill.description ? `<div style="font-size: 13px; color: var(--text); margin-bottom: 4px;">${escapeHtml(skill.description)}</div>` : ''}
-                        ${skill.effect ? `<div style="font-size: 12px; color: var(--primary); margin-bottom: 4px;">${t('ui.sidebar.skillEffect')} ${escapeHtml(skill.effect)} <span style="font-weight:600;">×${(typeof CYOA.getSkillEffectMultiplier === 'function' ? CYOA.getSkillEffectMultiplier(lv) : 1).toFixed(2)}</span></div>` : ''}
-                        ${skill.consumeItems?.length ? (() => {
-                            const costMult = typeof CYOA.getSkillCostMultiplier === 'function' ? CYOA.getSkillCostMultiplier(lv) : 1;
-                            const items = skill.consumeItems.map(c => {
-                                const scaled = typeof CYOA.getScaledConsumeCost === 'function' ? CYOA.getScaledConsumeCost(c.amount || 1, lv) : (c.amount || 1);
-                                return (c.description || c.itemId) + ' ×' + scaled;
-                            }).join(', ');
-                            return '<div style="font-size: 12px; color: var(--text-light);">' + t('ui.sidebar.skillCost') + ' ' + items + ' <span style="color:#10b981;">(↓' + ((1 - costMult) * 100).toFixed(0) + '%)</span></div>';
-                        })() : ''}
-                    </div>
-                `;
-            });
-        }
-        
-        html += '</div>';
-        container.innerHTML = html;
-    };
-
-    // ========== 渲染任务面板 ==========
-    CYOA.renderQuestsPanel = function() {
-        const container = document.getElementById('cyoaQuestsPanel');
-        if (!container || !CYOA.currentSave) return;
-        
-        let html = '<div class="cyoa-quests" style="display: flex; flex-direction: column; gap: 16px;">';
-        
-        if (!CYOA.currentSave.quests || CYOA.currentSave.quests.length === 0) {
-            html += `<div class="cyoa-empty-state">${t('ui.empty.noQuests')}</div>`;
-        } else {
-            // 按状态分组
-            const activeQuests = CYOA.currentSave.quests.filter(q => q.status === 'active');
-            const availableQuests = CYOA.currentSave.quests.filter(q => q.status === 'available');
-            const completedQuests = CYOA.currentSave.quests.filter(q => q.status === 'completed');
-            
-            if (activeQuests.length > 0) {
-                html += `<h4 style="margin: 0 0 12px 0; font-size: 14px;">${t('ui.sidebar.questInProgress')}</h4>`;
-                activeQuests.forEach(quest => {
-                    html += renderQuestItem(quest);
-                });
-            }
-            
-            if (availableQuests.length > 0) {
-                html += `<h4 style="margin: 16px 0 12px 0; font-size: 14px;">${t('ui.sidebar.questAvailable')}</h4>`;
-                availableQuests.forEach(quest => {
-                    html += renderQuestItem(quest);
-                });
-            }
-            
-            if (completedQuests.length > 0) {
-                html += `<h4 style="margin: 16px 0 12px 0; font-size: 14px;">${t('ui.sidebar.questCompleted')}</h4>`;
-                completedQuests.forEach(quest => {
-                    html += renderQuestItem(quest, true);
-                });
-            }
-        }
-        
-        html += '</div>';
-        container.innerHTML = html;
-    };
-
-    function renderQuestItem(quest, isCompleted = false) {
-        let progressHtml = '';
-        if (quest.objectives && quest.objectives.length > 0) {
-            progressHtml = '<div style="margin-top: 8px;">';
-            quest.objectives.forEach((obj, idx) => {
-                const completed = quest.progress && quest.progress[idx];
-                progressHtml += `
-                    <div style="display: flex; align-items: center; gap: 6px; font-size: 12px; margin-bottom: 4px;">
-                        <span>${completed ? '✅' : '⭕'}</span>
-                        <span style="color: ${completed ? 'var(--text-light)' : 'var(--text)'}; text-decoration: ${completed ? 'line-through' : 'none'};">${escapeHtml(obj)}</span>
-                    </div>
-                `;
-            });
-            progressHtml += '</div>';
-        }
-        
-        return `
-            <div class="cyoa-quest-item" style="background: var(--bg); border-radius: var(--radius-md); padding: 12px; border: 1px solid ${isCompleted ? 'var(--border)' : 'var(--primary)'}; opacity: ${isCompleted ? '0.7' : '1'};">
-                <div style="display: flex; align-items: center; gap: 8px; margin-bottom: 8px;">
-                    <span style="font-size: 18px;">${getQuestIcon(quest.questType)}</span>
-                    <span style="font-weight: 600; flex:1;">${escapeHtml(quest.name)}</span>
-                    <span class="cyoa-badge" style="background: ${getQuestStatusColor(quest.status)}; color: white;">${quest.status === 'active' ? t('ui.status.inProgress') : quest.status === 'available' ? t('ui.status.available') : t('ui.status.completed')}</span>
-                </div>
-                ${quest.description ? `<div style="font-size: 13px; color: var(--text); margin-bottom: 8px;">${escapeHtml(quest.description)}</div>` : ''}
-                ${progressHtml}
-                ${quest.rewards?.length ? `<div style="font-size: 12px; color: var(--primary); margin-top: 8px;">${t('ui.sidebar.questReward')} ${quest.rewards.map(r => escapeHtml(r)).join(', ')}</div>` : ''}
-            </div>
-        `;
-    }
-
-    function getQuestIcon(type) {
-        const icons = {
-            'main': '📌',
-            'side': '📋',
-            'daily': '🔄',
-            'weekly': '📅',
-            'random': '🎲',
-            'repeatable': '♻️'
-        };
-        return icons[type] || '📋';
-    }
-
-    function getQuestStatusColor(status) {
-        const colors = {
-            'active': '#10b981',
-            'available': '#3b82f6',
-            'completed': '#6b7280',
-            'locked': '#9ca3af',
-            'failed': '#ef4444'
-        };
-        return colors[status] || '#6b7280';
-    }
-
-    // ========== 渲染章节面板 ==========
-    function renderConditionLabel(cond, game) {
-        switch (cond.type) {
-            case 'quest_complete': {
-                const q = (game.quests || []).find(q => q.id === cond.questId);
-                return t('ui.cond.questComplete', {name: q?.name || cond.questId});
-            }
-            case 'has_item': {
-                const it = (game.items || []).find(i => i.id === cond.itemId);
-                return t('ui.cond.hasItem', {name: it?.name || cond.itemId, qty: cond.quantity || 1});
-            }
-            case 'attribute_check':
-                return t('ui.cond.attrCheck', {attr: cond.attribute, op: cond.operator, val: cond.value});
-            default:
-                return cond.type;
-        }
-    }
-
-    CYOA.renderChaptersPanel = function() {
-        const container = document.getElementById('cyoaChaptersPanel');
-        if (!container || !CYOA.currentGame || !CYOA.currentSave) return;
-        const game = CYOA.currentGame;
-        const save = CYOA.currentSave;
-        const completedSet = new Set(save.completedChapters || []);
-        
-        let html = '<div class="cyoa-chapters" style="display: flex; flex-direction: column; gap: 12px;">';
-        
-        // 当前章节详情卡
-        if (save.currentChapter) {
-            const cur = game.chapters?.find(ch => ch.id === save.currentChapter);
-            if (cur) {
-                html += `<div style="background: var(--bg); padding: 14px; border-radius: var(--radius-md); border: 2px solid var(--primary);">`;
-                html += `<h4 style="margin: 0 0 6px 0; color: var(--primary);">${t('ui.panel.currentChapter')}</h4>`;
-                html += `<div style="font-weight: 600; font-size: 17px;">${escapeHtml(cur.title)}</div>`;
-                if (cur.order) html += `<div style="font-size: 12px; color: var(--text-light); margin-top:2px;">${t('ui.status.chapterN', {n: cur.order})}</div>`;
-                if (cur.description) html += `<div style="font-size: 13px; color: var(--text); margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);">${escapeHtml(cur.description)}</div>`;
-
-                // 推进条件状态
-                const conds = cur.transitionConditions;
-                if (Array.isArray(conds) && conds.length > 0) {
-                    html += `<div style="margin-top:10px; padding-top:8px; border-top:1px dashed var(--border);">`;
-                    html += `<div style="font-size:12px; font-weight:600; margin-bottom:6px;">${t('ui.panel.advanceGoal')}</div>`;
-                    conds.forEach(c => {
-                        const met = CYOA.evaluateCondition?.(c) || false;
-                        const icon = met ? '✅' : '⬜';
-                        const color = met ? '#22c55e' : 'var(--text-light)';
-                        html += `<div style="font-size:12px; color:${color}; margin-bottom:3px;">${icon} ${escapeHtml(renderConditionLabel(c, game))}</div>`;
-                    });
-                    html += `</div>`;
-                }
-                html += `</div>`;
-            }
-        }
-        
-        // 章节列表
-        if (game.chapters && game.chapters.length > 0) {
-            html += `<div style="margin-top:4px;"><h4 style="margin: 0 0 10px 0; font-size: 13px;">${t('ui.panel.chapterFlow')}</h4>`;
-            const sorted = [...game.chapters].sort((a, b) => (a.order || 0) - (b.order || 0));
-            
-            sorted.forEach(chapter => {
-                const isCurrent = chapter.id === save.currentChapter;
-                const isDone = completedSet.has(chapter.id);
-                const isUnlocked = CYOA.isChapterUnlocked ? CYOA.isChapterUnlocked(chapter, save) : (chapter.unlocked !== false || isDone || isCurrent);
-                const sceneCount = chapter.scenes?.length || 0;
-                
-                let icon = '🔒';
-                let badge = '';
-                if (isDone) { icon = '✅'; badge = `<span style="font-size:10px; background:#22c55e; color:white; padding:1px 5px; border-radius:10px;">${t('ui.status.completed')}</span>`; }
-                else if (isCurrent) { icon = '📖'; badge = `<span style="font-size:10px; background:var(--primary); color:white; padding:1px 5px; border-radius:10px;">${t('ui.status.current')}</span>`; }
-
-                const borderColor = isCurrent ? 'var(--primary)' : isDone ? '#22c55e' : 'var(--border)';
-                
-                html += `<div style="display:flex; align-items:center; gap:8px; background:var(--bg); padding:10px 12px; border-radius:var(--radius-md); border:1px solid ${borderColor}; margin-bottom:6px; ${isUnlocked ? '' : 'opacity:0.5;'}">`;
-                html += `<span style="font-size:18px;">${icon}</span>`;
-                html += `<div style="flex:1;">`;
-                html += `<div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">`;
-                html += `<span style="font-weight:600; font-size:13px;">${escapeHtml(chapter.title)}</span>`;
-                if (chapter.order) html += `<span style="font-size:10px; color:var(--text-light);">${t('ui.status.chapterN', {n: chapter.order})}</span>`;
-                html += badge;
-                html += `</div>`;
-                html += `<div style="font-size:10px; color:var(--text-light); margin-top:3px;">📄 ${t('ui.status.nScenes', {n: sceneCount})}</div>`;
-                html += `</div>`;
-                // 手动切换按钮（非当前、非已完成章节）
-                if (!isCurrent && isUnlocked) {
-                    html += `<button class="cyoa-btn cyoa-btn-secondary" style="font-size:10px; padding:2px 8px; height:24px;" onclick="CYOA.changeChapter('${escapeHtml(chapter.id)}')">${t('ui.btn.switch')}</button>`;
-                }
-                html += `</div>`;
-            });
-            
-            html += '</div>';
-        } else {
-            html += `<div class="cyoa-empty-state" style="font-size:13px;">${t('ui.empty.noChapters')}</div>`;
-        }
-        
-        html += '</div>';
-        container.innerHTML = html;
-    };
-
-    // ========== 渲染存档面板 ==========
-    CYOA.renderSavesPanel = function() {
-        const container = document.getElementById('cyoaSavesPanel');
-        if (!container || !CYOA.currentSave) return;
-        
-        const savesList = Object.values(CYOA.saves || {}).filter(s => s.gameId === CYOA.currentGame?.id);
-        
-        let html = '<div class="cyoa-saves-panel" style="display: flex; flex-direction: column; gap: 16px;">';
-        
-        html += `
-            <div class="cyoa-current-save" style="background: var(--bg); padding: 16px; border-radius: var(--radius-md); border: 1px solid var(--border);">
-                <h4 style="margin: 0 0 12px 0; font-size: 14px;">${t('ui.panel.currentSave')}</h4>
-                <div style="margin-bottom: 12px;">
-                    <div style="font-weight: 600;">${escapeHtml(CYOA.currentSave.name)}</div>
-                    <div style="font-size: 11px; color: var(--text-light);">${t('ui.sidebar.created')} ${new Date(CYOA.currentSave.createdAt).toLocaleString()}</div>
-                    <div style="font-size: 11px; color: var(--text-light);">${t('ui.sidebar.updated')} ${new Date(CYOA.currentSave.updatedAt).toLocaleString()}</div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
-                    <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" onclick="CYOA.saveCurrentSave()">💾 ${t('ui.btn.save')}</button>
-                    <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" onclick="CYOA.saveAsNewSave()">${t('ui.btn.saveAs')}</button>
-                    <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" onclick="CYOA.exportSave()">📤 ${t('ui.btn.export')}</button>
-                    <button class="cyoa-btn cyoa-btn-secondary cyoa-btn-sm" onclick="CYOA.importSave()">📥 ${t('ui.btn.import')}</button>
-                </div>
-            </div>
-        `;
-        
-        if (savesList.length > 1) {
-            html += `<div class="cyoa-saves-list"><h4 style="margin: 0 0 12px 0; font-size: 14px;">${t('ui.panel.otherSaves')}</h4>`;
-            savesList.forEach(save => {
-                if (save.id !== CYOA.currentSave.id) {
-                    html += `
-                        <div class="cyoa-save-item" style="display: flex; align-items: center; gap: 8px; background: var(--bg); padding: 12px; border-radius: var(--radius-md); border: 1px solid var(--border); margin-bottom: 8px;">
-                            <span style="font-size: 18px;">📁</span>
-                            <div style="flex: 1;">
-                                <div style="font-weight: 600;">${escapeHtml(save.name)}</div>
-                                <div style="font-size: 10px; color: var(--text-light);">${new Date(save.updatedAt).toLocaleString()}</div>
-                            </div>
-                            <button class="cyoa-btn-icon" onclick="CYOA.loadSave('${escapeHtml(save.id)}')" title="${t('ui.btn.load')}">▶️</button>
-                            <button class="cyoa-btn-icon danger" onclick="CYOA.deleteSave('${escapeHtml(save.id)}')" title="${t('ui.btn.delete')}">🗑️</button>
-                        </div>
-                    `;
-                }
-            });
-            html += '</div>';
-        }
-        
-        html += '</div>';
-        container.innerHTML = html;
-    };
+    // Sidebar chapters/saves panel extracted to `cyoa-main-sidebar-chapters-saves.js`.
 
     // ========== 插件注册 ==========
     const _t = typeof t === 'function' ? t : function(k) { return k; };
 
-    function registerPlugin() {
+    const DEFAULT_PLUGIN_META = {
+        id: 'cyoa_v221',
+        name: 'CYOA 文字冒险游戏 v221',
+        version: '2.2.2'
+    };
+
+    function getManifestUrl() {
+        const currentScript = document.currentScript;
+        if (currentScript && currentScript.src) {
+            return new URL('manifest.json', currentScript.src).href;
+        }
+        const scripts = Array.from(document.querySelectorAll('script[src]'));
+        const scriptEl = scripts.find(s => /cyoa-main\.js(\?|$)/i.test(s.src));
+        if (scriptEl && scriptEl.src) {
+            return new URL('manifest.json', scriptEl.src).href;
+        }
+        return '';
+    }
+
+    async function loadPluginMetaFromManifest() {
+        const manifestUrl = getManifestUrl();
+        if (!manifestUrl) return { ...DEFAULT_PLUGIN_META };
+        try {
+            const res = await fetch(manifestUrl, { cache: 'no-store' });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const manifest = await res.json();
+            const id = String(manifest?.id || '').trim() || DEFAULT_PLUGIN_META.id;
+            const name = String(manifest?.name || '').trim() || DEFAULT_PLUGIN_META.name;
+            const version = String(manifest?.version || '').trim() || DEFAULT_PLUGIN_META.version;
+            return { id, name, version };
+        } catch (err) {
+            log(`[CYOA] failed to load manifest meta: ${err?.message || err}`);
+            return { ...DEFAULT_PLUGIN_META };
+        }
+    }
+
+    function registerPlugin(pluginMeta) {
+        const meta = pluginMeta || DEFAULT_PLUGIN_META;
         if (typeof MainApp !== 'undefined' && MainApp.registerPlugin) {
             MainApp.registerPlugin({
-                id: 'cyoa_v2',
-                name: 'CYOA 文字冒险游戏',
-                version: '2.1.0',
+                id: meta.id,
+                name: meta.name,
+                version: meta.version,
                 description: '创建并游玩你自己的 Choose Your Own Adventure 游戏',
                 author: 'Ada Chat Team',
                 settings: true,
@@ -2954,7 +885,7 @@
             });
             log('[CYOA] plugin registered');
         } else {
-            setTimeout(registerPlugin, 500);
+            setTimeout(() => registerPlugin(meta), 500);
         }
     }
 
@@ -2967,7 +898,11 @@
         }
     };
 
-    registerPlugin();
+    loadPluginMetaFromManifest().then(meta => {
+        CYOA.pluginMeta = { ...meta };
+        log(`[CYOA] register meta: ${meta.id}@${meta.version}`);
+        registerPlugin(meta);
+    });
 
     log('[CYOA] main module loaded');
 })();

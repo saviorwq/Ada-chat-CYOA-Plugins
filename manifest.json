@@ -1,7 +1,7 @@
 {
   "id": "cyoa_v2",
   "name": "CYOA 文字冒险游戏",
-  "version": "2.2.0",
+  "version": "2.2.1",
   "author": "Ada Chat Team",
   "description": "创建并游玩你自己的 Choose Your Own Adventure 游戏",
   "entry": "cyoa-main.js",
@@ -11,6 +11,7 @@
   "files": [
     "cyoa-i18n-zh.js",
     "cyoa-core.js",
+    "cyoa-core-settings.js",
     "cyoa-data.js",
     "cyoa-editor.js",
     "cyoa-game-runtime.js",
@@ -23,6 +24,17 @@
     "cyoa-game.js",
     "cyoa-state.js",
     "cyoa-wordfilter.js",
+    "cyoa-local-templates.json",
+    "cyoa-main-settings.js",
+    "cyoa-main-llmdebug.js",
+    "cyoa-main-sidebar-panels-a.js",
+    "cyoa-main-sidebar-panels-b.js",
+    "cyoa-main-sidebar-panels-c.js",
+    "cyoa-main-sidebar-panels-d.js",
+    "cyoa-main-sidebar-inventory.js",
+    "cyoa-main-sidebar-skills-quests.js",
+    "cyoa-main-sidebar-chapters-saves.js",
+    "cyoa-main-sidebar.js",
     "cyoa-main.js",
     "cyoa.css"
   ]

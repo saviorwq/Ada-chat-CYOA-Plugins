@@ -79,6 +79,8 @@
                 task: "chat",
                 client: "cyoa",
                 bypassCostOptimizer: CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER !== false,
+                temperature: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_CHAT_TEMPERATURE ?? 0.15))),
+                top_p: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_TOP_P ?? 0.9))),
                 messages: [
                     { role: "system", content: withModelTuning(systemPrompt, modelValue) },
                     { role: "user", content: userPrompt }
@@ -114,6 +116,8 @@
                     task: "chat",
                     client: "cyoa",
                     bypassCostOptimizer: CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER !== false,
+                    temperature: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_CHAT_TEMPERATURE ?? 0.15))),
+                    top_p: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_TOP_P ?? 0.9))),
                     messages: [
                         { role: "system", content: withModelTuning(sysPrompt, model) },
                         { role: "user", content: input }
@@ -130,15 +134,9 @@
         }
     };
 
-    CYOA.parseAndApplyItemChanges = function(aiText) {
-        const save = CYOA.currentSave;
-        const game = CYOA.currentGame;
-        if (!save || !game || !aiText) return null;
-
-        // 支持两种格式：
-        // 1) ```cyoa_changes { ... }```
-        // 2) ```json {"cyoa_changes":{...}}```
-        const raw = String(aiText);
+    function extractCyoaChangesPayload(aiText) {
+        const raw = String(aiText || "");
+        if (!raw.trim()) return { payload: null, hasStructuredPayload: false };
         let payload = null;
 
         const tagged = raw.match(/```cyoa_changes\s*([\s\S]*?)\s*```/i);
@@ -155,7 +153,31 @@
             }
         }
         const hasStructuredPayload = !!(payload && typeof payload === "object");
-        if (!hasStructuredPayload) payload = {};
+        return { payload: hasStructuredPayload ? payload : null, hasStructuredPayload };
+    }
+
+    CYOA.extractCyoaChangesPayload = extractCyoaChangesPayload;
+
+    CYOA.parseAndApplyItemChanges = function(aiText) {
+        const save = CYOA.currentSave;
+        const game = CYOA.currentGame;
+        if (!save || !game || !aiText) return null;
+
+        const raw = String(aiText);
+        const extracted = extractCyoaChangesPayload(raw);
+        const hasStructuredPayload = !!extracted.hasStructuredPayload;
+        const requireStructured = CYOA.CONFIG?.REQUIRE_STRUCTURED_CHANGES !== false;
+        const allowTextProtocol = CYOA.CONFIG?.ALLOW_TEXT_CHANGE_PROTOCOL === true;
+        if (!hasStructuredPayload && requireStructured) {
+            CYOA._lastItemChangeReport = {
+                ts: Date.now(),
+                rejected: true,
+                reason: "missing_structured_cyoa_changes"
+            };
+            CYOA._pendingNodeChangeMeta = null;
+            return null;
+        }
+        const payload = extracted.payload || {};
 
         if (!Array.isArray(save.inventory)) save.inventory = [];
         const out = {
@@ -352,121 +374,122 @@
         const forceNode = String(payload.jumpToNode || payload.setNode || "").trim();
         if (forceNode && typeof CYOA.jumpToNode === "function") CYOA.jumpToNode(forceNode);
 
-        // 兼容旧文本协议：从叙事中解析“获得了 N 个 XXX”
-        const gainPattern = /获得了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
-        let mg = null;
-        while ((mg = gainPattern.exec(raw)) !== null) {
-            const amount = Math.max(1, Number(mg[1] || 1));
-            const itemName = String(mg[2] || "").trim();
-            if (!itemName) continue;
-            if (hasStructuredPayload && structuredAddedKeys.has(norm(itemName))) continue;
-            const def = (game.items || []).find(i => i.name === itemName || i.id === itemName)
-                || (game.equipment || []).find(i => i.name === itemName || i.id === itemName);
-            if (!def) continue;
-            const realId = def.id || itemName;
-            if (hasStructuredPayload && (structuredAddedKeys.has(norm(realId)) || structuredAddedKeys.has(norm(def.name)))) continue;
-            const maxQty = Number(CYOA.CONFIG?.ITEM_MAX_QUANTITY || 99);
-            const existed = save.inventory.find(i => i.id === realId || i.name === def.name);
-            if (existed) {
-                existed.quantity = Math.min(maxQty, Number(existed.quantity || 1) + amount);
-            } else {
-                save.inventory.push({
-                    id: realId,
-                    name: def.name || realId,
-                    quantity: Math.min(maxQty, amount),
-                    itemType: def.itemType || (def.slots ? "equipment" : "common"),
-                    description: def.description || ""
-                });
+        if (allowTextProtocol) {
+            // 兼容旧文本协议：从叙事中解析“获得了 N 个 XXX”
+            const gainPattern = /获得了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
+            let mg = null;
+            while ((mg = gainPattern.exec(raw)) !== null) {
+                const amount = Math.max(1, Number(mg[1] || 1));
+                const itemName = String(mg[2] || "").trim();
+                if (!itemName) continue;
+                if (hasStructuredPayload && structuredAddedKeys.has(norm(itemName))) continue;
+                const def = (game.items || []).find(i => i.name === itemName || i.id === itemName)
+                    || (game.equipment || []).find(i => i.name === itemName || i.id === itemName);
+                if (!def) continue;
+                const realId = def.id || itemName;
+                if (hasStructuredPayload && (structuredAddedKeys.has(norm(realId)) || structuredAddedKeys.has(norm(def.name)))) continue;
+                const maxQty = Number(CYOA.CONFIG?.ITEM_MAX_QUANTITY || 99);
+                const existed = save.inventory.find(i => i.id === realId || i.name === def.name);
+                if (existed) {
+                    existed.quantity = Math.min(maxQty, Number(existed.quantity || 1) + amount);
+                } else {
+                    save.inventory.push({
+                        id: realId,
+                        name: def.name || realId,
+                        quantity: Math.min(maxQty, amount),
+                        itemType: def.itemType || (def.slots ? "equipment" : "common"),
+                        description: def.description || ""
+                    });
+                }
+                if (!Array.isArray(save.acquiredItemIds)) save.acquiredItemIds = [];
+                if (!save.acquiredItemIds.includes(realId)) save.acquiredItemIds.push(realId);
+                CYOA.appendSystemMessage?.(`📦 获得物品：${def.name || realId}${amount > 1 ? ` ×${amount}` : ""}`);
+                out.added.push({ id: realId, quantity: amount });
+                out.textProtocolApplied = true;
+                out.textProtocolHits.gain += 1;
             }
-            if (!Array.isArray(save.acquiredItemIds)) save.acquiredItemIds = [];
-            if (!save.acquiredItemIds.includes(realId)) save.acquiredItemIds.push(realId);
-            CYOA.appendSystemMessage?.(`📦 获得物品：${def.name || realId}${amount > 1 ? ` ×${amount}` : ""}`);
-            out.added.push({ id: realId, quantity: amount });
-            out.textProtocolApplied = true;
-            out.textProtocolHits.gain += 1;
-        }
 
-        // 兼容旧文本协议：从叙事中解析“消耗了 N 个 XXX”
-        const consumePattern = /消耗了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
-        let mc = null;
-        while ((mc = consumePattern.exec(raw)) !== null) {
-            const amount = Math.max(1, Number(mc[1] || 1));
-            const itemName = String(mc[2] || "").trim();
-            if (!itemName) continue;
-            if (hasStructuredPayload && structuredRemovedKeys.has(norm(itemName))) continue;
-            const idx = save.inventory.findIndex(i => i.name === itemName || i.id === itemName);
-            if (idx < 0) continue;
-            const item = save.inventory[idx];
-            if (hasStructuredPayload && (structuredRemovedKeys.has(norm(item.id)) || structuredRemovedKeys.has(norm(item.name)))) continue;
-            const curQty = Number(item.quantity || 1);
-            if (curQty > amount) {
-                item.quantity = curQty - amount;
-            } else if (typeof item.durability === "number" && item.durability > 0) {
-                item.durability = item.durability - amount;
-                if (item.durability <= 0) {
+            // 兼容旧文本协议：从叙事中解析“消耗了 N 个 XXX”
+            const consumePattern = /消耗了\s*(\d+)\s*个?\s*([^，。\s]+)/g;
+            let mc = null;
+            while ((mc = consumePattern.exec(raw)) !== null) {
+                const amount = Math.max(1, Number(mc[1] || 1));
+                const itemName = String(mc[2] || "").trim();
+                if (!itemName) continue;
+                if (hasStructuredPayload && structuredRemovedKeys.has(norm(itemName))) continue;
+                const idx = save.inventory.findIndex(i => i.name === itemName || i.id === itemName);
+                if (idx < 0) continue;
+                const item = save.inventory[idx];
+                if (hasStructuredPayload && (structuredRemovedKeys.has(norm(item.id)) || structuredRemovedKeys.has(norm(item.name)))) continue;
+                const curQty = Number(item.quantity || 1);
+                if (curQty > amount) {
+                    item.quantity = curQty - amount;
+                } else if (typeof item.durability === "number" && item.durability > 0) {
+                    item.durability = item.durability - amount;
+                    if (item.durability <= 0) {
+                        save.inventory.splice(idx, 1);
+                        CYOA.appendSystemMessage?.(`❌ ${itemName} 已耗尽`);
+                    }
+                } else {
                     save.inventory.splice(idx, 1);
                     CYOA.appendSystemMessage?.(`❌ ${itemName} 已耗尽`);
                 }
-            } else {
-                save.inventory.splice(idx, 1);
-                CYOA.appendSystemMessage?.(`❌ ${itemName} 已耗尽`);
+                out.removed.push({ id: item.id || itemName, quantity: Math.min(curQty, amount) });
+                out.textProtocolApplied = true;
+                out.textProtocolHits.consume += 1;
             }
-            out.removed.push({ id: item.id || itemName, quantity: Math.min(curQty, amount) });
-            out.textProtocolApplied = true;
-            out.textProtocolHits.consume += 1;
-        }
 
-        // 兼容旧文本协议：从叙事中解析“X的耐久度下降了N”
-        // 幂等保护：同一条消息里同一装备重复命中时，先合并再结算，避免重复损坏提示/重复属性撤销。
-        const durabilityPattern = /([^，。\s]+)的耐久度[下降低了]了\s*(\d+)/g;
-        const durabilityDeltaBySlot = new Map();
-        let m = null;
-        while ((m = durabilityPattern.exec(raw)) !== null) {
-            const equipName = String(m[1] || "").trim();
-            const amount = Math.max(0, Number(m[2] || 0));
-            if (!equipName || amount <= 0) continue;
+            // 兼容旧文本协议：从叙事中解析“X的耐久度下降了N”
+            const durabilityPattern = /([^，。\s]+)的耐久度[下降低了]了\s*(\d+)/g;
+            const durabilityDeltaBySlot = new Map();
+            let m = null;
+            while ((m = durabilityPattern.exec(raw)) !== null) {
+                const equipName = String(m[1] || "").trim();
+                const amount = Math.max(0, Number(m[2] || 0));
+                if (!equipName || amount <= 0) continue;
 
-            for (const slot of Object.keys(save.equipment || {})) {
-                const equip = save.equipment[slot];
-                if (!equip?.id) continue;
+                for (const slot of Object.keys(save.equipment || {})) {
+                    const equip = save.equipment[slot];
+                    if (!equip?.id) continue;
+                    const def = (game.equipment || []).find(e => e.id === equip.id);
+                    const nameMatched = equip.name === equipName || def?.name === equipName || equip.id === equipName;
+                    if (!nameMatched) continue;
+                    const old = Number(durabilityDeltaBySlot.get(slot) || 0);
+                    durabilityDeltaBySlot.set(slot, old + amount);
+                    break;
+                }
+            }
+
+            durabilityDeltaBySlot.forEach((amount, slot) => {
+                const equip = save.equipment?.[slot];
+                if (!equip?.id) return;
                 const def = (game.equipment || []).find(e => e.id === equip.id);
-                const nameMatched = equip.name === equipName || def?.name === equipName || equip.id === equipName;
-                if (!nameMatched) continue;
-                const old = Number(durabilityDeltaBySlot.get(slot) || 0);
-                durabilityDeltaBySlot.set(slot, old + amount);
-                break;
-            }
-        }
+                const equipName = equip.name || def?.name || equip.id;
+                const isIndestructible = !!(equip.indestructible ?? def?.indestructible ?? false);
+                if (isIndestructible) return;
 
-        durabilityDeltaBySlot.forEach((amount, slot) => {
-            const equip = save.equipment?.[slot];
-            if (!equip?.id) return;
-            const def = (game.equipment || []).find(e => e.id === equip.id);
-            const equipName = equip.name || def?.name || equip.id;
-            const isIndestructible = !!(equip.indestructible ?? def?.indestructible ?? false);
-            if (isIndestructible) return;
+                if (typeof equip.durability !== "number") {
+                    equip.durability = Number(def?.durability || 0);
+                }
+                equip.durability = Math.max(0, Number(equip.durability || 0) - amount);
+                out.durabilityChanged = true;
+                out.textProtocolApplied = true;
+                out.textProtocolHits.durability += 1;
+                if (equip.durability > 0) return;
 
-            if (typeof equip.durability !== "number") {
-                equip.durability = Number(def?.durability || 0);
-            }
-            equip.durability = Math.max(0, Number(equip.durability || 0) - amount);
-            out.durabilityChanged = true;
-            out.textProtocolApplied = true;
-            out.textProtocolHits.durability += 1;
-            if (equip.durability > 0) return;
-
-            const brokenId = equip.id;
-            Object.keys(save.equipment).forEach(k => {
-                if (save.equipment[k]?.id === brokenId) delete save.equipment[k];
+                const brokenId = equip.id;
+                Object.keys(save.equipment).forEach(k => {
+                    if (save.equipment[k]?.id === brokenId) delete save.equipment[k];
+                });
+                if (def?.statModifiers && typeof CYOA.parseStatModifiers === "function" && typeof CYOA.applyStatModifiers === "function") {
+                    const mods = CYOA.parseStatModifiers(def.statModifiers);
+                    CYOA.applyStatModifiers(mods, false);
+                }
+                CYOA.resolveCompoundPosture?.();
+                CYOA.appendSystemMessage?.(`💔 ${equipName} 损坏了`);
+                CYOA.addKeyEvent?.("degrade", `装备损坏：${equipName}`);
             });
-            if (def?.statModifiers && typeof CYOA.parseStatModifiers === "function" && typeof CYOA.applyStatModifiers === "function") {
-                const mods = CYOA.parseStatModifiers(def.statModifiers);
-                CYOA.applyStatModifiers(mods, false);
-            }
-            CYOA.resolveCompoundPosture?.();
-            CYOA.appendSystemMessage?.(`💔 ${equipName} 损坏了`);
-            CYOA.addKeyEvent?.("degrade", `装备损坏：${equipName}`);
-        });
+        }
 
         const hasAnyEffect = !!(
             out.moved ||
@@ -526,6 +549,9 @@
         }
         return out;
     };
+    CYOA.GameAI = CYOA.GameAI || {};
+    CYOA.GameAI.parseAndApplyItemChanges = CYOA.parseAndApplyItemChanges;
+    CYOA.GameAIParseAndApplyItemChanges = CYOA.parseAndApplyItemChanges;
 
     CYOA.grantQuestRewards = function(rewards) {
         const save = CYOA.currentSave;
@@ -634,7 +660,9 @@
         }
 
         try { CYOA.parseAndApplyItemChanges?.(raw); } catch (_) {}
-        try { CYOA.checkQuestProgress?.(raw); } catch (_) {}
+        if (CYOA.CONFIG?.REQUIRE_STRUCTURED_CHANGES !== true) {
+            try { CYOA.checkQuestProgress?.(raw); } catch (_) {}
+        }
         try { CYOA.progressSkillsFromInput?.(user); } catch (_) {}
         CYOA.updateAllSystems?.();
         CYOA.applyPassiveSystems?.();

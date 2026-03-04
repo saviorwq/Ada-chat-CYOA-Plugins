@@ -9,6 +9,14 @@
         DEBUG: true,
         AI_BYPASS_COST_OPTIMIZER: true, // true = 关闭省钱策略（直通模型）
         WORD_FILTER_ENABLED: true, // 敏感词过滤总开关
+        AI_CHAT_TEMPERATURE: 0.15, // 对话温度（建议 0.1-0.2，降低放飞）
+        AI_TOP_P: 0.9, // nucleus sampling（建议 0.7-0.95，越低越收敛）
+        AI_GUARD_PROFILE: 'strict', // 约束档位：strict / balanced / free
+        AI_DEFINITION_HEARTBEAT_TURNS: 6, // 每 N 回合注入一次轻量定义包（开局会注入全量）
+        AI_MODEL_PROFILE: 'small_7b_9b', // 模型档位预设：small_7b_9b / medium_13b_34b / large_70b_plus
+        ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 兜底，优先远端 JSON 文件存储
+        REQUIRE_STRUCTURED_CHANGES: true, // 仅允许通过 cyoa_changes JSON 落状态
+        ALLOW_TEXT_CHANGE_PROTOCOL: false, // 关闭正文文本协议状态变更（获得/消耗/耐久等）
         CONSTRAINT_MODIFIER_REMOVE_SCOPE: 'by_equip', // 固定同装备来源移除
         MAX_SAVES_PER_GAME: 20, // 每个游戏最多保留存档数（超出自动淘汰最旧）
         MAX_IMAGE_SIZE: 2 * 1024 * 1024, // 2MB
@@ -2246,6 +2254,7 @@
             equipmentSynergies: [], // ⑤ 装备联动规则
             discoveryRules: [],    // ⑥ 知识迷雾规则
             outfitPresets: [],     // ⑧ 服饰预设
+            axioms: [],            // 公理化压缩规则（每行一条）
             initialScene: '',
             initialChapter: '',
             rules: {
@@ -2256,8 +2265,15 @@
             narrator: {
                 enabled: true,
                 model: '',
+                provider: '', // 可选：模型供应商标识（openai/anthropic/ollama 等）
                 style: '情感细腻',
-                prompt: '你是一位专业的游戏剧情叙述者...'
+                prompt: '你是一位专业的游戏剧情叙述者...',
+                systemPromptTemplate: '', // 可选：AI角色约束合同模板（支持 {{变量}} 与 {{#each axioms}}）
+                axiomInjectEnabled: true, // 是否启用每轮公理注入
+                axiomMaxCount: 10, // 每轮最多注入公理条数（1-20）
+                maxTokens: 500, // 可选：叙述者单次输出上限
+                guardPromptTemplate: '', // 可选：自定义约束模板（支持 {{DEFAULT_GUARD}} 占位）
+                responseMode: 'text' // text | json
             },
             storyCards: [],   // FictionLab 风格：{ id, name, type, triggerWords: [], content }
             createdAt: '',
@@ -2393,102 +2409,6 @@
         return lex.noun;
     }
 
-    // ========== 插件设置（省钱策略旁路开关） ==========
-    function getDefaultPluginSettings() {
-        return {
-            AI_BYPASS_COST_OPTIMIZER: true, // 默认关闭省钱策略
-            WORD_FILTER_ENABLED: true,
-            LLM_TUNINGS: []
-        };
-    }
-
-    function normalizeLLMTunings(list) {
-        const src = Array.isArray(list) ? list : [];
-        return src
-            .slice(0, 10)
-            .map((it) => {
-                const row = it && typeof it === 'object' ? it : {};
-                const model = String(row.model || '').trim();
-                const instruction = String(row.instruction || '').trim();
-                const label = String(row.label || '').trim();
-                return {
-                    id: String(row.id || ('llm_tune_' + generateId())).trim(),
-                    enabled: row.enabled !== false,
-                    model,
-                    label,
-                    instruction
-                };
-            })
-            .filter((it) => !!it.model && !!it.instruction);
-    }
-
-    function normalizeConstraintRemoveScope(scope) {
-        const s = String(scope || '').trim().toLowerCase();
-        return s === 'by_equip' ? 'by_equip' : 'global';
-    }
-
-    function loadPluginSettings() {
-        try {
-            const raw = localStorage.getItem(CONFIG.STORAGE_KEYS.SETTINGS);
-            const parsed = raw ? JSON.parse(raw) : {};
-            const def = getDefaultPluginSettings();
-            return {
-                AI_BYPASS_COST_OPTIMIZER: parsed.AI_BYPASS_COST_OPTIMIZER !== undefined
-                    ? !!parsed.AI_BYPASS_COST_OPTIMIZER
-                    : def.AI_BYPASS_COST_OPTIMIZER,
-                WORD_FILTER_ENABLED: parsed.WORD_FILTER_ENABLED !== undefined
-                    ? !!parsed.WORD_FILTER_ENABLED
-                    : def.WORD_FILTER_ENABLED,
-                LLM_TUNINGS: normalizeLLMTunings(parsed.LLM_TUNINGS || def.LLM_TUNINGS)
-            };
-        } catch (e) {
-            return getDefaultPluginSettings();
-        }
-    }
-
-    function savePluginSettings(settings) {
-        const def = getDefaultPluginSettings();
-        const normalized = {
-            AI_BYPASS_COST_OPTIMIZER: settings?.AI_BYPASS_COST_OPTIMIZER !== undefined
-                ? !!settings.AI_BYPASS_COST_OPTIMIZER
-                : def.AI_BYPASS_COST_OPTIMIZER,
-            WORD_FILTER_ENABLED: settings?.WORD_FILTER_ENABLED !== undefined
-                ? !!settings.WORD_FILTER_ENABLED
-                : def.WORD_FILTER_ENABLED,
-            LLM_TUNINGS: normalizeLLMTunings(settings?.LLM_TUNINGS || def.LLM_TUNINGS)
-        };
-        localStorage.setItem(CONFIG.STORAGE_KEYS.SETTINGS, JSON.stringify(normalized));
-        return normalized;
-    }
-
-    function getModelTunings(modelValue) {
-        const model = String(modelValue || '').trim();
-        if (!model) return [];
-        const settings = loadPluginSettings();
-        const rows = normalizeLLMTunings(settings?.LLM_TUNINGS || []);
-        return rows.filter((r) => r.enabled !== false && r.model === model);
-    }
-
-    function getModelTuningPrompt(modelValue) {
-        const rows = getModelTunings(modelValue);
-        if (!rows.length) return '';
-        return rows
-            .map((r, idx) => {
-                const title = r.label ? `[${r.label}]` : `[Rule ${idx + 1}]`;
-                return `${title}\n${r.instruction}`;
-            })
-            .join('\n\n');
-    }
-
-    function setAiBypassCostOptimizer(enabled) {
-        const val = !!enabled;
-        CONFIG.AI_BYPASS_COST_OPTIMIZER = val;
-        const current = loadPluginSettings();
-        current.AI_BYPASS_COST_OPTIMIZER = val;
-        savePluginSettings(current);
-        return val;
-    }
-
     function fileToDataUrl(file, maxSizeMB) {
         return new Promise((resolve, reject) => {
             const f = file;
@@ -2619,13 +2539,6 @@
     // post-init: 消除重复数据的引用赋值
     CONFIG.CONSTRAINT_BODY_REACTIONS.blind = CONFIG.VISION_BODY_REACTIONS.full_blind;
     CONFIG.CONSTRAINT_BODY_REACTIONS.limited_step = CONFIG.LIMITED_STEP_TIERS.moderate.bodyReactions;
-    // post-init: 读取插件设置并应用
-    const pluginSettings = loadPluginSettings();
-    CONFIG.AI_BYPASS_COST_OPTIMIZER = pluginSettings.AI_BYPASS_COST_OPTIMIZER !== false;
-    CONFIG.WORD_FILTER_ENABLED = pluginSettings.WORD_FILTER_ENABLED !== false;
-    CONFIG.LLM_TUNINGS = normalizeLLMTunings(pluginSettings.LLM_TUNINGS || []);
-    CONFIG.CONSTRAINT_MODIFIER_REMOVE_SCOPE = 'by_equip';
-
     // ========== i18n ==========
     CYOA.t = t;
     CYOA._i18n = window.CYOA_I18N_ZH || {};
@@ -2660,14 +2573,7 @@
     CYOA.getWorldLexiconMode = getWorldLexiconMode;
     CYOA.getAgreementLexicon = getAgreementLexicon;
     CYOA.getAgreementTerm = getAgreementTerm;
-    CYOA.getDefaultPluginSettings = getDefaultPluginSettings;
-    CYOA.loadPluginSettings = loadPluginSettings;
-    CYOA.savePluginSettings = savePluginSettings;
-    CYOA.setAiBypassCostOptimizer = setAiBypassCostOptimizer;
     CYOA.fileToDataUrl = fileToDataUrl;
-    CYOA.getModelTunings = getModelTunings;
-    CYOA.getModelTuningPrompt = getModelTuningPrompt;
-    CYOA.normalizeLLMTunings = normalizeLLMTunings;
     CYOA.getDefaultSafewordSettings = getDefaultSafewordSettings;
     CYOA.loadSafewordSettings = loadSafewordSettings;
     CYOA.saveSafewordSettings = saveSafewordSettings;

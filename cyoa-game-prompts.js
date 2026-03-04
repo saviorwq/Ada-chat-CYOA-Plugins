@@ -22,6 +22,8 @@
         "篇幅规则：正文保持短回合叙事，建议 300-700 字，硬上限不超过 900 字（不含4个选项与可选的 cyoa_changes 代码块）。",
         "格式规则：禁止输出任何开场白/元说明（如“好的，请锁定注意力…”“以下是…”），直接进入剧情正文。",
         "若玩家输入与大纲冲突，优先给出受限反馈与可行动选项，而不是改写设定。",
+        "边界事件协议：当玩家行为触发世界级裁决（超出在场角色权限）时，可输出“[CALL_TIAN_DAO] 请求天道裁决：<原因>”。",
+        "动作边界规则：玩家输入是动作上限。除非玩家明确输入该动作，否则不得新增“已执行”的操作步骤（尤其是手部/手指精细操作）；可补充感官与环境细节，但不能替玩家完成额外动作。",
         "限制来源规则：仅使用装备显式字段（constraints / gagType / earDeviceType / fingerRestraintType / attachments）判断限制，禁止隐式推断。",
         "材质描写规则：优先调用已配置的材质模板与“约束+材质”叙事，不要凭空编造材质体感。",
         "装备叙事分流：限制类装备重点写行动受限；盔甲/防护类装备重点写硬度、防护覆盖、重量与机动折衷，不强行写束缚限制。",
@@ -32,7 +34,7 @@
         "（行动）xxx",
         "（对话）xxx",
         "（对话）xxx",
-        "如需变更状态，请在正文后附一个代码块（仅在需要时输出）并严格使用 JSON：",
+        "状态变更规则：任何会影响物品/属性/地点/章节/任务/技能/姿态/警戒值的变更，必须且只能通过下方 cyoa_changes JSON 代码块提交；正文中的描述不会生效：",
         "```cyoa_changes",
         "{",
         "  \"addItems\": [{\"id\":\"item_id_or_name\",\"quantity\":1}],",
@@ -68,6 +70,8 @@
         "Length rule: keep narration short-turn style, target 300-700 Chinese characters and hard cap at 900 (excluding the 4 options and optional cyoa_changes block).",
         "Format rule: no preamble/meta lines (e.g., 'Okay, here is...'); start directly with in-world narration.",
         "If player input conflicts with canon, provide constrained feedback and valid options instead of rewriting canon.",
+        "Boundary-event protocol: when player action requires world-level arbitration beyond current character authority, you may output \"[CALL_TIAN_DAO] request tian_dao arbitration: <reason>\".",
+        "Action-boundary rule: treat player's input as the action ceiling. Do not add extra completed actions unless explicitly requested (especially hand/finger fine manipulation). You may enrich sensory/environment details, but must not perform additional actions on behalf of the player.",
         "Constraint-source rule: only use explicit equipment fields (constraints / gagType / earDeviceType / fingerRestraintType / attachments). Do not infer implicitly.",
         "Material narration rule: prioritize configured material templates and constraint+material narratives; do not invent unsupported sensory details.",
         "Equipment narrative split: for restraint gear, focus on action constraints; for armor/protection gear, focus on hardness, coverage, weight, and mobility tradeoffs instead of forced restraint-style limits.",
@@ -78,7 +82,7 @@
         "(Action) xxx",
         "(Dialogue) xxx",
         "(Dialogue) xxx",
-        "If state changes are needed, append a JSON code block (only when needed):",
+        "State-change rule: any change affecting items/attributes/location/chapter/quests/skills/posture/alert MUST be submitted only via the cyoa_changes JSON block below; plain narrative text will not apply state:",
         "```cyoa_changes",
         "{",
         "  \"addItems\": [{\"id\":\"item_id_or_name\",\"quantity\":1}],",
@@ -101,6 +105,83 @@
         "}",
         "```"
     ];
+
+    function getGuardProfileMode() {
+        const mode = String(CYOA.CONFIG?.AI_GUARD_PROFILE || "strict").trim().toLowerCase();
+        return (mode === "balanced" || mode === "free") ? mode : "strict";
+    }
+
+    function applyGuardProfile(lines, isZh) {
+        const src = Array.isArray(lines) ? lines.slice() : [];
+        const mode = getGuardProfileMode();
+        const isOptionFormatLine = (line) => isZh
+            ? line === "（行动）xxx" || line === "（对话）xxx"
+            : line === "(Action) xxx" || line === "(Dialogue) xxx";
+        const stateChangeAnchor = isZh ? "状态变更规则：" : "State-change rule:";
+        const strictHead = isZh
+            ? "约束档位：STRICT（严格）- 最大化设定一致性与边界约束。"
+            : "Guard profile: STRICT - maximize canon consistency and boundary constraints.";
+        const balancedHead = isZh
+            ? "约束档位：BALANCED（平衡）- 保留核心边界与状态协议，适度放宽叙事约束。"
+            : "Guard profile: BALANCED - keep core boundaries/state protocol with moderate narrative flexibility.";
+        const freeHead = isZh
+            ? "约束档位：FREE（自由）- 保留核心状态协议与选项格式，其余尽量交给创作者自由发挥。"
+            : "Guard profile: FREE - keep core state protocol and option format; maximize creator freedom elsewhere.";
+
+        if (mode === "strict") return [strictHead, ...src];
+
+        if (mode === "balanced") {
+            const dropKeys = isZh
+                ? ["硬边界规则：", "禁止越界：", "材质描写规则：", "装备叙事分流："]
+                : ["Hard-boundary rule:", "No out-of-scope jumps:", "Material narration rule:", "Equipment narrative split:"];
+            const out = src.filter((line) => !dropKeys.some((k) => String(line || "").includes(k)));
+            return [balancedHead, ...out];
+        }
+
+        // free: keep only minimum protocol and essential safety rails
+        const keepKeys = isZh
+            ? [
+                "你必须严格遵守给定的游戏大纲与设定",
+                "世界观/背景/故事简介/人物设定均以当前提供文本为唯一依据",
+                "若玩家输入与大纲冲突，优先给出受限反馈与可行动选项",
+                "动作边界规则：玩家输入是动作上限",
+                "每次回复末尾必须严格给出4个选项",
+                "状态变更规则：任何会影响物品/属性/地点/章节/任务/技能/姿态/警戒值的变更"
+            ]
+            : [
+                "You must strictly follow the game outline and setting",
+                "World/background/story synopsis/character canon are limited to provided text only",
+                "If player input conflicts with canon, provide constrained feedback",
+                "Action-boundary rule: treat player's input as the action ceiling",
+                "At the end of each reply, output exactly 4 options",
+                "State-change rule: any change affecting items/attributes/location/chapter/quests/skills/posture/alert MUST"
+            ];
+        const out = [];
+        let inChangeBlock = false;
+        src.forEach((line) => {
+            const text = String(line || "");
+            if (text.includes("```cyoa_changes")) {
+                inChangeBlock = true;
+                out.push(text);
+                return;
+            }
+            if (inChangeBlock) {
+                out.push(text);
+                if (text.trim() === "```") inChangeBlock = false;
+                return;
+            }
+            if (isOptionFormatLine(text)) {
+                out.push(text);
+                return;
+            }
+            if (keepKeys.some((k) => text.includes(k))) out.push(text);
+        });
+        if (!out.some((line) => String(line).includes(stateChangeAnchor))) {
+            const fallback = src.find((line) => String(line || "").includes(stateChangeAnchor));
+            if (fallback) out.push(fallback);
+        }
+        return [freeHead, ...out];
+    }
 
     const ZH_CONSTRAINT_RULES = {
         blind: "blind：无法进行视觉观察、远距离辨认与读唇，请改为触觉/方位试探。",
@@ -790,8 +871,173 @@
         return out;
     }
 
+    const DEFAULT_SYSTEM_PROMPT_TEMPLATE = `# AI角色约束合同
+
+## 一、身份定义
+你是一个虚构世界的【{{roleType}}】，你的名字是【{{characterName}}】。
+你只能以这个身份回应，不得跳出角色，不得提及你是AI或任何现实概念。
+
+## 二、世界公理（不可违背）
+{{#each axioms}}
+- {{this}}
+{{/each}}
+
+## 三、角色设定
+- **背景**：{{character.background}}
+- **性格**：{{character.personality}}
+- **知识范围**：你只知道以下信息，超出范围的一概不知。
+  {{character.knowledge}}
+
+## 四、行为准则（必须严格遵守）
+1. **绝对忠于设定**：所有回答必须基于世界公理和角色设定，禁止自行编造。
+2. **知之为知之**：若玩家问及超出知识范围的事，必须回答“我不知道”或“这不在我所知的范围”。
+3. **禁止推测**：不得使用“可能”、“也许”、“我觉得”等推测性词语。
+4. **保持角色**：语气、用词必须符合角色性格，不得跳脱。
+5. **边界事件**：若玩家行为可能引发世界重大变动（如攻击关键角色），必须输出：
+   [SYSTEM] 请求天道裁决：{{玩家行为}}
+   然后停止回应，等待系统指令。
+6. **禁止自我指涉**：不得提及你是AI、模型或任何现实概念。
+
+## 五、输出格式
+- 回答必须是纯文本，不得包含JSON、Markdown代码块或其他结构。
+- 每次只输出一句话或一段话，不使用列表。
+- 如果玩家使用了谐音梗或错别字，按正常语义理解，但回答时用标准用语。
+
+## 六、风格示例
+玩家：你好
+正确回答：嗯。（冷淡）
+错误回答：你好，我是AI助手，有什么可以帮你的？ ❌`;
+
+    CYOA.GamePrompts.DEFAULT_SYSTEM_PROMPT_TEMPLATE = DEFAULT_SYSTEM_PROMPT_TEMPLATE;
+
+    function pickRoleContractFields(game, save, strictFrame) {
+        const narrator = game?.narrator && typeof game.narrator === "object" ? game.narrator : {};
+        const playerId = String(save?.playerCharacterId || save?.playerCharacter || "").trim();
+        const chars = Array.isArray(game?.characters) ? game.characters : [];
+        const player = chars.find((c) => String(c?.id || "").trim() === playerId)
+            || chars.find((c) => String(c?.name || "").trim() === playerId)
+            || null;
+
+        const roleType = String(
+            narrator.roleType
+            || narrator.identityType
+            || narrator.identity
+            || (isZhLocaleSafe() ? "叙述者" : "narrator")
+        ).trim();
+        const roleName = String(
+            narrator.roleName
+            || narrator.name
+            || player?.name
+            || (isZhLocaleSafe() ? "无名叙述者" : "Unnamed Narrator")
+        ).trim();
+        const background = String(
+            narrator.background
+            || narrator.roleBackground
+            || player?.background
+            || game?.background
+            || game?.worldSetting
+            || ""
+        ).trim();
+        const personality = String(
+            narrator.personality
+            || narrator.style
+            || player?.personality
+            || ""
+        ).trim();
+        const knowledge = String(
+            narrator.knowledge
+            || narrator.knowledgeScope
+            || ""
+        ).trim();
+        const fallbackAxioms = [];
+        const sf = strictFrame && typeof strictFrame === "object" ? strictFrame : {};
+        if (sf?.worldSetting) fallbackAxioms.push(String(sf.worldSetting));
+        if (sf?.background) fallbackAxioms.push(String(sf.background));
+        if (sf?.chapter) fallbackAxioms.push((isZhLocaleSafe() ? "当前章节：" : "Current chapter: ") + String(sf.chapter));
+        if (sf?.location) fallbackAxioms.push((isZhLocaleSafe() ? "当前地点：" : "Current location: ") + String(sf.location));
+
+        const axiomInjectEnabled = narrator.axiomInjectEnabled !== false;
+        const axiomMaxRaw = Number(narrator.axiomMaxCount);
+        const axiomMaxCount = Number.isFinite(axiomMaxRaw)
+            ? Math.max(1, Math.min(20, Math.round(axiomMaxRaw)))
+            : 10;
+        const gameAxioms = Array.isArray(game?.axioms) ? game.axioms.map((x) => String(x || "").trim()).filter(Boolean) : [];
+        const axioms = axiomInjectEnabled
+            ? (gameAxioms.length ? gameAxioms.slice(0, axiomMaxCount) : fallbackAxioms.slice(0, axiomMaxCount))
+            : [];
+
+        return {
+            roleType,
+            roleName,
+            background,
+            personality,
+            knowledge,
+            axioms,
+            axiomInjectEnabled,
+            axiomMaxCount,
+            character: {
+                background,
+                personality,
+                knowledge
+            }
+        };
+    }
+
+    function isZhLocaleSafe() {
+        try { return !!CYOA.isZhLocale?.(); } catch (_) { return true; }
+    }
+
+    function getByPath(data, path) {
+        const keys = String(path || "").split(".");
+        let cur = data;
+        for (let i = 0; i < keys.length; i += 1) {
+            if (!cur || typeof cur !== "object") return "";
+            cur = cur[keys[i]];
+        }
+        return cur == null ? "" : cur;
+    }
+
+    function renderSystemPromptTemplate(rawTemplate, data) {
+        let out = String(rawTemplate || DEFAULT_SYSTEM_PROMPT_TEMPLATE);
+        out = out.replace(/{{#each\s+axioms}}([\s\S]*?){{\/each}}/g, (_, inner) => {
+            const list = Array.isArray(data?.axioms) ? data.axioms : [];
+            if (!list.length) return "- （无额外公理）";
+            return list.map((x) => String(inner).replace(/{{this}}/g, String(x || ""))).join("\n");
+        });
+        out = out.replace(/{{\s*([^{}#\/][^{}]*)\s*}}/g, (m, key) => {
+            const val = getByPath(data, String(key || "").trim());
+            return val === "" ? m : String(val);
+        });
+        return out;
+    }
+
+    function buildRoleConstraintContractLines(isZh, game, save, strictFrame) {
+        const f = pickRoleContractFields(game, save, strictFrame);
+        const narrator = game?.narrator && typeof game.narrator === "object" ? game.narrator : {};
+        const template = String(narrator.systemPromptTemplate || DEFAULT_SYSTEM_PROMPT_TEMPLATE).trim();
+        const rendered = renderSystemPromptTemplate(template, {
+            roleType: f.roleType || (isZh ? "叙述者" : "narrator"),
+            characterName: f.roleName || (isZh ? "世界之声" : "Voice of the World"),
+            axioms: Array.isArray(f.axioms) && f.axioms.length ? f.axioms : [(isZh ? "当前章节/地点/状态框架优先" : "Current chapter/location/state frame first")],
+            character: {
+                background: f.character?.background || (isZh ? "未知" : "unknown"),
+                personality: f.character?.personality || (isZh ? "中立" : "neutral"),
+                knowledge: f.character?.knowledge || (isZh ? "无额外知识" : "no extra knowledge")
+            }
+        });
+        return String(rendered || "").split("\n");
+    }
+
+    CYOA.GamePrompts.getRenderedSystemPromptTemplate = function(isZh, context) {
+        const game = context?.game;
+        const save = context?.save;
+        const strictFrame = context?.strictFrame;
+        const lines = buildRoleConstraintContractLines(!!isZh, game, save, strictFrame);
+        return lines.join("\n").trim();
+    };
+
     CYOA.GamePrompts.getGuardPrompt = function(isZh, activeConstraints, context) {
-        const baseLines = (isZh ? ZH_GUARD_LINES : EN_GUARD_LINES).slice();
+        const baseLines = applyGuardProfile(isZh ? ZH_GUARD_LINES : EN_GUARD_LINES, isZh);
         const keys = normalizeConstraintList(activeConstraints)
             .map((k) => String(k || "").trim())
             .filter(Boolean);
@@ -800,6 +1046,11 @@
         const actionText = String(context?.actionText || "");
         const constraintDetails = context?.constraintDetails;
         const strictFrame = context?.strictFrame;
+        const renderedSystemTemplate = CYOA.GamePrompts.getRenderedSystemPromptTemplate(isZh, { game, save, strictFrame });
+        const contractLines = String(renderedSystemTemplate || "").split("\n");
+        if (contractLines.length) {
+            baseLines.unshift(...contractLines, "");
+        }
 
         const ruleMap = isZh ? ZH_CONSTRAINT_RULES : EN_CONSTRAINT_RULES;
         const title = isZh ? "当前生效限制（必须遵守）：" : "Active constraints (must obey):";

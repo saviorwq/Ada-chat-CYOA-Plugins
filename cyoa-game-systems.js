@@ -650,6 +650,11 @@
     };
 
     CYOA.parseAndApplyItemChanges = function(aiResponse) {
+        const delegated = CYOA.GameAIParseAndApplyItemChanges;
+        if (typeof delegated === "function" && delegated !== CYOA.parseAndApplyItemChanges) {
+            return delegated(aiResponse);
+        }
+
         const save = CYOA.currentSave;
         const game = CYOA.currentGame;
         if (!save) return;
@@ -658,6 +663,11 @@
 
         const responseText = String(aiResponse || "");
         if (!responseText.trim()) return;
+        if (CYOA.CONFIG?.REQUIRE_STRUCTURED_CHANGES !== false) {
+            const hasTagged = /```cyoa_changes\s*[\s\S]*?```/i.test(responseText);
+            const hasJsonWrapped = /```json\s*[\s\S]*?"cyoa_changes"[\s\S]*?```/i.test(responseText);
+            if (!hasTagged && !hasJsonWrapped) return null;
+        }
 
         // 文本协议：消耗物品（示例：消耗了1个煤油）
         const consumePattern = /消耗了\s*(\d+)\s*个?\s*([^，。\s]+)/g;

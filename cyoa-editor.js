@@ -245,7 +245,11 @@
                 case 'scenes':
                     html += `<span class="item-icon">📍</span>`;
                     html += `<span class="item-name">${escapeHtml(item.name || t('ui.status.unnamed'))}</span>`;
-                    if (item.location) html += `<span class="item-desc">${escapeHtml(item.location.substring(0, 15))}</span>`;
+                    if (item.location) {
+                        const locDef = (CYOA.editorTempData?.locations || []).find(l => l.id === item.location || l.name === item.location);
+                        const locLabel = locDef ? (locDef.name || locDef.id) : item.location;
+                        html += `<span class="item-desc">${escapeHtml(String(locLabel).substring(0, 15))}</span>`;
+                    }
                     html += `<span class="item-count">🔄 ${item.interactables?.length || 0}</span>`;
                     if (item.quests?.length) html += `<span class="item-count">📋${item.quests.length}</span>`;
                     break;
@@ -1291,6 +1295,9 @@
         const removeBtn = row.querySelector('.remove-interactable');
         if (removeBtn) removeBtn.addEventListener('click', () => row.remove());
     }
+    // 提前挂载，避免 bindFormEvents 中通过 CYOA.* 调用时尚未导出
+    CYOA.buildInteractableRowHTML = buildInteractableRowHTML;
+    CYOA.bindInteractableRowEvents = bindInteractableRowEvents;
 
     function renderSceneForm(scene, index) {
         const interactablesHtml = (scene.interactables || []).map((item, i) =>
@@ -1303,6 +1310,25 @@
             `<option value="${q.id}" ${scene.quests?.includes(q.id) ? 'selected' : ''}>${escapeHtml(q.name)}</option>`
         ).join('');
         
+        const locations = (CYOA.editorTempData?.locations && CYOA.editorTempData.locations.length)
+            ? CYOA.editorTempData.locations
+            : ((CYOA.currentGame?.locations && CYOA.currentGame.locations.length) ? CYOA.currentGame.locations : []);
+        const sceneLocation = String(scene.location || '').trim();
+        const knownLocation = locations.find(l => l.id === sceneLocation || l.name === sceneLocation);
+        const locationOptions = locations.map(loc => {
+            const id = String(loc.id || '').trim();
+            const name = String(loc.name || loc.id || '').trim();
+            const value = String(id || name).trim();
+            const selected = value && (value === sceneLocation || id === sceneLocation || name === sceneLocation);
+            return `<option value="${escapeHtml(value)}" ${selected ? 'selected' : ''}>${escapeHtml(name)}${id ? ` (${escapeHtml(id)})` : ''}</option>`;
+        }).join('');
+        const legacyOption = (!knownLocation && sceneLocation)
+            ? `<option value="${escapeHtml(sceneLocation)}" selected>${escapeHtml(sceneLocation)} (${t('ui.status.currentValue') || '当前值'})</option>`
+            : '';
+        const noLocationHint = locations.length === 0
+            ? `<small style="color:#d97706;">请先在“地点管理”里创建地点，这里才会出现可选项。</small>`
+            : '';
+
         return `
             <div class="cyoa-edit-form">
                 <h4>${scene.id ? t('ui.editor.editItem', {type: t('ui.type.scenes')}) : t('ui.editor.newItem', {type: t('ui.type.scenes')})}</h4>
@@ -1312,7 +1338,12 @@
                 </div>
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.location')}</label>
-                    <input type="text" id="editSceneLocation" class="cyoa-input" value="${escapeHtml(scene.location || '')}">
+                    <select id="editSceneLocation" class="cyoa-select">
+                        <option value="">${t('ui.opt.selectLocation') || '选择地图地点'}</option>
+                        ${legacyOption}
+                        ${locationOptions}
+                    </select>
+                    ${noLocationHint}
                 </div>
                 <div class="cyoa-form-row">
                     <label>${t('ui.label.layout')}</label>
@@ -1759,8 +1790,78 @@
         if (removeBtn) removeBtn.addEventListener('click', () => row.remove());
     }
 
+    function normalizeSceneLocationControl() {
+        const locationEl = CYOA.$('editSceneLocation');
+        if (!locationEl) return;
+        if (String(locationEl.tagName || '').toUpperCase() === 'SELECT') return;
+
+        const currentValue = String(locationEl.value || '').trim();
+        const seen = new Set();
+        const candidates = [];
+
+        const addCandidate = (idRaw, nameRaw) => {
+            const id = String(idRaw || '').trim();
+            const name = String(nameRaw || '').trim();
+            const value = id || name;
+            if (!value || seen.has(value)) return;
+            seen.add(value);
+            candidates.push({ value, id, name: name || id });
+        };
+
+        (CYOA.editorTempData?.locations || []).forEach(loc => addCandidate(loc?.id, loc?.name));
+        (CYOA.currentGame?.locations || []).forEach(loc => addCandidate(loc?.id, loc?.name));
+        (CYOA.editorTempData?.scenes || []).forEach(sc => addCandidate(sc?.location, sc?.location));
+        (CYOA.currentGame?.scenes || []).forEach(sc => addCandidate(sc?.location, sc?.location));
+        (CYOA.editorTempData?.worldMap?.regions || []).forEach(region => {
+            (region?.locationIds || []).forEach(locId => addCandidate(locId, locId));
+        });
+        (CYOA.currentGame?.worldMap?.regions || []).forEach(region => {
+            (region?.locationIds || []).forEach(locId => addCandidate(locId, locId));
+        });
+
+        const select = document.createElement('select');
+        select.id = 'editSceneLocation';
+        select.className = 'cyoa-select';
+
+        const placeholder = document.createElement('option');
+        placeholder.value = '';
+        placeholder.textContent = t('ui.opt.selectLocation') || '选择地图地点';
+        select.appendChild(placeholder);
+
+        if (currentValue && !seen.has(currentValue)) {
+            const legacy = document.createElement('option');
+            legacy.value = currentValue;
+            legacy.selected = true;
+            legacy.textContent = `${currentValue} (${t('ui.status.currentValue') || '当前值'})`;
+            select.appendChild(legacy);
+        }
+
+        candidates.forEach(item => {
+            const opt = document.createElement('option');
+            opt.value = item.value;
+            opt.textContent = item.id ? `${item.name} (${item.id})` : item.name;
+            if (item.value === currentValue || item.id === currentValue || item.name === currentValue) {
+                opt.selected = true;
+            }
+            select.appendChild(opt);
+        });
+
+        locationEl.replaceWith(select);
+
+        if (candidates.length === 0) {
+            const hint = document.createElement('small');
+            hint.style.color = '#d97706';
+            hint.textContent = '请先在“地点管理”里创建地点，这里才会出现可选项。';
+            select.insertAdjacentElement('afterend', hint);
+        }
+    }
+
     // ========== 绑定表单事件 ==========
     function bindFormEvents(type, index) {
+        if (type === 'scenes') {
+            normalizeSceneLocationControl();
+        }
+
         // 限步约束 checkbox 联动：显示/隐藏限步参数面板
         const limitedStepCb = document.querySelector('.constraint-checkbox[value="limited_step"]');
         const limitedStepParams = CYOA.$('limitedStepParams');
@@ -1878,9 +1979,9 @@
         // 附件系统：添加按钮 + 已有行的事件绑定
         const addAttachmentBtn = document.querySelector('.add-attachment');
         if (addAttachmentBtn) {
-            addAttachmentBtn.addEventListener('click', () => CYOA.createEmptyAttachmentRow());
+            addAttachmentBtn.addEventListener('click', () => createEmptyAttachmentRow());
         }
-        document.querySelectorAll('.cyoa-attachment-row').forEach(row => CYOA.bindAttachmentRowEvents(row));
+        document.querySelectorAll('.cyoa-attachment-row').forEach(row => bindAttachmentRowEvents(row));
 
         // 地点设施：添加/删除
         const addFacilityBtn = document.querySelector('.add-facility');
@@ -1910,16 +2011,16 @@
                 if (list) {
                     const emptyRow = list.querySelector('.cyoa-empty-row');
                     if (emptyRow) emptyRow.remove();
-                    const rowHtml = CYOA.buildInteractableRowHTML({ name: '', function: '', effect: '', attributeEffect: '' });
+                    const rowHtml = buildInteractableRowHTML({ name: '', function: '', effect: '', attributeEffect: '' });
                     const temp = document.createElement('div');
                     temp.innerHTML = rowHtml;
                     const newRow = temp.firstElementChild;
                     list.appendChild(newRow);
-                    CYOA.bindInteractableRowEvents(newRow);
+                    bindInteractableRowEvents(newRow);
                 }
             });
         }
-        document.querySelectorAll('.cyoa-interactable-row').forEach(row => CYOA.bindInteractableRowEvents(row));
+        document.querySelectorAll('.cyoa-interactable-row').forEach(row => bindInteractableRowEvents(row));
         
         // (remove-interactable 事件已在 bindInteractableRowEvents 中统一绑定)
         
@@ -3057,6 +3158,10 @@
     CYOA.renderDiscoveryForm = renderDiscoveryForm;
     CYOA.renderPresetForm = renderPresetForm;
     CYOA.renderStoryCardForm = renderStoryCardForm;
+    CYOA.buildInteractableRowHTML = buildInteractableRowHTML;
+    CYOA.bindInteractableRowEvents = bindInteractableRowEvents;
+    CYOA.createEmptyAttachmentRow = createEmptyAttachmentRow;
+    CYOA.bindAttachmentRowEvents = bindAttachmentRowEvents;
     CYOA.refreshChaptersList = refreshChaptersList;
     CYOA.renderChaptersSummary = renderChaptersSummary;
 

@@ -71,6 +71,186 @@
         }).filter(Boolean).join("\n");
     }
 
+    function normalizePromptText(v, maxLen = 320) {
+        if (v == null) return "";
+        if (typeof v === "string") {
+            const s = v.replace(/\s+/g, " ").trim();
+            return s.length > maxLen ? `${s.slice(0, Math.max(30, maxLen - 1))}…` : s;
+        }
+        if (typeof v === "object") {
+            const preferredKeys = ["background", "geography", "factions", "socialStructure", "history", "custom", "description", "type"];
+            const seg = preferredKeys
+                .map((k) => String(v?.[k] || "").replace(/\s+/g, " ").trim())
+                .filter(Boolean);
+            const raw = seg.length ? seg.join("；") : JSON.stringify(v);
+            const s = String(raw || "").replace(/\s+/g, " ").trim();
+            return s.length > maxLen ? `${s.slice(0, Math.max(30, maxLen - 1))}…` : s;
+        }
+        return String(v).replace(/\s+/g, " ").trim();
+    }
+
+    function getGameHookHandler(game, stage) {
+        const hookRaw =
+            game?.hooks?.[stage]
+            ?? game?.narrator?.hooks?.[stage]
+            ?? game?.rules?.hooks?.[stage];
+        if (!hookRaw) return null;
+        if (typeof hookRaw === "function") return hookRaw;
+        if (typeof hookRaw !== "string") return null;
+        const source = hookRaw.trim();
+        if (!source) return null;
+        const cacheKey = `${String(game?.id || "no_game")}::${stage}::${source}`;
+        const cache = CYOA._compiledGameHooks || (CYOA._compiledGameHooks = new Map());
+        if (cache.has(cacheKey)) return cache.get(cacheKey);
+        const blockedPatterns = [
+            /\b(?:window|document|globalThis|self|parent|top|navigator|location|localStorage|sessionStorage|indexedDB)\b/i,
+            /\b(?:fetch|XMLHttpRequest|WebSocket|Worker|SharedWorker|importScripts)\b/i,
+            /\b(?:eval|Function|constructor)\b/i,
+            /\b(?:setTimeout|setInterval|requestAnimationFrame)\b/i,
+            /\bwhile\s*\(\s*true\s*\)/i,
+            /\bfor\s*\(\s*;\s*;\s*\)/i
+        ];
+        if (source.length > 4000 || blockedPatterns.some((re) => re.test(source))) {
+            CYOA.log?.(`[hook:${stage}] rejected by sandbox policy`);
+            return null;
+        }
+        const sandboxPrelude = [
+            "\"use strict\";",
+            "const window=undefined,document=undefined,globalThis=undefined,self=undefined,parent=undefined,top=undefined,navigator=undefined,location=undefined;",
+            "const localStorage=undefined,sessionStorage=undefined,indexedDB=undefined,fetch=undefined,XMLHttpRequest=undefined,WebSocket=undefined;",
+            "const Worker=undefined,SharedWorker=undefined,importScripts=undefined,postMessage=undefined;",
+            "const eval=undefined,Function=undefined,setTimeout=undefined,setInterval=undefined,requestAnimationFrame=undefined;"
+        ].join("\n");
+        let fn = null;
+        try {
+            if (/^\s*function\s*\(/.test(source) || /^\s*\(/.test(source) || /^\s*input\s*=>/.test(source)) {
+                fn = (new Function(`${sandboxPrelude}\nreturn (${source});`))();
+            } else {
+                fn = new Function("input", "ctx", `${sandboxPrelude}\n${source}`);
+            }
+        } catch (_) {
+            fn = null;
+        }
+        if (typeof fn === "function") cache.set(cacheKey, fn);
+        return fn;
+    }
+
+    function safeCloneForHook(value, depth = 0) {
+        if (depth > 4) return null;
+        if (value == null) return value;
+        const t = typeof value;
+        if (t === "string" || t === "number" || t === "boolean") return value;
+        if (Array.isArray(value)) return value.slice(0, 30).map((x) => safeCloneForHook(x, depth + 1));
+        if (t === "object") {
+            const out = {};
+            Object.keys(value).slice(0, 40).forEach((k) => {
+                out[k] = safeCloneForHook(value[k], depth + 1);
+            });
+            return out;
+        }
+        return null;
+    }
+
+    function deepFreezeForHook(obj, depth = 0) {
+        if (!obj || typeof obj !== "object" || depth > 4) return obj;
+        Object.freeze(obj);
+        Object.keys(obj).forEach((k) => deepFreezeForHook(obj[k], depth + 1));
+        return obj;
+    }
+
+    function runGameHook(stage, input, ctx) {
+        const game = ctx?.game;
+        const fn = getGameHookHandler(game, stage);
+        if (typeof fn !== "function") return input;
+        try {
+            const safeInput = deepFreezeForHook(safeCloneForHook(input));
+            const safeCtx = deepFreezeForHook(safeCloneForHook(ctx));
+            const out = fn(safeInput, safeCtx);
+            return out === undefined ? input : out;
+        } catch (e) {
+            CYOA.log?.(`[hook:${stage}] failed`, e?.message || e);
+            return input;
+        }
+    }
+
+    function buildPromptBudgetedBlocks(strictFrame, ragBlock, storyCardBlock, recent) {
+        const frame = strictFrame && typeof strictFrame === "object" ? strictFrame : {};
+        const compactFrame = {
+            gameName: normalizePromptText(frame.gameName, 60),
+            chapter: normalizePromptText(frame.chapter, 40),
+            location: normalizePromptText(frame.location, 40),
+            region: normalizePromptText(frame.region, 40),
+            presentCharacters: Array.isArray(frame.presentCharacters) ? frame.presentCharacters.slice(0, 6) : [],
+            facilities: Array.isArray(frame.facilities) ? frame.facilities.slice(0, 6) : [],
+            activeConstraints: Array.isArray(frame.activeConstraints) ? frame.activeConstraints.slice(0, 8) : [],
+            quests: Array.isArray(frame.quests) ? frame.quests.slice(0, 6) : []
+        };
+        const compactRecent = String(recent || "")
+            .split(/\r?\n/)
+            .filter(Boolean)
+            .slice(-6)
+            .map((line) => normalizePromptText(line, 180))
+            .join("\n");
+        return {
+            strictFrameLite: JSON.stringify(compactFrame),
+            ragLite: normalizePromptText(ragBlock, 1400),
+            storyCardLite: normalizePromptText(storyCardBlock, 600),
+            recentLite: normalizePromptText(compactRecent, 1200)
+        };
+    }
+
+    function getCompletedTurnCountFromHistory(save) {
+        const history = Array.isArray(save?.history) ? save.history : [];
+        return history.filter(x => String(x?.role || "").trim() === "assistant").length;
+    }
+
+    function buildDefinitionPacket(game, save, strictFrame, mode, reasonTag) {
+        const isZh = isZhLocale();
+        const frame = strictFrame && typeof strictFrame === "object" ? strictFrame : {};
+        const worldText = normalizePromptText(game?.worldSetting, mode === "full" ? 800 : 220);
+        const backgroundText = normalizePromptText(game?.background || game?.settingBackground || game?.coreMechanics, mode === "full" ? 800 : 220);
+        const chapter = normalizePromptText(frame.chapter || save?.currentChapter, 80) || (isZh ? "未设置" : "unset");
+        const location = normalizePromptText(frame.location || save?.currentLocation, 80) || (isZh ? "未设置" : "unset");
+        const present = (Array.isArray(frame.presentCharacters) ? frame.presentCharacters : []).slice(0, mode === "full" ? 10 : 6);
+        const constraints = (Array.isArray(frame.activeConstraints) ? frame.activeConstraints : []).slice(0, mode === "full" ? 12 : 8);
+        const styleGuide = Array.isArray(CYOA.getLocalTemplateLibrary?.()?.ragReference?.styleGuide)
+            ? CYOA.getLocalTemplateLibrary().ragReference.styleGuide.slice(0, mode === "full" ? 6 : 3)
+            : [];
+        const tag = String(reasonTag || (mode === "full" ? "boot" : "heartbeat")).trim();
+        if (isZh) {
+            const lines = [
+                `[定义包/${tag}]`,
+                `- 游戏：${normalizePromptText(game?.name, 80) || "CYOA"}`,
+                `- 当前章节：${chapter}`,
+                `- 当前地点：${location}`,
+                `- 在场人物：${present.join("、") || "无"}`,
+                `- 生效限制：${constraints.join("、") || "无"}`
+            ];
+            if (mode === "full") {
+                lines.push(`- 世界观：${worldText || "无"}`);
+                lines.push(`- 背景：${backgroundText || "无"}`);
+            }
+            if (styleGuide.length) lines.push(`- 叙事规则：${styleGuide.join("；")}`);
+            lines.push("- 约束：玩家输入是动作上限，禁止替玩家新增已执行动作。");
+            return lines.join("\n");
+        }
+        const lines = [
+            `[DefinitionPacket/${tag}]`,
+            `- Game: ${normalizePromptText(game?.name, 80) || "CYOA"}`,
+            `- CurrentChapter: ${chapter}`,
+            `- CurrentLocation: ${location}`,
+            `- PresentCharacters: ${present.join(", ") || "none"}`,
+            `- ActiveConstraints: ${constraints.join(", ") || "none"}`
+        ];
+        if (mode === "full") {
+            lines.push(`- WorldSetting: ${worldText || "none"}`);
+            lines.push(`- Background: ${backgroundText || "none"}`);
+        }
+        if (styleGuide.length) lines.push(`- NarrativeRules: ${styleGuide.join("; ")}`);
+        lines.push("- Constraint: player's input is the action ceiling; do not add extra completed actions.");
+        return lines.join("\n");
+    }
+
     function pickCurrentScene(game, save) {
         const scenes = Array.isArray(game?.scenes) ? game.scenes : [];
         const nodeId = String(save?.currentNodeId || "").trim();
@@ -255,7 +435,7 @@
         const msg = document.getElementById("gameMsg");
         const speech = document.getElementById("gameSpeech");
         if (msg) msg.readOnly = !!busy;
-        if (speech) speech.readOnly = !!busy || speech.dataset.cyoaSpeechBlocked === "1";
+        if (speech) speech.readOnly = !!busy;
     }
     CYOA.setGameInputBusy = setGameInputBusy;
 
@@ -269,13 +449,12 @@
         if (!speech) return;
         const blocked = isSpeechBlockedByConstraint();
         speech.dataset.cyoaSpeechBlocked = blocked ? "1" : "0";
-        speech.disabled = blocked;
+        speech.disabled = false;
         if (blocked) {
-            speech.value = "";
-            speech.readOnly = true;
+            speech.readOnly = !!CYOA._sendingGameMsg;
             speech.placeholder = isZhLocale()
-                ? "口部受限：不可说话/不可唇语表达；可读唇（受眼部状态影响）"
-                : "Mouth constrained: no speaking/lip-speaking; lip-reading still allowed (depends on eye constraints)";
+                ? "口部受限：输入会自动转为堵嘴后的含混呻吟/气声表达"
+                : "Mouth constrained: input is auto-converted into muffled moans/strained breaths";
         } else {
             speech.readOnly = !!CYOA._sendingGameMsg;
             speech.placeholder = t("ui.ph.speech") || "输入你要说的话...";
@@ -384,6 +563,7 @@
                 if (/^(?:在你的回复中用了|我应该严格遵守|所以，?在\s*analyzing|Correction Response Ends|Your action|Reaction mode)\b/i.test(s)) return false;
                 if (/^(?:\d+\.\s*不能擅自新增事实|\d+\.\s*状态锚点问题|\d+\.\s*叙事边界|\d+\.\s*技能和状态一致性|\d+\.\s*场景描写要符合现实|\d+\.\s*选项限制)/.test(s)) return false;
                 if (/^(?:-+\s*日志部分不能再写|-\s*正文里得删掉)/.test(s)) return false;
+                if (/(?:根据协议设定|强制反馈环节|无法对玩家的拼写差错进行自行修正|请在确认系统设定后继续行动)/.test(s)) return false;
                 if (/^(?:okay|ok|note|tips?|instructions?|summary|explanation)\s*[:：]/i.test(s)) return false;
                 if (/^(?:好的|请锁定|以下是|这里是|说明[:：]|注意事项)/.test(s) && /[A-Za-z]{4,}/.test(s)) return false;
                 const latin = (s.match(/[A-Za-z]/g) || []).length;
@@ -393,6 +573,12 @@
                 return true;
             })
             .join("\n")
+            .replace(/\n{3,}/g, "\n\n")
+            .trim();
+        // 术语污染兜底：统一明显错误别名，避免显示“手封套”这类错误术语
+        text = text
+            .replace(/手封套/g, "封套")
+            .replace(/装备列表中错误拼写[^\n。！？!?]*/g, "")
             .replace(/\n{3,}/g, "\n\n")
             .trim();
         return text;
@@ -503,6 +689,114 @@
             .join("\n")
             .replace(/\n{3,}/g, "\n\n")
             .trim();
+    }
+
+    function buildCyoaChangesFence(changesObj) {
+        if (!changesObj || typeof changesObj !== "object" || Array.isArray(changesObj)) return "";
+        try {
+            return `\n\n\`\`\`cyoa_changes\n${JSON.stringify(changesObj, null, 2)}\n\`\`\``;
+        } catch (_) {
+            return "";
+        }
+    }
+
+    function parseResponseJsonEnvelope(rawText) {
+        const raw = String(rawText || "").trim();
+        if (!raw) return null;
+        let payload = null;
+        try {
+            payload = JSON.parse(raw);
+        } catch (_) {
+            const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+            if (fenced?.[1]) {
+                try { payload = JSON.parse(fenced[1]); } catch (_) {}
+            }
+        }
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+
+        const narrative = String(
+            payload.narrative
+            || payload.content
+            || payload.text
+            || payload.message
+            || ""
+        ).trim();
+        const optionsRaw = Array.isArray(payload.options) ? payload.options : [];
+        const optionLines = optionsRaw.map((it, idx) => {
+            if (typeof it === "string") return it.trim();
+            if (it && typeof it === "object") {
+                const label = String(it.label || it.text || it.content || "").trim();
+                const type = String(it.type || "").trim().toLowerCase();
+                if (!label) return "";
+                if (type === "action") return `(Action) ${label}`;
+                if (type === "dialogue" || type === "speech" || type === "talk") return `(Dialogue) ${label}`;
+                return idx < 2 ? `(Action) ${label}` : `(Dialogue) ${label}`;
+            }
+            return "";
+        }).filter(Boolean);
+        const changes = payload.cyoa_changes && typeof payload.cyoa_changes === "object" ? payload.cyoa_changes : null;
+        return { narrative, optionLines, changes };
+    }
+
+    function parseTianDaoDirective(text) {
+        const raw = String(text || "").trim();
+        if (!raw) return null;
+        const m1 = raw.match(/\[\s*CALL_TIAN_DAO\s*\]\s*[:：-]?\s*(.*)$/i);
+        if (m1) return String(m1[1] || "").trim();
+        const m1b = raw.match(/\[\s*SYSTEM\s*\]\s*请求天道裁决\s*[:：-]?\s*(.*)$/i);
+        if (m1b) return String(m1b[1] || "").trim();
+        const m2 = raw.match(/请求天道裁决\s*[:：]\s*(.*)$/i);
+        if (m2) return String(m2[1] || "").trim();
+        const m3 = raw.match(/request\s+tian[_\s-]?dao\s+arbitration\s*[:：]\s*(.*)$/i);
+        if (m3) return String(m3[1] || "").trim();
+        return null;
+    }
+
+    function buildTianDaoDirectiveFallback(reason, chapter, location) {
+        const hit = String(reason || "").trim();
+        if (isZhLocale()) {
+            return [
+                `（天道裁决中）检测到边界事件${hit ? `：${hit}` : ""}，当前先冻结高风险推进。`,
+                `当前章节：${chapter || "未设置"}；当前地点：${location || "未设置"}。`,
+                "你可以先收集信息与确认可执行边界，等待下一步裁决落地。",
+                "",
+                "（行动）观察周围环境并确认风险点",
+                "（行动）调整姿势并保持低风险状态",
+                "（对话）询问在场角色可执行方案",
+                "（对话）请求天道给出可执行裁决"
+            ].join("\n");
+        }
+        return [
+            `(TianDao arbitration pending) Boundary event detected${hit ? `: ${hit}` : ""}. High-risk progression is temporarily paused.`,
+            `Current chapter: ${chapter || "unset"}; current location: ${location || "unset"}.`,
+            "Gather context and confirm executable boundaries before proceeding.",
+            "",
+            "(Action) Observe surroundings and identify risk points",
+            "(Action) Stabilize posture and keep low-risk state",
+            "(Dialogue) Ask present characters for feasible options",
+            "(Dialogue) Request tian_dao for an executable ruling"
+        ].join("\n");
+    }
+
+    function adaptAiByResponseMode(aiRawText, responseMode) {
+        const mode = String(responseMode || "text").trim().toLowerCase();
+        const raw = String(aiRawText || "").trim();
+        if (mode !== "json") {
+            const plain = sanitizeAITextForDisplay(raw) || "（无回复）";
+            return { aiRawText: raw || "（无回复）", aiText: plain, usedFallback: false };
+        }
+        const env = parseResponseJsonEnvelope(raw);
+        if (!env) {
+            const plain = sanitizeAITextForDisplay(raw) || "（无回复）";
+            return { aiRawText: raw || "（无回复）", aiText: plain, usedFallback: true };
+        }
+        const body = [env.narrative, env.optionLines.join("\n")].filter(Boolean).join("\n\n").trim() || "（无回复）";
+        const rawWithChanges = `${body}${buildCyoaChangesFence(env.changes)}`.trim();
+        return {
+            aiRawText: rawWithChanges || "（无回复）",
+            aiText: body || "（无回复）",
+            usedFallback: false
+        };
     }
 
     CYOA.renderGameIntro = function(gameName, introText) {
@@ -717,12 +1011,23 @@
 
         const agreements = Array.isArray(save.agreements) ? save.agreements : [];
         const playerId = String(save.playerCharacterId || "");
-        const hasControlContract = agreements.some((ag) => {
+        const hasControlContractWithOutfitTerms = agreements.some((ag) => {
             if (!ag || ag.active === false) return false;
+            const t = String(ag.type || "").trim().toLowerCase();
+            const isMasterSlave = (t === "slave" || t === "master_sub" || t === "masterslave" || t === "master-slave" || t.includes("主奴"));
+            if (!isMasterSlave) return false;
             const controlled = String(ag.controlledId || ag.subId || ag.partyBId || "");
-            return controlled && controlled === playerId;
+            if (!controlled || controlled !== playerId) return false;
+            // 仅当契约明确含有“着装/装备”要求时，才显示该系统动作建议，避免无关文案污染选项。
+            const hasEquipIds = Array.isArray(ag.forcedEquipmentIds) && ag.forcedEquipmentIds.length
+                || Array.isArray(ag.requiredEquipmentIds) && ag.requiredEquipmentIds.length
+                || Array.isArray(ag.enforcedEquipmentIds) && ag.enforcedEquipmentIds.length
+                || Array.isArray(ag.mandatedEquipmentIds) && ag.mandatedEquipmentIds.length
+                || Array.isArray(ag.equipmentIds) && ag.equipmentIds.length;
+            const hasPreset = !!String(ag.outfitPresetId || ag.enforcedOutfitPresetId || ag.requiredOutfitPresetId || "").trim();
+            return !!(hasEquipIds || hasPreset);
         });
-        if (hasControlContract) {
+        if (hasControlContractWithOutfitTerms) {
             push(isZhLocale() ? "检查契约着装要求，调整为合规状态" : "Check contract outfit requirements and comply");
         }
         const controllableNpcIds = CYOA.getControllableNpcIdsByAgreement?.() || [];
@@ -785,7 +1090,7 @@
         const compactNarrativeBody = (rawBody) => {
             const srcBody = String(rawBody || "").trim();
             if (!srcBody) return "";
-            let cleaned = srcBody
+            const cleanedLines = srcBody
                 .split(/\r?\n/)
                 .map(s => String(s || "").trim())
                 .filter(Boolean)
@@ -793,16 +1098,37 @@
                     // 终极拦截：剔除模型自解释/规则复述/结构化噪声
                     if (/^(?:\d+\.\s*)?(?:不能擅自新增事实|状态锚点问题|叙事边界|技能和状态一致性|场景描写要符合现实|选项限制)/.test(s)) return false;
                     if (/^(?:在你的回复中用了|我应该严格遵守|所以，?在\s*analyzing|Correction Response Ends|Your action|Reaction mode)/i.test(s)) return false;
+                    if (/^[（(]?(?:检测|检查|系统提示|日志|审计|校验)\s*[：:]/.test(s)) return false;
                     if (/^(?:json|yaml|xml|markdown|rules?|prompt|system correction)\b/i.test(s)) return false;
                     if (/^\{.*\}$/.test(s)) return false;
                     if (/```|^\[?error\]?[:：]/i.test(s)) return false;
                     return true;
-                })
-                .join(" ");
-            cleaned = cleaned.replace(/\s{2,}/g, " ").trim();
+                });
+            let cleaned = cleanedLines.join("\n").replace(/\n{3,}/g, "\n\n").trim();
             if (!cleaned) return "";
 
-            // 中文模式：按句切分后强制压缩成最多 4 句、每句不超过 28 字
+            // 仅在明显污染时启用“强压缩”，正常叙事尽量保留原长度与段落，避免“突然缩成几句”。
+            const noisyScore = (() => {
+                const t = cleaned;
+                let score = 0;
+                if (/```|^\{[\s\S]*\}$/.test(t)) score += 2;
+                if (/(系统提示|模块嵌入|版本加载失败|审计|校验|debug|trace|contract module)/i.test(t)) score += 2;
+                if ((t.match(/[A-Za-z]{6,}/g) || []).length >= 10 && isZhLocale()) score += 1;
+                if ((t.match(/[{}_^$|`~]/g) || []).length >= 12) score += 1;
+                return score;
+            })();
+            const shouldHardCompact = noisyScore >= 2;
+
+            if (!shouldHardCompact) {
+                // 正常路径：保留段落，仅做温和上限，避免超长刷屏。
+                if (isZhLocale()) {
+                    return cleaned.length > 420 ? `${cleaned.slice(0, 419)}…` : cleaned;
+                }
+                const words = cleaned.split(/\s+/).filter(Boolean);
+                return words.length > 180 ? `${words.slice(0, 180).join(" ")}...` : cleaned;
+            }
+
+            // 污染路径：强压缩成短叙事，保证可玩性。
             if (isZhLocale()) {
                 const chunks = cleaned
                     .split(/(?<=[。！？!?])/)
@@ -812,22 +1138,22 @@
                 for (let i = 0; i < chunks.length && picked.length < 4; i += 1) {
                     let c = chunks[i].replace(/^[，。；：、\s]+/, "").trim();
                     if (!c) continue;
-                    if (c.length > 28) c = `${c.slice(0, 27)}…`;
+                    if (c.length > 42) c = `${c.slice(0, 41)}…`;
                     picked.push(c);
                 }
                 if (!picked.length) {
-                    const fallback = cleaned.length > 28 ? `${cleaned.slice(0, 27)}…` : cleaned;
+                    const fallback = cleaned.length > 42 ? `${cleaned.slice(0, 41)}…` : cleaned;
                     return fallback;
                 }
                 return picked.join("\n");
             }
 
-            // 英文模式：最多 3 句，单句最多 18 词
+            // 英文模式：污染时收敛
             const chunks = cleaned.split(/(?<=[.!?])/).map(s => s.trim()).filter(Boolean);
             const picked = [];
             for (let i = 0; i < chunks.length && picked.length < 3; i += 1) {
                 const words = chunks[i].split(/\s+/).filter(Boolean);
-                const short = words.length > 18 ? `${words.slice(0, 18).join(" ")}...` : chunks[i];
+                const short = words.length > 24 ? `${words.slice(0, 24).join(" ")}...` : chunks[i];
                 picked.push(short);
             }
             return picked.join("\n");
@@ -848,6 +1174,54 @@
             return CYOA.GameRules.normalizeActionByConstraints(actionText, constraints, { isZh: isZhLocale() });
         }
         return String(actionText || "").trim();
+    }
+
+    function preflightUserInputByConstraints(actionRaw, speechRaw, constraints) {
+        const actionSrc = String(actionRaw || "").trim();
+        const speechSrc = String(speechRaw || "").trim();
+        let action = normalizeActionByConstraints(actionSrc, constraints);
+        let speech = speechSrc;
+        const notes = [];
+
+        const toMuffledSpeech = (src) => {
+            const base = String(src || "").trim();
+            if (isZhLocale()) {
+                const cue = constraints.has("forced_open_mouth")
+                    ? "（被堵嘴，只能发出含混呻吟）"
+                    : "（口部受限，只能发出闷哼与短促气声）";
+                const tail = base ? `：${base.slice(0, 12).replace(/[，。！？,.!?]/g, "")}…` : "";
+                return `${cue}${tail}`;
+            }
+            const cue = constraints.has("forced_open_mouth")
+                ? "(Mouth gagged, only muffled moans are possible)"
+                : "(Mouth constrained, only strained short sounds are possible)";
+            const tail = base ? `: ${base.slice(0, 20)}...` : "";
+            return `${cue}${tail}`;
+        };
+
+        if (speech) {
+            if (constraints.has("forced_open_mouth") || constraints.has("mute")) {
+                speech = toMuffledSpeech(speech);
+                notes.push(isZhLocale()
+                    ? "发言已自动转换为堵嘴后的含混呻吟/气声表达。"
+                    : "Speech was auto-converted into muffled moans/strained breaths.");
+            } else if (constraints.has("breath_restrict") && speech.length > 18) {
+                speech = isZhLocale()
+                    ? "（呼吸受限，只能以短促气声回应）"
+                    : "(Breath restricted, only a short strained reply is possible)";
+                notes.push(isZhLocale()
+                    ? "发言过长且与呼吸限制冲突，已压缩为短促回应。"
+                    : "Speech was too long under breath restriction and has been shortened.");
+            }
+        }
+
+        if (actionSrc && action && action !== actionSrc) {
+            notes.push(isZhLocale()
+                ? "行动输入包含受限动作，已自动改写为可执行动作。"
+                : "Action contained restricted moves and was auto-rewritten to an executable one.");
+        }
+
+        return { action, speech, changed: notes.length > 0, notes };
     }
 
     function applyConstraintRulesToOptions(options) {
@@ -1224,7 +1598,7 @@
         CYOA.sendGameMessage?.();
     };
 
-    CYOA.sendGameMessage = async function() {
+    CYOA.sendGameMessage = async function(options) {
         function isAIPipelineDebugEnabled() {
             if (CYOA.CONFIG?.DEBUG) return true;
             try {
@@ -1364,6 +1738,36 @@
             return { drift: false, hit: "", allowed: Array.from(present).slice(0, 8) };
         }
 
+        function detectFrameViolation(text, strictFrame) {
+            const raw = String(text || "").trim();
+            if (!raw) return { drift: false, reason: "" };
+            const optionSet = new Set((pickFourOptions(raw) || []).map(x => String(x?.label || "").trim()).filter(Boolean));
+            const body = raw
+                .split(/\r?\n/)
+                .map(s => String(s || "").trim())
+                .filter(Boolean)
+                .filter(line => !optionSet.has(line))
+                .filter(line => !/^[（(]\s*(行动|对话|action|dialogue)\s*[）)]/i.test(line))
+                .join("\n");
+            const metaLeakRe = /(系统提示|模块嵌入|版本加载失败|调试输出|日志片段|审计|校验|contract module|system prompt|debug trace)/i;
+            if (metaLeakRe.test(body)) {
+                return { drift: true, reason: "meta_leak" };
+            }
+            const tokens = []
+                .concat(String(strictFrame?.location || "").trim())
+                .concat(String(strictFrame?.chapter || "").trim())
+                .concat(Array.isArray(strictFrame?.facilities) ? strictFrame.facilities.slice(0, 6) : [])
+                .concat(Array.isArray(strictFrame?.presentCharacters) ? strictFrame.presentCharacters.slice(0, 6) : [])
+                .map(v => String(v || "").trim())
+                .filter(v => v && v.length >= 2);
+            if (!tokens.length) return { drift: false, reason: "" };
+            const hit = tokens.some(tok => body.includes(tok));
+            if (!hit && body.length >= 40) {
+                return { drift: true, reason: "missing_state_anchor" };
+            }
+            return { drift: false, reason: "" };
+        }
+
         function detectCapabilityOverreach(text, activeConstraints, context) {
             const raw = String(text || "").trim();
             const s = raw.toLowerCase();
@@ -1404,20 +1808,117 @@
                 fineFinger: /(手指|指尖|捏|拨|扣|系|解开|穿针|写|刻|button|buckle|pick\s*lock|type|pinch|thread|unfasten|lace|dial)/i,
                 speech: /(说|开口|喊|高呼|清晰地说|回答道|低语|speak|say|shout|yell|whisper|reply)/i,
                 vision: /(看见|看到|观察到|辨认|读唇|看清|look|see|watch|observe|spot|recognize|lipread)/i,
-                fastMove: /(奔跑|冲刺|快步|大步|跳|跃|run|sprint|dash|jump|leap|long stride)/i
+                fastMove: /(奔跑|冲刺|快步|大步|跳|跃|跨步|高抬腿|抬腿|踢腿|踢|侧踢|前踢|后踢|鞭腿|膝撞|run|sprint|dash|jump|leap|long stride|kick|kicking|high\s*knee|step\s*over|lunge)/i
             };
             if (constraints.has("no_hands") && hasNonNegatedMatch(RE.hand)) reasons.push("no_hands");
             if (constraints.has("no_fingers") && hasNonNegatedMatch(RE.fineFinger)) reasons.push("no_fingers");
             if ((constraints.has("mute") || constraints.has("forced_open_mouth")) && hasNonNegatedMatch(RE.speech)) reasons.push("mute_or_forced_open_mouth");
             if ((constraints.has("blind") || constraints.has("vision_restricted")) && hasNonNegatedMatch(RE.vision)) reasons.push("blind_or_vision_restricted");
             if (constraints.has("limited_step") && hasNonNegatedMatch(RE.fastMove)) reasons.push("limited_step");
-            // 轻度放宽：当玩家本回合是“移动/观察/倾听”等非手部操作时，
-            // 单一 no_hands/no_fingers 命中不立刻纠偏，避免过度打断叙事。
-            if (reasons.length === 1 && (reasons[0] === "no_hands" || reasons[0] === "no_fingers")) {
-                const isMobilityOrObserveAction = /(移动|挪动|走|站|观察|查看|环顾|倾听|呼吸|move|step|walk|stand|observe|look|listen|breathe)/i.test(actionText);
-                if (isMobilityOrObserveAction) return { drift: false, reasons: [] };
+            // 放宽：当玩家输入属于“观察/姿态调整/缓慢移动”等非手部动作时，
+            // 即便同时触发 no_hands + no_fingers，也视为可接受叙事，避免误判。
+            const isMobilityOrObserveAction = /(移动|挪动|走|站|观察|查看|环顾|倾听|呼吸|转动身体|调整姿势|稳定状态|缓慢|慢慢|move|step|walk|stand|observe|look|listen|breathe|posture|stabilize|slowly)/i.test(actionText);
+            const onlyHandFamilyReasons = reasons.length > 0 && reasons.every(r => r === "no_hands" || r === "no_fingers");
+            if (isMobilityOrObserveAction && onlyHandFamilyReasons) {
+                return { drift: false, reasons: [] };
             }
             return { drift: reasons.length > 0, reasons: Array.from(new Set(reasons)) };
+        }
+
+        function detectInputConstraintViolation(actionText, speechText, activeConstraints) {
+            const action = String(actionText || "").trim().toLowerCase();
+            const speech = String(speechText || "").trim();
+            const constraints = activeConstraints instanceof Set ? activeConstraints : new Set(activeConstraints || []);
+            const reasons = [];
+            if (!action && !speech) return { drift: false, reasons: [] };
+
+            const RE = {
+                hand: /(抓|握|拿|捡|拣|拾|取|接住?|抛|扔|丢|投掷|开门|开锁|拧|擦拭|刮|刻|按下?|按键|操作|书写|写字|pull|grab|grip|pick\s*up|take|catch|throw|toss|unlock|open|turn|twist|wipe|scratch|press|operate|write)/i,
+                fineFinger: /(手指|指尖|捏|拨|扣|系|解开|穿针|写|刻|button|buckle|pick\s*lock|type|pinch|thread|unfasten|lace|dial)/i,
+                vision: /(看见|看到|观察到|辨认|读唇|看清|look|see|watch|observe|spot|recognize|lipread)/i,
+                fastMove: /(奔跑|冲刺|快步|大步|跳|跃|跨步|高抬腿|抬腿|踢腿|踢|run|sprint|dash|jump|leap|long stride|kick|lunge)/i
+            };
+
+            if (constraints.has("no_hands") && RE.hand.test(action)) reasons.push("no_hands");
+            if (constraints.has("no_fingers") && RE.fineFinger.test(action)) reasons.push("no_fingers");
+            if ((constraints.has("blind") || constraints.has("vision_restricted")) && RE.vision.test(action)) reasons.push("blind_or_vision_restricted");
+            if (constraints.has("limited_step") && RE.fastMove.test(action)) reasons.push("limited_step");
+
+            return { drift: reasons.length > 0, reasons: Array.from(new Set(reasons)) };
+        }
+
+        function buildPreDecisionGateResult(actionText, speechText, activeConstraints, context) {
+            const result = detectInputConstraintViolation(actionText, speechText, activeConstraints);
+            if (!result?.drift) return { blocked: false, reasons: [], message: "" };
+            const reasons = Array.isArray(result.reasons) ? result.reasons : [];
+            const chapter = String(context?.chapter || "").trim();
+            const location = String(context?.location || "").trim();
+            if (isZhLocale()) {
+                const reasonMap = {
+                    no_hands: "检测到 no_hands：双手依赖动作判定为不可执行",
+                    no_fingers: "检测到 no_fingers：手指精细操作判定为不可执行",
+                    blind_or_vision_restricted: "检测到视觉受限：高精度视觉动作判定为不可执行",
+                    limited_step: "检测到 limited_step：高速/大步移动判定为不可执行"
+                };
+                const reasonLines = reasons.map((r) => `- ${reasonMap[r] || r}`).join("\n");
+                return {
+                    blocked: true,
+                    reasons,
+                    message: [
+                    "【系统先判定（本地规则引擎）】",
+                    `当前章节：${chapter || "未设置"}；当前地点：${location || "未设置"}`,
+                    "以下玩家输入已由本地规则先行判定：违规动作不执行，AI仅可叙述后果与替代方案。",
+                    reasonLines
+                    ].join("\n")
+                };
+            }
+            const reasonMapEn = {
+                no_hands: "no_hands detected: hand-dependent action is non-executable",
+                no_fingers: "no_fingers detected: fine finger manipulation is non-executable",
+                blind_or_vision_restricted: "vision-restricted detected: high-precision visual action is non-executable",
+                limited_step: "limited_step detected: sprint/large-stride movement is non-executable"
+            };
+            const reasonLinesEn = reasons.map((r) => `- ${reasonMapEn[r] || r}`).join("\n");
+            return {
+                blocked: true,
+                reasons,
+                message: [
+                "[System pre-decision | local rules engine]",
+                `Current chapter: ${chapter || "unset"}; current location: ${location || "unset"}`,
+                "Player input has been pre-adjudicated locally: violating actions must not execute; narrate consequences and feasible alternatives only.",
+                reasonLinesEn
+                ].join("\n")
+            };
+        }
+
+        function detectUnrequestedActionExpansion(aiText, actionText, activeConstraints) {
+            const constraints = activeConstraints instanceof Set ? activeConstraints : new Set(activeConstraints || []);
+            const action = String(actionText || "").trim().toLowerCase();
+            if (!action) return { drift: false, reasons: [] };
+            if (!(constraints.has("no_hands") || constraints.has("no_fingers"))) return { drift: false, reasons: [] };
+
+            const optionSet = new Set((pickFourOptions(aiText) || []).map(x => String(x?.label || "").trim()).filter(Boolean));
+            const body = String(aiText || "")
+                .split(/\r?\n/)
+                .map(s => String(s || "").trim())
+                .filter(Boolean)
+                .filter(line => !optionSet.has(line))
+                .filter(line => !/^[（(]\s*(行动|对话|action|dialogue)\s*[）)]/i.test(line))
+                .join("\n")
+                .toLowerCase();
+            if (!body) return { drift: false, reasons: [] };
+
+            const reHand = /(抓|握|拿|捡|拣|拾|取|接住?|抛|扔|丢|投掷|开门|开锁|拧|擦拭|刮|刻|按下?|按键|操作|书写|写字|pull|grab|grip|pick\s*up|take|catch|throw|toss|unlock|open|turn|twist|wipe|scratch|press|operate|write)/i;
+            const reFine = /(手指|指尖|捏|拨|扣|系|解开|穿针|写|刻|button|buckle|pick\s*lock|type|pinch|thread|unfasten|lace|dial)/i;
+            const inputHasHandIntent = reHand.test(action);
+            const inputHasFineIntent = reFine.test(action);
+            const bodyHasHandAction = reHand.test(body);
+            const bodyHasFineAction = reFine.test(body);
+            const reasons = [];
+
+            if (constraints.has("no_hands") && !inputHasHandIntent && bodyHasHandAction) reasons.push("unrequested_hand_expansion");
+            if (constraints.has("no_fingers") && !inputHasFineIntent && bodyHasFineAction) reasons.push("unrequested_fine_finger_expansion");
+            return { drift: reasons.length > 0, reasons };
         }
 
         function buildSafeFallbackReply(save) {
@@ -1452,25 +1953,131 @@
             ].join("\n");
         }
 
-        async function requestChatOnce(model, guardPrompt, prompt, userPayload, onPartialRaw) {
-            const modelTuning = String(CYOA.getModelTuningPrompt?.(model) || "").trim();
+    function buildConstraintGuardFallback(reasons, save) {
+        const reasonList = Array.isArray(reasons) ? reasons : [];
+        const labels = reasonList
+            .map((k) => CYOA.getConstraintLabel?.(k) || String(k || "").trim())
+            .filter(Boolean);
+        if (isZhLocale()) {
+            const lead = labels.length
+                ? `你立刻停下了不合规动作，当前约束（${labels.join("、")}）不允许该行为继续。`
+                : "你立刻停下了不合规动作，当前约束不允许该行为继续。";
+            return [
+                lead,
+                "你需要改用与现状匹配的行动，优先观察环境、收集线索或寻求协助。",
+                "",
+                "观察周围环境",
+                "调整姿势并稳定状态",
+                "询问在场角色可行方案",
+                "尝试低风险推进当前目标"
+            ].join("\n");
+        }
+        const lead = labels.length
+            ? `You stop immediately. Current constraints (${labels.join(", ")}) do not allow that action.`
+            : "You stop immediately. Current constraints do not allow that action.";
+        return [
+            lead,
+            "Switch to a compliant approach: observe, gather clues, or ask for assistance.",
+            "",
+            "Scan the surroundings",
+            "Stabilize posture and status",
+            "Ask present characters for feasible options",
+            "Attempt a low-risk objective step"
+        ].join("\n");
+    }
+
+    function pickTemplateFromLibrary(kind) {
+        const lib = CYOA.getLocalTemplateLibrary?.();
+        const bucket = lib?.localCorrections || {};
+        const key = String(kind || "default");
+        const list = Array.isArray(bucket[key]) ? bucket[key] : (Array.isArray(bucket.default) ? bucket.default : []);
+        if (!list.length) return "";
+        const history = CYOA._localRewriteHistory = Array.isArray(CYOA._localRewriteHistory) ? CYOA._localRewriteHistory : [];
+        const recentSet = new Set(history.slice(-4));
+        const candidates = list.filter(x => !recentSet.has(String(x || "").trim()));
+        const pool = candidates.length ? candidates : list;
+        const picked = String(pool[Math.floor(Math.random() * pool.length)] || "").trim();
+        if (picked) {
+            history.push(picked);
+            if (history.length > 16) CYOA._localRewriteHistory = history.slice(-16);
+        }
+        return picked;
+    }
+
+    function buildLocalCorrectionRewrite(kind, save, context) {
+        const chapter = String(context?.chapter || save?.currentChapter || "").trim();
+        const location = String(context?.location || save?.currentLocation || "").trim();
+        const hit = String(context?.hit || "").trim();
+        if (isZhLocale()) {
+            const fallbackHeader = (() => {
+                if (kind === "chapter") return `（本地纠偏）检测到章节偏航${hit ? `：${hit}` : ""}，已收敛到当前章节。`;
+                if (kind === "location") return `（本地纠偏）检测到地点偏航${hit ? `：${hit}` : ""}，已收敛到当前地点。`;
+                if (kind === "character") return `（本地纠偏）检测到人物越界${hit ? `：${hit}` : ""}，已限定在场角色。`;
+                if (kind === "frame") return "（本地纠偏）检测到叙事越框，已按当前事实框架重写。";
+                if (kind === "action_expand") return "（本地纠偏）检测到动作扩写，已仅保留你输入动作范围。";
+                return "（本地纠偏）已按当前上下文收敛叙事。";
+            })();
+            const header = pickTemplateFromLibrary(kind) || fallbackHeader;
+            return [
+                header,
+                `当前章节：${chapter || "未设置"}；当前地点：${location || "未设置"}。`,
+                "你继续保持谨慎，先观察环境与线索，再选择可执行的下一步。",
+                "",
+                "观察周围环境",
+                "调整姿势并稳定状态",
+                "询问在场角色可行方案",
+                "尝试低风险推进当前目标"
+            ].join("\n");
+        }
+        return buildSafeFallbackReply(save);
+    }
+
+        function resolveNarratorProvider(game, model) {
+            const explicit = String(game?.narrator?.provider || "").trim().toLowerCase();
+            if (explicit) return explicit;
+            const rawModel = String(model || "").trim();
+            if (!rawModel) return "";
+            if (rawModel.includes("::")) return String(rawModel.split("::")[0] || "").trim().toLowerCase();
+            return "";
+        }
+
+        function resolveNarratorMaxTokens(game) {
+            const raw = Number(game?.narrator?.maxTokens);
+            if (!Number.isFinite(raw)) return 500;
+            return Math.max(64, Math.min(4096, Math.round(raw)));
+        }
+
+        function buildAiChatRequestPayload(model, tunedSystemPrompt, userPayload, game) {
+            const provider = resolveNarratorProvider(game, model);
+            const payload = {
+                client: "cyoa",
+                clientRuntime: "browser_plugin",
+                bypassCostOptimizer: !!CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER,
+                model,
+                task: "chat",
+                temperature: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_CHAT_TEMPERATURE ?? 0.15))),
+                top_p: Math.max(0, Math.min(1, Number(CYOA.CONFIG?.AI_TOP_P ?? 0.9))),
+                max_tokens: resolveNarratorMaxTokens(game),
+                messages: [
+                    { role: "system", content: tunedSystemPrompt },
+                    { role: "user", content: userPayload }
+                ],
+                stream: true
+            };
+            if (provider) payload.provider = provider;
+            return payload;
+        }
+
+        async function requestChatOnce(model, guardPrompt, prompt, userPayload, responseMode, onPartialRaw) {
+            const modelTuning = String(CYOA.getModelTuningPrompt?.(model, { game, strictFrame }) || "").trim();
             const tunedSystemPrompt = modelTuning
                 ? `${guardPrompt}\n\n${prompt}\n\n[Model-specific tuning]\n${modelTuning}`
                 : `${guardPrompt}\n\n${prompt}`;
+            const requestPayload = buildAiChatRequestPayload(model, tunedSystemPrompt, userPayload, game);
             const r = await fetch("ai_proxy.php", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    client: "cyoa",
-                    bypassCostOptimizer: !!CYOA.CONFIG?.AI_BYPASS_COST_OPTIMIZER,
-                    model,
-                    task: "chat",
-                    messages: [
-                        { role: "system", content: tunedSystemPrompt },
-                        { role: "user", content: userPayload }
-                    ],
-                    stream: true
-                })
+                body: JSON.stringify(requestPayload)
             });
             if (!r.ok) throw new Error(`AI request failed: HTTP ${r.status}`);
             let aiRawText = "";
@@ -1542,12 +2149,16 @@
                 }
             }
             aiRawText = String(aiRawText || "").trim() || "（无回复）";
-            const aiText = sanitizeAITextForDisplay(aiRawText) || "（无回复）";
+            const adapted = adaptAiByResponseMode(aiRawText, responseMode);
+            aiRawText = adapted.aiRawText;
+            const aiText = adapted.aiText;
+            const usedJsonFallback = !!adapted.usedFallback;
             const meta = {
                 httpStatus: Number(r.status || 0),
                 bypassCost: String(r.headers.get("x-cyoa-bypass-cost") || "") === "1",
                 costPipeline: String(r.headers.get("x-cyoa-cost-pipeline") || "") === "1",
-                cacheHit: String(r.headers.get("x-cyoa-cache-hit") || "") === "1" || String(r.headers.get("x-cache-hit") || "").toLowerCase() === "true"
+                cacheHit: String(r.headers.get("x-cyoa-cache-hit") || "") === "1" || String(r.headers.get("x-cache-hit") || "").toLowerCase() === "true",
+                usedJsonFallback
             };
             return { aiRawText, aiText, meta };
         }
@@ -1558,26 +2169,36 @@
         if (CYOA._sendingGameMsg) return;
         try { CYOA.repairCurrentSave?.(); } catch (_) {}
 
+        const kickoff = !!(options && options.kickoff);
+        const kickoffInput = String((options && options.kickoffInput) || "").trim();
         const actionEl = document.getElementById("gameMsg");
         const speechEl = document.getElementById("gameSpeech");
         syncSpeechInputConstraintState();
-        const actionRaw = (actionEl?.value || "").trim();
-        const speechRaw = (speechEl?.value || "").trim();
-        let speech = speechRaw;
-        const activeConstraints = CYOA.getActiveConstraints?.() || new Set();
-        const action = normalizeActionByConstraints(actionRaw, activeConstraints);
-        if (speech) {
-            if (activeConstraints.has("forced_open_mouth")) {
-                speech = String(t("ui.constraint.gaggedSpeech") || "（嘴被口枷塞住，说话含糊不清）");
-            } else if (activeConstraints.has("mute")) {
-                speech = String(t("ui.constraint.mutedSpeech") || "（被禁言状态，无法说话）");
-            } else if (activeConstraints.has("breath_restrict") && speech.length > 18) {
-                speech = isZhLocale()
-                    ? "（呼吸受限，只能以短促气声回应）"
-                    : "(Breath restricted, only a short strained reply is possible)";
+        let actionRaw = (actionEl?.value || "").trim();
+        let speechRaw = (speechEl?.value || "").trim();
+        if (!kickoff) {
+            const hookedInput = runGameHook("onPlayerInput", { action: actionRaw, speech: speechRaw }, {
+                game,
+                save,
+                kickoff: false
+            });
+            if (hookedInput && typeof hookedInput === "object") {
+                actionRaw = String(hookedInput.action ?? actionRaw).trim();
+                speechRaw = String(hookedInput.speech ?? speechRaw).trim();
+            } else if (typeof hookedInput === "string") {
+                actionRaw = String(hookedInput || "").trim();
+                speechRaw = "";
             }
         }
-        if (!action && !speech) return;
+        const activeConstraints = CYOA.getActiveConstraints?.() || new Set();
+        const preflight = preflightUserInputByConstraints(actionRaw, speechRaw, activeConstraints);
+        const action = preflight.action;
+        const speech = preflight.speech;
+        if (preflight.changed) {
+            const hint = preflight.notes.join(" ");
+            if (hint) CYOA.appendSystemMessage?.(`⚠️ ${hint}`);
+        }
+        if (!action && !speech && !kickoff) return;
         CYOA._sendingGameMsg = true;
         CYOA._gameMsgSeq = Number(CYOA._gameMsgSeq || 0) + 1;
         const seq = CYOA._gameMsgSeq;
@@ -1588,13 +2209,35 @@
         // 语言按“剧本内容”自动判定，不跟随界面语言
         CYOA._storyLocale = detectStoryLocale(game, save, `${action}\n${speech}`);
         const userText = [action ? `${action}` : "", speech ? `${speech}` : ""].filter(Boolean).join("\n");
-        CYOA.bumpObserverAlert?.("ai_input", userText);
+        const introGuideText = isZhLocale()
+            ? "请先描述我当前所在场景与我此刻的状态（姿态、装备限制、感官状态、可互动对象），然后给出4个可执行选项（2行动+2对话）。"
+            : "First describe the current scene and my status (posture, equipment constraints, senses, interactables), then provide 4 executable options (2 actions + 2 dialogues).";
+        let aiInputText = kickoff ? (kickoffInput || introGuideText) : userText;
+        const userHistoryText = kickoff
+            ? (isZhLocale() ? "（系统开场请求）" : "(opening narration request)")
+            : userText;
+        CYOA.bumpObserverAlert?.("ai_input", aiInputText);
 
         const loc = (game.locations || []).find(l => l.id === save.currentLocation);
         const curChapter = (game.chapters || []).find(c => c.id === save.currentChapter);
         const region = CYOA.getRegionByLocation?.(save.currentLocation);
         const strictFrame = buildStrictFrame(game, save, loc, region);
-        appendBubble("user", userText, { avatarUrl: getPlayerAvatarUrl() });
+        const preDecisionGate = !kickoff
+            ? buildPreDecisionGateResult(actionRaw, speechRaw, activeConstraints, {
+                chapter: curChapter?.title || save.currentChapter || "",
+                location: loc?.name || save.currentLocation || ""
+            })
+            : { blocked: false, reasons: [], message: "" };
+        if (preDecisionGate?.message) {
+            aiInputText = `${aiInputText}\n\n${preDecisionGate.message}`;
+            CYOA.appendSystemMessage?.(
+                isZhLocale()
+                    ? `⚖️ 本地先判定已生效：检测到受限输入（${(preDecisionGate.reasons || []).join("、") || "规则命中"}），本回合仅叙述后果与替代方案。`
+                    : `⚖️ Local pre-decision applied: constrained input detected (${(preDecisionGate.reasons || []).join(", ") || "rule hit"}). This turn should narrate consequences and alternatives only.`
+            );
+        }
+        // 开场自动叙述不展示“用户先发言”气泡，避免误导为玩家已输入动作
+        if (!kickoff) appendBubble("user", userText, { avatarUrl: getPlayerAvatarUrl() });
         const assistantBubble = createAssistantBubbleShell({
             avatarUrl: getNarratorAvatarUrl(),
             npcAvatars: getNpcAvatarList(strictFrame)
@@ -1614,101 +2257,168 @@
         const storyCardBlock = formatStoryCardContext(activeCards);
         const ragBlock = String(CYOA.generateRAG?.() || CYOA.getRAG?.() || "").trim();
         const charProfileBlock = Array.isArray(strictFrame?.characterProfiles) ? strictFrame.characterProfiles.join("\n") : "";
+        const packed = buildPromptBudgetedBlocks(strictFrame, ragBlock, storyCardBlock, recent);
+        const completedTurns = getCompletedTurnCountFromHistory(save);
+        const heartbeatTurns = Math.max(1, Number(CYOA.CONFIG?.AI_DEFINITION_HEARTBEAT_TURNS || 6));
+        const shouldSendFullDefinition = !!kickoff || !save._definitionPacketBootstrapped;
+        const shouldSendReanchor = !kickoff && !!save._needDefinitionReanchor && !shouldSendFullDefinition;
+        const shouldSendHeartbeat = !kickoff && !shouldSendFullDefinition && !shouldSendReanchor
+            && completedTurns > 0
+            && (completedTurns % heartbeatTurns === 0);
+        const definitionPacket = (shouldSendFullDefinition || shouldSendReanchor || shouldSendHeartbeat)
+            ? buildDefinitionPacket(
+                game,
+                save,
+                strictFrame,
+                shouldSendFullDefinition ? "full" : "lite",
+                shouldSendFullDefinition ? "boot" : (shouldSendReanchor ? "reanchor" : `heartbeat_t${completedTurns}`)
+            )
+            : "";
+        const charProfileLite = normalizePromptText(charProfileBlock, 1000);
+        const worldText = normalizePromptText(game.worldSetting, 420);
+        const backgroundText = normalizePromptText(game.background || game.settingBackground || game.coreMechanics, 420);
         const userPayload = isZhLocale()
-            ? `【游戏】${game.name || "CYOA"}\n【故事简介】${game.synopsis || ""}\n【世界观】${game.worldSetting || ""}\n【背景】${game.background || game.settingBackground || game.coreMechanics || ""}\n【当前章节】${curChapter?.title || save.currentChapter || "未设置"}\n【当前地点】${loc?.name || save.currentLocation || "未设置"}\n【状态】${JSON.stringify(state)}\n【技能】${skillState || "无"}\n【人物档案约束】\n${charProfileBlock || "无"}\n【叙事一致性裁决】世界/环境/线索/结果叙述必须服从在场人物档案与能力边界，人物做不到的事情不得写成已发生。\n【硬边界事实框架】${JSON.stringify(strictFrame)}\n【RAG记忆库】\n${ragBlock || "无"}\n【Lore卡】\n${storyCardBlock || "无"}\n【最近】\n${recent}\n【输入】\n${userText}`
-            : `[Game] ${game.name || "CYOA"}\n[StorySynopsis] ${game.synopsis || ""}\n[WorldSetting] ${game.worldSetting || ""}\n[Background] ${game.background || game.settingBackground || game.coreMechanics || ""}\n[CurrentChapter] ${curChapter?.title || save.currentChapter || "unset"}\n[CurrentLocation] ${loc?.name || save.currentLocation || "unset"}\n[State] ${JSON.stringify(state)}\n[Skills] ${skillState || "none"}\n[CharacterProfileConstraints]\n${charProfileBlock || "none"}\n[NarrativeConsistencyGate] World/environment/clue/outcome narration must obey present-character profiles and capability bounds; impossible actions must not be narrated as completed outcomes.\n[HardBoundaryFrame] ${JSON.stringify(strictFrame)}\n[RAG]\n${ragBlock || "none"}\n[LoreCards]\n${storyCardBlock || "none"}\n[Recent]\n${recent}\n[Input]\n${userText}`;
+            ? `【游戏】${game.name || "CYOA"}\n【故事简介】${normalizePromptText(game.synopsis, 240)}\n【世界观】${worldText}\n【背景】${backgroundText}\n【当前章节】${curChapter?.title || save.currentChapter || "未设置"}\n【当前地点】${loc?.name || save.currentLocation || "未设置"}\n【状态】${JSON.stringify(state)}\n【技能】${skillState || "无"}\n【人物档案约束】\n${charProfileLite || "无"}\n【叙事一致性裁决】世界/环境/线索/结果叙述必须服从在场人物档案与能力边界，人物做不到的事情不得写成已发生。\n【硬边界事实框架】${packed.strictFrameLite}\n【RAG记忆库】\n${packed.ragLite || "无"}\n【Lore卡】\n${packed.storyCardLite || "无"}\n${definitionPacket ? `【定义心跳】\n${definitionPacket}\n` : ""}【最近】\n${packed.recentLite}\n【输入】\n${aiInputText}`
+            : `[Game] ${game.name || "CYOA"}\n[StorySynopsis] ${normalizePromptText(game.synopsis, 240)}\n[WorldSetting] ${worldText}\n[Background] ${backgroundText}\n[CurrentChapter] ${curChapter?.title || save.currentChapter || "unset"}\n[CurrentLocation] ${loc?.name || save.currentLocation || "unset"}\n[State] ${JSON.stringify(state)}\n[Skills] ${skillState || "none"}\n[CharacterProfileConstraints]\n${charProfileLite || "none"}\n[NarrativeConsistencyGate] World/environment/clue/outcome narration must obey present-character profiles and capability bounds; impossible actions must not be narrated as completed outcomes.\n[HardBoundaryFrame] ${packed.strictFrameLite}\n[RAG]\n${packed.ragLite || "none"}\n[LoreCards]\n${packed.storyCardLite || "none"}\n${definitionPacket ? `[DefinitionHeartbeat]\n${definitionPacket}\n` : ""}[Recent]\n${packed.recentLite}\n[Input]\n${aiInputText}`;
         const prompt = game.narrator?.prompt || (isZhLocale()
             ? "你是 CYOA 叙述者。回复剧情后必须给出4个选项：2个行动、2个对话。"
             : "You are the CYOA narrator. After each response, provide exactly 4 options: 2 actions and 2 dialogues.");
+        const responseMode = String(game?.narrator?.responseMode || game?.responseMode || "text").trim().toLowerCase();
+        const normalizedResponseMode = responseMode === "json" ? "json" : "text";
+        const modePrompt = normalizedResponseMode === "json"
+            ? (isZhLocale()
+                ? "\n\n【输出模式】JSON（高级模式）。请仅输出一个 JSON 对象：{\"narrative\":\"...\",\"options\":[{\"type\":\"action|dialogue\",\"label\":\"...\"}],\"cyoa_changes\":{...可选}}。禁止输出代码块与额外说明。"
+                : "\n\n[Output mode] JSON (advanced mode). Return exactly one JSON object: {\"narrative\":\"...\",\"options\":[{\"type\":\"action|dialogue\",\"label\":\"...\"}],\"cyoa_changes\":{...optional}}. No code fence or extra notes.")
+            : "";
+        const effectiveNarratorPrompt = `${prompt}${modePrompt}`;
         const constraintDetails = CYOA.getActiveConstraintDetails?.() || { active: Array.from(activeConstraints || []), sources: {} };
-        const guardPrompt = (CYOA.GamePrompts && typeof CYOA.GamePrompts.getGuardPrompt === "function")
+        const defaultGuardPrompt = (CYOA.GamePrompts && typeof CYOA.GamePrompts.getGuardPrompt === "function")
             ? CYOA.GamePrompts.getGuardPrompt(isZhLocale(), activeConstraints, { game, save, actionText: action, constraintDetails, strictFrame })
             : (isZhLocale()
                 ? "你是 CYOA 叙述者。必须严格遵守设定，并在每次回复末尾给出 2 行行动 + 2 行对话选项。"
                 : "You are the CYOA narrator. Follow canon strictly and end each reply with 2 action + 2 dialogue options.");
+        const renderedSystemPromptTemplate = (CYOA.GamePrompts && typeof CYOA.GamePrompts.getRenderedSystemPromptTemplate === "function")
+            ? CYOA.GamePrompts.getRenderedSystemPromptTemplate(isZhLocale(), { game, save, strictFrame })
+            : "";
+        const customGuardTemplate = String(
+            game?.narrator?.guardPromptTemplate
+            || game?.guardPromptTemplate
+            || game?.rules?.guardPromptTemplate
+            || ""
+        ).trim();
+        let guardPrompt = defaultGuardPrompt;
+        if (customGuardTemplate) {
+            const hasDefaultGuardSlot = customGuardTemplate.includes("{{DEFAULT_GUARD}}");
+            const hasSystemSlot = customGuardTemplate.includes("{{SYSTEM_PROMPT_TEMPLATE}}");
+            let composed = customGuardTemplate;
+            if (hasDefaultGuardSlot) composed = composed.replace(/{{DEFAULT_GUARD}}/g, defaultGuardPrompt);
+            if (hasSystemSlot) composed = composed.replace(/{{SYSTEM_PROMPT_TEMPLATE}}/g, renderedSystemPromptTemplate);
+            // 未显式占位时，系统模板强制前置启用，防止被完全覆盖失效
+            if (!hasDefaultGuardSlot && !hasSystemSlot && renderedSystemPromptTemplate) {
+                composed = `${renderedSystemPromptTemplate}\n\n${composed}`;
+            }
+            guardPrompt = composed;
+        }
+        const effectiveGuardPrompt = normalizePromptText(guardPrompt, 4200);
 
         try {
             CYOA._pendingNodeChangeMeta = null;
             const model = resolveChatModelForGame();
             if (!model) throw new Error("未找到可用的聊天模型（chat）");
             if (model) window.gameModeModel = model;
-            let { aiRawText, aiText, meta } = await requestChatOnce(model, guardPrompt, prompt, userPayload, (partialRaw) => {
+            let { aiRawText, aiText, meta } = await requestChatOnce(model, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
                 if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
                 const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
                 setAssistantBubbleText(assistantBubble, partialText);
             });
+            if (normalizedResponseMode === "json" && meta?.usedJsonFallback) {
+                CYOA.appendSystemMessage?.(isZhLocale()
+                    ? "ℹ️ JSON 模式解析失败，已自动回退到文本模式显示（本回合）。"
+                    : "ℹ️ JSON mode parse failed; auto-fell back to text display for this turn.");
+            }
+            const tianDaoReason = parseTianDaoDirective(aiText) || parseTianDaoDirective(aiRawText);
+            if (tianDaoReason != null) {
+                aiRawText = "";
+                aiText = buildTianDaoDirectiveFallback(
+                    tianDaoReason,
+                    curChapter?.title || save.currentChapter || "",
+                    loc?.name || save.currentLocation || ""
+                );
+                CYOA.appendSystemMessage?.(isZhLocale()
+                    ? `🧭 已接收边界协议：天道裁决请求${tianDaoReason ? `（${tianDaoReason}）` : ""}`
+                    : `🧭 Boundary protocol received: tian_dao arbitration requested${tianDaoReason ? ` (${tianDaoReason})` : ""}`);
+            }
+            let driftTouched = false;
+            // 仅保留本地纠偏，彻底移除 AI 重试纠偏路径，避免额外 token 消耗
             const driftInfo = detectChapterDrift(aiText, game, save);
+            if (driftInfo.drift) driftTouched = true;
             if (driftInfo.drift) {
-                const clamp = isZhLocale()
-                    ? `\n\n【系统纠偏】你的上一条回复提到了不属于当前章节的内容（命中：${driftInfo.hit}）。必须严格回到当前章节“${driftInfo.currentTitle || save.currentChapter || "当前章节"}”与当前地点继续叙事，不要新增跨章节信息；同时不得添加世界观/背景/人物设定中未出现的新事实。`
-                    : `\n\n[System correction] Your previous reply referenced out-of-chapter content (hit: ${driftInfo.hit}). Continue strictly within current chapter "${driftInfo.currentTitle || save.currentChapter || "current chapter"}" and current location; do not introduce facts outside defined world/background/character canon.`;
-                setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到章节偏航，正在纠偏重试…）" : "(Chapter drift detected, retrying with correction...)");
-                const retriedByChapter = await requestChatOnce(model, guardPrompt, prompt, userPayload + clamp, (partialRaw) => {
-                    if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
-                    const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
-                    setAssistantBubbleText(assistantBubble, partialText);
-                });
-                aiRawText = retriedByChapter.aiRawText;
-                aiText = retriedByChapter.aiText;
-                meta = retriedByChapter.meta;
-                debugAIPipelineLog({
-                    stage: "retry_chapter_drift",
+                aiRawText = "";
+                aiText = buildLocalCorrectionRewrite("chapter", save, {
                     hit: driftInfo.hit,
-                    currentChapter: driftInfo.currentTitle || save.currentChapter || "",
-                    responseMeta: meta
+                    chapter: driftInfo.currentTitle || save.currentChapter || "",
+                    location: loc?.name || save.currentLocation || ""
                 });
+                debugAIPipelineLog({ stage: "local_rewrite_chapter_drift", hit: driftInfo.hit });
             }
             const locationDrift = detectLocationDrift(aiText, game, save);
+            if (locationDrift.drift) driftTouched = true;
             if (locationDrift.drift) {
-                const clampLoc = isZhLocale()
-                    ? `\n\n【系统纠偏】你的上一条回复提到了不属于当前地点的内容（命中：${locationDrift.hit}）。必须严格回到当前地点“${locationDrift.currentName || save.currentLocation || "当前地点"}”内叙事，不得扩展到其他地点；并且不得添加未在当前设定清单中的地名、设施、组织与事件。`
-                    : `\n\n[System correction] Your previous reply referenced another location (hit: ${locationDrift.hit}). Continue strictly within current location "${locationDrift.currentName || save.currentLocation || "current location"}"; do not add off-frame places, facilities, groups, or events.`;
-                setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到地点偏航，正在纠偏重试…）" : "(Location drift detected, retrying with correction...)");
-                const retriedByLocation = await requestChatOnce(model, guardPrompt, prompt, userPayload + clampLoc, (partialRaw) => {
-                    if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
-                    const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
-                    setAssistantBubbleText(assistantBubble, partialText);
-                });
-                aiRawText = retriedByLocation.aiRawText;
-                aiText = retriedByLocation.aiText;
-                meta = retriedByLocation.meta;
-                debugAIPipelineLog({
-                    stage: "retry_location_drift",
+                aiRawText = "";
+                aiText = buildLocalCorrectionRewrite("location", save, {
                     hit: locationDrift.hit,
-                    currentLocation: locationDrift.currentName || save.currentLocation || "",
-                    responseMeta: meta
+                    chapter: curChapter?.title || save.currentChapter || "",
+                    location: locationDrift.currentName || save.currentLocation || ""
                 });
+                debugAIPipelineLog({ stage: "local_rewrite_location_drift", hit: locationDrift.hit });
             }
             const characterDrift = detectCharacterDrift(aiText, game, strictFrame);
+            if (characterDrift.drift) driftTouched = true;
             if (characterDrift.drift) {
-                const allowList = (characterDrift.allowed || []).join(isZhLocale() ? "、" : ", ");
-                const clampChar = isZhLocale()
-                    ? `\n\n【系统纠偏】你的上一条回复提到了未在场人物（命中：${characterDrift.hit}）。你只能使用当前在场人物清单：${allowList || "无"}。不得引入未在场角色，也不得改写在场角色的人设、能力和背景事实。`
-                    : `\n\n[System correction] Your previous reply referenced a character not present (hit: ${characterDrift.hit}). You can only use currently present characters: ${allowList || "none"}. Do not introduce off-scene characters or alter established profile/ability/background facts.`;
-                setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到人物越界，正在纠偏重试…）" : "(Character scope drift detected, retrying with correction...)");
-                const retriedByCharacter = await requestChatOnce(model, guardPrompt, prompt, userPayload + clampChar, (partialRaw) => {
-                    if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
-                    const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
-                    setAssistantBubbleText(assistantBubble, partialText);
-                });
-                aiRawText = retriedByCharacter.aiRawText;
-                aiText = retriedByCharacter.aiText;
-                meta = retriedByCharacter.meta;
-                debugAIPipelineLog({
-                    stage: "retry_character_drift",
+                aiRawText = "";
+                aiText = buildLocalCorrectionRewrite("character", save, {
                     hit: characterDrift.hit,
-                    allowed: characterDrift.allowed || [],
-                    responseMeta: meta
+                    chapter: curChapter?.title || save.currentChapter || "",
+                    location: loc?.name || save.currentLocation || ""
                 });
+                debugAIPipelineLog({ stage: "local_rewrite_character_drift", hit: characterDrift.hit });
             }
-            // 用户要求放开“能力越权自动纠偏”：这里只记录命中，不再触发重试。
-            const capabilityDrift = detectCapabilityOverreach(aiText, activeConstraints, { actionText: action });
-            if (capabilityDrift.drift) {
-                debugAIPipelineLog({
-                    stage: "capability_drift_detected_no_retry",
-                    reasons: capabilityDrift.reasons || [],
-                    responseMeta: meta
+            const frameViolation = detectFrameViolation(aiText, strictFrame);
+            if (frameViolation.drift) driftTouched = true;
+            if (frameViolation.drift) {
+                aiRawText = "";
+                aiText = buildLocalCorrectionRewrite("frame", save, {
+                    chapter: curChapter?.title || save.currentChapter || "",
+                    location: loc?.name || save.currentLocation || ""
                 });
+                debugAIPipelineLog({ stage: "local_rewrite_frame_violation", reason: frameViolation.reason });
+            }
+            const expansionViolation = detectUnrequestedActionExpansion(aiText, actionRaw, activeConstraints);
+            if (expansionViolation.drift) driftTouched = true;
+            if (!kickoff && expansionViolation.drift) {
+                aiRawText = "";
+                aiText = buildLocalCorrectionRewrite("action_expand", save, {
+                    chapter: curChapter?.title || save.currentChapter || "",
+                    location: loc?.name || save.currentLocation || ""
+                });
+                debugAIPipelineLog({ stage: "local_rewrite_action_expansion", reasons: expansionViolation.reasons || [] });
+            }
+            // 能力越权硬兜底：仅在“玩家本回合实际输入了动作/对话”时触发。
+            // 开场欢迎词（kickoff）或空输入轮不做处罚，避免无操作也被判违规。
+            const hasUserIntentInput = !!String([action, speech].filter(Boolean).join("\n")).trim();
+            const inputViolation = detectInputConstraintViolation(actionRaw, speechRaw, activeConstraints);
+            if (!kickoff && hasUserIntentInput && inputViolation.drift) {
+                const capabilityDrift = detectCapabilityOverreach(aiText, activeConstraints, { actionText: action });
+                if (capabilityDrift.drift) {
+                    debugAIPipelineLog({
+                        stage: "capability_drift_hard_guard",
+                        triggerReasons: inputViolation.reasons || [],
+                        reasons: capabilityDrift.reasons || [],
+                        responseMeta: meta
+                    });
+                    aiRawText = "";
+                    aiText = buildConstraintGuardFallback(capabilityDrift.reasons || [], save);
+                }
             }
             let invalidReply = isLikelyCorruptedReply(aiText);
             debugAIPipelineLog({
@@ -1724,7 +2434,7 @@
                     const modelEl = document.getElementById("model");
                     if (modelEl) modelEl.value = backup;
                     setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到异常回复，正在切换模型重试…）" : "(Reply looked invalid, retrying with backup model...)");
-                    const retried = await requestChatOnce(backup, guardPrompt, prompt, userPayload, (partialRaw) => {
+                    const retried = await requestChatOnce(backup, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
                         if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
                         const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
                         setAssistantBubbleText(assistantBubble, partialText);
@@ -1742,7 +2452,7 @@
                 }
             }
             invalidReply = isLikelyCorruptedReply(aiText);
-            const allowStateChangeApply = !invalidReply;
+            const allowStateChangeApply = !invalidReply && !preDecisionGate?.blocked;
             if (invalidReply) {
                 aiRawText = "";
                 aiText = buildSafeFallbackReply(save);
@@ -1755,26 +2465,59 @@
             if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
             const normalizedAiText = enforceFourOptionLines(aiText);
             const filteredAiText = CYOA.applySensoryFilters?.(normalizedAiText) || normalizedAiText;
+            const hookedAiText = runGameHook("onAIOutput", filteredAiText, {
+                game,
+                save,
+                meta,
+                kickoff,
+                actionRaw,
+                speechRaw,
+                aiRawText
+            });
+            const finalAiText = enforceFourOptionLines(String(hookedAiText || filteredAiText));
             if (!Array.isArray(save.history)) save.history = [];
-            save.history.push({ role: "user", content: userText });
-            save.history.push({ role: "assistant", content: filteredAiText });
+            save.history.push({ role: "user", content: userHistoryText });
+            save.history.push({ role: "assistant", content: finalAiText });
             if (save.history.length > 200) save.history = save.history.slice(-200);
+            if (preDecisionGate?.blocked) {
+                debugAIPipelineLog({
+                    stage: "predecision_state_lock",
+                    reasons: preDecisionGate.reasons || [],
+                    blockedStateApply: true
+                });
+            }
             if (allowStateChangeApply && aiRawText) {
                 try { CYOA.parseAndApplyItemChanges?.(aiRawText); } catch (_) {}
-                try { CYOA.checkQuestProgress?.(aiRawText); } catch (_) {}
+                if (CYOA.CONFIG?.REQUIRE_STRUCTURED_CHANGES !== true) {
+                    try { CYOA.checkQuestProgress?.(aiRawText); } catch (_) {}
+                }
             }
-            CYOA.progressSkillsFromInput?.(userText);
-            // 每轮输入后推进系统状态，确保各面板数值可测试
-            CYOA.updateAllSystems?.();
-            CYOA.applyPassiveSystems?.();
-            CYOA.commitTurnNode?.(userText, filteredAiText);
+            // 开场叙述不应推进一回合数值，仅用于建立初始场景与状态叙述
+            if (!kickoff) {
+                CYOA.progressSkillsFromInput?.(userText);
+                CYOA.updateAllSystems?.();
+                CYOA.applyPassiveSystems?.();
+            }
+            CYOA.commitTurnNode?.(userHistoryText, finalAiText);
+            if (shouldSendFullDefinition || shouldSendHeartbeat || shouldSendReanchor) {
+                save._definitionPacketBootstrapped = true;
+                if (!driftTouched) save._needDefinitionReanchor = false;
+            }
+            if (driftTouched) {
+                save._needDefinitionReanchor = true;
+            }
+            if (kickoff && save) {
+                save._openingNarrationDone = true;
+                save._openingNarrationRequested = false;
+            }
             CYOA.persistSave?.();
-            const displayAiText = stripOptionTypeTagsForDisplay(filteredAiText);
+            const displayAiText = stripOptionTypeTagsForDisplay(finalAiText);
             setAssistantBubbleText(assistantBubble, displayAiText);
-            renderOptionsFromText(filteredAiText);
+            renderOptionsFromText(finalAiText);
             renderInteractPanel();
         } catch (e) {
             setAssistantBubbleText(assistantBubble, `AI 请求失败：${e.message || String(e)}`);
+            if (kickoff && save) save._openingNarrationRequested = false;
         } finally {
             if (seq === CYOA._gameMsgSeq) {
                 CYOA._sendingGameMsg = false;
@@ -1785,6 +2528,35 @@
 
         CYOA.renderSidebar?.();
     };
+
+    CYOA.kickoffOpeningNarration = function(opt) {
+        const game = CYOA.currentGame;
+        const save = CYOA.currentSave;
+        if (!game || !save) return;
+        if (save._openingNarrationDone || save._openingNarrationRequested) return;
+        save._openingNarrationRequested = true;
+        const maxRetry = Number(opt?.maxRetry || 8);
+        const delayMs = Number(opt?.delayMs || 260);
+        let tries = 0;
+        const run = () => {
+            const g = CYOA.currentGame;
+            const s = CYOA.currentSave;
+            if (!g || !s) return;
+            if (s._openingNarrationDone) return;
+            const logEl = document.getElementById("log");
+            if (CYOA._sendingGameMsg || !logEl) {
+                tries += 1;
+                if (tries < maxRetry) {
+                    setTimeout(run, delayMs);
+                } else {
+                    s._openingNarrationRequested = false;
+                }
+                return;
+            }
+            CYOA.sendGameMessage?.({ kickoff: true });
+        };
+        setTimeout(run, delayMs);
+    };
     CYOA.GameUI = CYOA.GameUI || {};
     CYOA.GameUI.renderGameLogFromNode = CYOA.renderGameLogFromNode;
     CYOA.GameUI.refreshOptionsFromCurrentNode = CYOA.refreshOptionsFromCurrentNode;
@@ -1793,6 +2565,7 @@
     CYOA.GameUI.bindInputKeyHandler = CYOA._bindInputKeyHandler;
     CYOA.GameUI.selectGameOption = CYOA.selectGameOption;
     CYOA.GameUI.sendGameMessage = CYOA.sendGameMessage;
+    CYOA.GameUI.kickoffOpeningNarration = CYOA.kickoffOpeningNarration;
     CYOA.GameUI.sanitizeAITextForDisplay = sanitizeAITextForDisplay;
     CYOA.GameUI.extractOptions = CYOA.extractOptions;
     CYOA.GameUI.jumpToNode = CYOA.jumpToNode;
