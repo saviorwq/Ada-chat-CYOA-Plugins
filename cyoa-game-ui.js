@@ -266,6 +266,125 @@
             || null;
     }
 
+    const DYNAMIC_NPC_RULES = {
+        maxGlobal: 12,
+        maxPerContext: 2,
+        spawnChancePerTurn: 0.28,
+        spawnCooldownTurns: 2
+    };
+
+    function ensureDynamicNpcStore(save) {
+        if (!save || typeof save !== "object") return;
+        if (!Array.isArray(save.dynamicNpcs)) save.dynamicNpcs = [];
+        if (!Number.isFinite(Number(save._dynamicNpcLastSpawnTurn))) save._dynamicNpcLastSpawnTurn = -99;
+    }
+
+    function buildDynamicNpcContextKey(save, locId, chapterId) {
+        const l = String(locId || save?.currentLocation || "").trim();
+        const c = String(chapterId || save?.currentChapter || "").trim();
+        return `${c}@@${l}`;
+    }
+
+    function pickDynamicNpcArchetype(locName, facilities) {
+        const probe = `${String(locName || "")} ${Array.isArray(facilities) ? facilities.join(" ") : ""}`.toLowerCase();
+        if (/(监控|控制|终端|control|monitor)/i.test(probe)) {
+            return isZhLocale()
+                ? { role: "值班技术员", personality: "谨慎、守流程", goal: "确认设备稳定运行" }
+                : { role: "duty technician", personality: "cautious, procedural", goal: "keep systems stable" };
+        }
+        if (/(走廊|门|通道|corridor|hall|door)/i.test(probe)) {
+            return isZhLocale()
+                ? { role: "巡检员", personality: "敏感、警觉", goal: "排查异常动静" }
+                : { role: "patrol inspector", personality: "alert, suspicious", goal: "check unusual activity" };
+        }
+        return isZhLocale()
+            ? { role: "临时工作人员", personality: "克制、冷静", goal: "按指令处理现场事务" }
+            : { role: "temporary staff", personality: "restrained, calm", goal: "execute assigned local tasks" };
+    }
+
+    function generateDynamicNpcName(allNames) {
+        const taken = new Set((allNames || []).map(v => String(v || "").trim()).filter(Boolean));
+        if (!isZhLocale()) {
+            const first = ["Alex", "Mina", "Rin", "Noah", "Iris", "Evan", "Nina", "Liam"];
+            const last = ["Cole", "Gray", "Moss", "Vale", "Hart", "Stone", "Reed", "Quinn"];
+            for (let i = 0; i < 24; i += 1) {
+                const name = `${first[Math.floor(Math.random() * first.length)]} ${last[Math.floor(Math.random() * last.length)]}`;
+                if (!taken.has(name)) return name;
+            }
+            return `NPC_${Date.now().toString().slice(-4)}`;
+        }
+        const surname = ["林", "周", "许", "顾", "秦", "沈", "苏", "程", "韩", "魏"];
+        const given = ["安", "宁", "岚", "辰", "川", "禾", "言", "珂", "桐", "澈", "瑜", "然"];
+        for (let i = 0; i < 36; i += 1) {
+            const name = `${surname[Math.floor(Math.random() * surname.length)]}${given[Math.floor(Math.random() * given.length)]}${given[Math.floor(Math.random() * given.length)]}`;
+            if (!taken.has(name)) return name;
+        }
+        return `路人${Date.now().toString().slice(-4)}`;
+    }
+
+    function getDynamicNpcsForContext(game, save, scene, loc, options) {
+        if (!game || !save) return [];
+        ensureDynamicNpcStore(save);
+        const opt = options && typeof options === "object" ? options : {};
+        const allowSpawn = !!opt.allowSpawn;
+        const chapterId = String(save.currentChapter || "").trim();
+        const locId = String(save.currentLocation || "").trim();
+        const contextKey = buildDynamicNpcContextKey(save, locId, chapterId);
+        const turn = getCompletedTurnCountFromHistory(save);
+        const facilities = [
+            ...(Array.isArray(loc?.facilities) ? loc.facilities : []),
+            ...(Array.isArray(scene?.facilities) ? scene.facilities : [])
+        ].map(v => String(v || "").trim()).filter(Boolean).slice(0, 8);
+        const locName = String(loc?.name || locId || "").trim();
+
+        // prune invalid/over-limit entries
+        save.dynamicNpcs = save.dynamicNpcs
+            .filter((n) => n && typeof n === "object" && String(n?.id || "").trim() && String(n?.name || "").trim())
+            .slice(0, Math.max(2, DYNAMIC_NPC_RULES.maxGlobal));
+
+        const sameCtx = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey);
+        if (allowSpawn) {
+            const canSpawn = (
+                save.dynamicNpcs.length < DYNAMIC_NPC_RULES.maxGlobal
+                && sameCtx.length < DYNAMIC_NPC_RULES.maxPerContext
+                && (turn - Number(save._dynamicNpcLastSpawnTurn || -99)) >= DYNAMIC_NPC_RULES.spawnCooldownTurns
+                && Math.random() < DYNAMIC_NPC_RULES.spawnChancePerTurn
+            );
+            if (canSpawn) {
+                const allNames = []
+                    .concat((game.characters || []).map(c => c?.name))
+                    .concat(save.dynamicNpcs.map(n => n?.name))
+                    .map(v => String(v || "").trim())
+                    .filter(Boolean);
+                const name = generateDynamicNpcName(allNames);
+                const arche = pickDynamicNpcArchetype(locName, facilities);
+                const id = `dyn_npc_${CYOA.generateId?.() || Date.now()}`;
+                const row = {
+                    id,
+                    name,
+                    roleType: "npc",
+                    contextKey,
+                    chapterId,
+                    locationId: locId,
+                    createdTurn: turn,
+                    lastSeenTurn: turn,
+                    personality: arche.personality,
+                    goal: arche.goal,
+                    description: `${arche.role}，当前活动于${locName || "未知地点"}。`
+                };
+                save.dynamicNpcs.push(row);
+                save._dynamicNpcLastSpawnTurn = turn;
+                CYOA.appendSystemMessage?.(isZhLocale()
+                    ? `🎲 新在场NPC：${name}（${arche.role}）`
+                    : `🎲 New present NPC: ${name} (${arche.role})`);
+            }
+        }
+
+        const present = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey);
+        present.forEach((n) => { n.lastSeenTurn = turn; });
+        return present.slice(0, DYNAMIC_NPC_RULES.maxPerContext);
+    }
+
     function buildStrictFrame(game, save, loc, region) {
         const scene = pickCurrentScene(game, save);
         const shortText = (v, max = 120) => {
@@ -298,7 +417,22 @@
             const name = String(def?.name || raw).trim();
             if (name && !presentCharacters.includes(name)) presentCharacters.push(name);
         });
-        const allCharacters = Array.isArray(game?.characters) ? game.characters : [];
+        const dynamicNpcs = getDynamicNpcsForContext(game, save, scene, loc, { allowSpawn: false });
+        dynamicNpcs.forEach((n) => {
+            const name = String(n?.name || "").trim();
+            if (name && !presentCharacters.includes(name)) presentCharacters.push(name);
+        });
+        const allCharacters = []
+            .concat(Array.isArray(game?.characters) ? game.characters : [])
+            .concat(dynamicNpcs.map((n) => ({
+                id: n.id,
+                name: n.name,
+                roleType: "npc",
+                personality: n.personality,
+                goal: n.goal,
+                description: n.description,
+                background: n.description
+            })));
         const equipMap = new Map();
         Object.values(save?.equipment || {}).forEach((e) => {
             const id = String(e?.id || "").trim();
@@ -694,6 +828,34 @@
             .trim();
     }
 
+    function dedupeStreamingTailLines(rawText) {
+        const src = String(rawText || "").trim();
+        if (!src) return src;
+        const lines = src.split(/\r?\n/);
+        if (lines.length <= 3) return src;
+        const tailStart = Math.max(0, lines.length - 14);
+        const head = lines.slice(0, tailStart);
+        const tail = lines.slice(tailStart);
+        const seen = new Set();
+        const dedupedTail = [];
+        tail.forEach((line) => {
+            const original = String(line || "");
+            const compact = normalizeOptionLabel(original)
+                .replace(/^[—\-–\s]+/, "")
+                .trim();
+            const key = compact || original.trim();
+            if (!key) {
+                // keep blank line structure minimally
+                dedupedTail.push(original);
+                return;
+            }
+            if (seen.has(key)) return;
+            seen.add(key);
+            dedupedTail.push(original);
+        });
+        return head.concat(dedupedTail).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+    }
+
     function buildCyoaChangesFence(changesObj) {
         if (!changesObj || typeof changesObj !== "object" || Array.isArray(changesObj)) return "";
         try {
@@ -1078,6 +1240,29 @@
         const src = String(aiText || "").trim();
         if (!src) return src;
         const options = pickFourOptions(src);
+        const stripTailOptionEcho = (rawBody, optionLabels) => {
+            const body = String(rawBody || "").trim();
+            if (!body) return body;
+            const labels = (optionLabels || [])
+                .map((s) => normalizeOptionLabel(String(s || "")).replace(/^[—\-–\s]+/, "").trim())
+                .filter(Boolean);
+            if (labels.length < 2) return body;
+            const lines = body.split(/\r?\n/);
+            // Compare at most the last 8 lines, remove any trailing lines that are just echoed options.
+            const tailStart = Math.max(0, lines.length - 8);
+            const head = lines.slice(0, tailStart);
+            const tail = lines.slice(tailStart);
+            const keptTail = tail.filter((line) => {
+                const normalized = normalizeOptionLabel(String(line || ""))
+                    .replace(/^[—\-–\s]+/, "")
+                    .trim();
+                if (!normalized) return false;
+                // short action lines that match generated options are removed from narrative body
+                return !labels.includes(normalized);
+            });
+            const merged = head.concat(keptTail).join("\n").replace(/\n{3,}/g, "\n\n").trim();
+            return merged;
+        };
         const lines = src.split(/\r?\n/);
         const bodyLines = lines.filter((line) => {
             const s = String(line || "").trim();
@@ -1165,7 +1350,8 @@
             `${options[2]?.label || (isZhLocale() ? "询问关键线索" : "Ask for key clues")}`,
             `${options[3]?.label || (isZhLocale() ? "试探对方反应" : "Probe the counterpart's reaction")}`
         ];
-        const safeBody = compactBody || (isZhLocale() ? "你先稳住呼吸，快速扫视周围并锁定可验证线索。" : "You steady your breath and lock onto verifiable clues.");
+        const noEchoBody = stripTailOptionEcho(compactBody, optionLines);
+        const safeBody = noEchoBody || (isZhLocale() ? "你先稳住呼吸，快速扫视周围并锁定可验证线索。" : "You steady your breath and lock onto verifiable clues.");
         return `${safeBody}\n\n${optionLines.join("\n")}`.trim();
     }
 
@@ -1420,6 +1606,8 @@
         const playerName = String(save?.playerCharacter || save?.playerCharacterId || "").trim();
         const chars = Array.isArray(game.characters) ? game.characters : [];
         const sceneChars = Array.isArray(scene?.characters) ? scene.characters : (Array.isArray(scene?.characterIds) ? scene.characterIds : []);
+        const loc = (game.locations || []).find(l => l.id === save.currentLocation) || {};
+        const dynamicNpcs = getDynamicNpcsForContext(game, save, scene, loc, { allowSpawn: false });
         const npcs = sceneChars
             .map((v) => {
                 const raw = String(v?.id || v?.name || v || "").trim();
@@ -1440,10 +1628,16 @@
             })
             .filter(Boolean)
             .filter((x, i, arr) => arr.findIndex(y => y.id === x.id || y.name === x.name) === i)
+            .concat(dynamicNpcs.map((n) => ({
+                id: String(n?.id || "").trim(),
+                name: String(n?.name || "").trim(),
+                blocked: false,
+                reason: isZhLocale() ? "动态入场NPC" : "dynamically generated NPC"
+            })).filter(n => n.id && n.name))
+            .filter((x, i, arr) => arr.findIndex(y => y.id === x.id || y.name === x.name) === i)
             .slice(0, 8);
 
         const toNames = (arr) => (Array.isArray(arr) ? arr : []).map(x => String(x?.name || x?.title || x?.id || x || "").trim()).filter(Boolean);
-        const loc = (game.locations || []).find(l => l.id === save.currentLocation) || {};
         const facNames = Array.from(new Set([
             ...toNames(scene?.interactables),
             ...toNames(loc?.facilities),
@@ -2221,6 +2415,8 @@
         const loc = (game.locations || []).find(l => l.id === save.currentLocation);
         const curChapter = (game.chapters || []).find(c => c.id === save.currentChapter);
         const region = CYOA.getRegionByLocation?.(save.currentLocation);
+        // allowSpawn=true: per-turn probabilistic contextual NPC generation.
+        getDynamicNpcsForContext(game, save, pickCurrentScene(game, save), loc, { allowSpawn: !kickoff });
         const strictFrame = buildStrictFrame(game, save, loc, region);
         const preDecisionGate = !kickoff
             ? buildPreDecisionGateResult(actionRaw, speechRaw, activeConstraints, {
@@ -2328,7 +2524,7 @@
             if (model) window.gameModeModel = model;
             let { aiRawText, aiText, meta } = await requestChatOnce(model, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
                 if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
-                const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
+                const partialText = dedupeStreamingTailLines(sanitizeAITextForDisplay(partialRaw)) || "…";
                 setAssistantBubbleText(assistantBubble, partialText);
             });
             if (normalizedResponseMode === "json" && meta?.usedJsonFallback) {
@@ -2439,7 +2635,7 @@
                     setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到异常回复，正在切换模型重试…）" : "(Reply looked invalid, retrying with backup model...)");
                     const retried = await requestChatOnce(backup, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
                         if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
-                        const partialText = sanitizeAITextForDisplay(partialRaw) || "…";
+                        const partialText = dedupeStreamingTailLines(sanitizeAITextForDisplay(partialRaw)) || "…";
                         setAssistantBubbleText(assistantBubble, partialText);
                     });
                     aiRawText = retried.aiRawText;
