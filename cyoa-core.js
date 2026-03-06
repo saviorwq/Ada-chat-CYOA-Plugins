@@ -15,6 +15,7 @@
         AI_DEFINITION_HEARTBEAT_TURNS: 6, // 每 N 回合注入一次轻量定义包（开局会注入全量）
         AI_MODEL_PROFILE: 'small_7b_9b', // 模型档位预设：small_7b_9b / medium_13b_34b / large_70b_plus
         ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 兜底，优先远端 JSON 文件存储
+        LOCAL_DRIFT_CORRECTION_ENABLED: true, // 本地叙事纠偏开关（章节/地点/人物/框架）
         REQUIRE_STRUCTURED_CHANGES: true, // 仅允许通过 cyoa_changes JSON 落状态
         ALLOW_TEXT_CHANGE_PROTOCOL: false, // 关闭正文文本协议状态变更（获得/消耗/耐久等）
         CONSTRAINT_MODIFIER_REMOVE_SCOPE: 'by_equip', // 固定同装备来源移除

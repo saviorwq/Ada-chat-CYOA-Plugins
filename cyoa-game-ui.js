@@ -2349,59 +2349,62 @@
                     : `🧭 Boundary protocol received: tian_dao arbitration requested${tianDaoReason ? ` (${tianDaoReason})` : ""}`);
             }
             let driftTouched = false;
-            // 仅保留本地纠偏，彻底移除 AI 重试纠偏路径，避免额外 token 消耗
-            const driftInfo = detectChapterDrift(aiText, game, save);
-            if (driftInfo.drift) driftTouched = true;
-            if (driftInfo.drift) {
-                aiRawText = "";
-                aiText = buildLocalCorrectionRewrite("chapter", save, {
-                    hit: driftInfo.hit,
-                    chapter: driftInfo.currentTitle || save.currentChapter || "",
-                    location: loc?.name || save.currentLocation || ""
-                });
-                debugAIPipelineLog({ stage: "local_rewrite_chapter_drift", hit: driftInfo.hit });
-            }
-            const locationDrift = detectLocationDrift(aiText, game, save);
-            if (locationDrift.drift) driftTouched = true;
-            if (locationDrift.drift) {
-                aiRawText = "";
-                aiText = buildLocalCorrectionRewrite("location", save, {
-                    hit: locationDrift.hit,
-                    chapter: curChapter?.title || save.currentChapter || "",
-                    location: locationDrift.currentName || save.currentLocation || ""
-                });
-                debugAIPipelineLog({ stage: "local_rewrite_location_drift", hit: locationDrift.hit });
-            }
-            const characterDrift = detectCharacterDrift(aiText, game, strictFrame);
-            if (characterDrift.drift) driftTouched = true;
-            if (characterDrift.drift) {
-                aiRawText = "";
-                aiText = buildLocalCorrectionRewrite("character", save, {
-                    hit: characterDrift.hit,
-                    chapter: curChapter?.title || save.currentChapter || "",
-                    location: loc?.name || save.currentLocation || ""
-                });
-                debugAIPipelineLog({ stage: "local_rewrite_character_drift", hit: characterDrift.hit });
-            }
-            const frameViolation = detectFrameViolation(aiText, strictFrame);
-            if (frameViolation.drift) driftTouched = true;
-            if (frameViolation.drift) {
-                aiRawText = "";
-                aiText = buildLocalCorrectionRewrite("frame", save, {
-                    chapter: curChapter?.title || save.currentChapter || "",
-                    location: loc?.name || save.currentLocation || ""
-                });
-                debugAIPipelineLog({ stage: "local_rewrite_frame_violation", reason: frameViolation.reason });
-            }
-            const expansionViolation = detectUnrequestedActionExpansion(aiText, actionRaw, activeConstraints);
-            if (expansionViolation.drift) driftTouched = true;
-            if (!kickoff && expansionViolation.drift) {
-                aiRawText = "";
-                aiText = buildLocalCorrectionRewrite("action_expand", save, {
-                    chapter: curChapter?.title || save.currentChapter || "",
-                    location: loc?.name || save.currentLocation || ""
-                });
-                debugAIPipelineLog({ stage: "local_rewrite_action_expansion", reasons: expansionViolation.reasons || [] });
+            const localDriftCorrectionEnabled = CYOA.CONFIG?.LOCAL_DRIFT_CORRECTION_ENABLED !== false;
+            if (localDriftCorrectionEnabled) {
+                // 仅保留本地纠偏，彻底移除 AI 重试纠偏路径，避免额外 token 消耗
+                const driftInfo = detectChapterDrift(aiText, game, save);
+                if (driftInfo.drift) driftTouched = true;
+                if (driftInfo.drift) {
+                    aiRawText = "";
+                    aiText = buildLocalCorrectionRewrite("chapter", save, {
+                        hit: driftInfo.hit,
+                        chapter: driftInfo.currentTitle || save.currentChapter || "",
+                        location: loc?.name || save.currentLocation || ""
+                    });
+                    debugAIPipelineLog({ stage: "local_rewrite_chapter_drift", hit: driftInfo.hit });
+                }
+                const locationDrift = detectLocationDrift(aiText, game, save);
+                if (locationDrift.drift) driftTouched = true;
+                if (locationDrift.drift) {
+                    aiRawText = "";
+                    aiText = buildLocalCorrectionRewrite("location", save, {
+                        hit: locationDrift.hit,
+                        chapter: curChapter?.title || save.currentChapter || "",
+                        location: locationDrift.currentName || save.currentLocation || ""
+                    });
+                    debugAIPipelineLog({ stage: "local_rewrite_location_drift", hit: locationDrift.hit });
+                }
+                const characterDrift = detectCharacterDrift(aiText, game, strictFrame);
+                if (characterDrift.drift) driftTouched = true;
+                if (characterDrift.drift) {
+                    aiRawText = "";
+                    aiText = buildLocalCorrectionRewrite("character", save, {
+                        hit: characterDrift.hit,
+                        chapter: curChapter?.title || save.currentChapter || "",
+                        location: loc?.name || save.currentLocation || ""
+                    });
+                    debugAIPipelineLog({ stage: "local_rewrite_character_drift", hit: characterDrift.hit });
+                }
+                const frameViolation = detectFrameViolation(aiText, strictFrame);
+                if (frameViolation.drift) driftTouched = true;
+                if (frameViolation.drift) {
+                    aiRawText = "";
+                    aiText = buildLocalCorrectionRewrite("frame", save, {
+                        chapter: curChapter?.title || save.currentChapter || "",
+                        location: loc?.name || save.currentLocation || ""
+                    });
+                    debugAIPipelineLog({ stage: "local_rewrite_frame_violation", reason: frameViolation.reason });
+                }
+                const expansionViolation = detectUnrequestedActionExpansion(aiText, actionRaw, activeConstraints);
+                if (expansionViolation.drift) driftTouched = true;
+                if (!kickoff && expansionViolation.drift) {
+                    aiRawText = "";
+                    aiText = buildLocalCorrectionRewrite("action_expand", save, {
+                        chapter: curChapter?.title || save.currentChapter || "",
+                        location: loc?.name || save.currentLocation || ""
+                    });
+                    debugAIPipelineLog({ stage: "local_rewrite_action_expansion", reasons: expansionViolation.reasons || [] });
+                }
             }
             // 能力越权硬兜底：仅在“玩家本回合实际输入了动作/对话”时触发。
             // 开场欢迎词（kickoff）或空输入轮不做处罚，避免无操作也被判违规。

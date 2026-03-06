@@ -34,6 +34,7 @@
             AI_MODEL_PROFILE: 'small_7b_9b',
             AI_DEFINITION_HEARTBEAT_TURNS: 6,
             ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 回退
+            LOCAL_DRIFT_CORRECTION_ENABLED: true,
             LLM_TUNINGS: []
         };
     }
@@ -95,6 +96,9 @@
                 ALLOW_LOCAL_FALLBACK: parsed.ALLOW_LOCAL_FALLBACK !== undefined
                     ? !!parsed.ALLOW_LOCAL_FALLBACK
                     : def.ALLOW_LOCAL_FALLBACK,
+                LOCAL_DRIFT_CORRECTION_ENABLED: parsed.LOCAL_DRIFT_CORRECTION_ENABLED !== undefined
+                    ? !!parsed.LOCAL_DRIFT_CORRECTION_ENABLED
+                    : def.LOCAL_DRIFT_CORRECTION_ENABLED,
                 LLM_TUNINGS: normalizeLLMTunings(parsed.LLM_TUNINGS || def.LLM_TUNINGS)
             };
         } catch (_) {
@@ -133,6 +137,9 @@
             ALLOW_LOCAL_FALLBACK: settings?.ALLOW_LOCAL_FALLBACK !== undefined
                 ? !!settings.ALLOW_LOCAL_FALLBACK
                 : def.ALLOW_LOCAL_FALLBACK,
+            LOCAL_DRIFT_CORRECTION_ENABLED: settings?.LOCAL_DRIFT_CORRECTION_ENABLED !== undefined
+                ? !!settings.LOCAL_DRIFT_CORRECTION_ENABLED
+                : def.LOCAL_DRIFT_CORRECTION_ENABLED,
             LLM_TUNINGS: normalizeLLMTunings(settings?.LLM_TUNINGS || def.LLM_TUNINGS)
         };
         // 清理历史遗留字段：旧版 AI 自动纠偏重试已下线
@@ -212,6 +219,7 @@
     CONFIG.AI_MODEL_PROFILE = String(pluginSettings.AI_MODEL_PROFILE || 'small_7b_9b');
     CONFIG.AI_DEFINITION_HEARTBEAT_TURNS = Math.max(1, Number(pluginSettings.AI_DEFINITION_HEARTBEAT_TURNS || 6));
     CONFIG.ALLOW_LOCAL_FALLBACK = pluginSettings.ALLOW_LOCAL_FALLBACK === true;
+    CONFIG.LOCAL_DRIFT_CORRECTION_ENABLED = pluginSettings.LOCAL_DRIFT_CORRECTION_ENABLED !== false;
     CONFIG.LLM_TUNINGS = normalizeLLMTunings(pluginSettings.LLM_TUNINGS || []);
     CONFIG.CONSTRAINT_MODIFIER_REMOVE_SCOPE = 'by_equip';
 

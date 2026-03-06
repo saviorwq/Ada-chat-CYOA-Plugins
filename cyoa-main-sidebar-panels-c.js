@@ -102,6 +102,21 @@
         const getLocKey = (loc) => String(loc?.id || loc?.name || '').trim();
         const regions = Array.isArray(game?.worldMap?.regions) ? game.worldMap.regions : [];
         const regionMap = new Map(regions.map(r => [String(r?.id || '').trim(), r]));
+        const resolveRegionIdForLocation = (loc) => {
+            const explicit = String(loc?.regionId || '').trim();
+            if (explicit) return explicit;
+            const locId = String(loc?.id || '').trim();
+            const locName = String(loc?.name || '').trim();
+            if (!locId && !locName) return '';
+            const matched = regions.find((r) => {
+                const ids = Array.isArray(r?.locationIds) ? r.locationIds : [];
+                return ids.some((v) => {
+                    const key = String(v || '').trim();
+                    return !!key && (key === locId || key === locName);
+                });
+            });
+            return String(matched?.id || '').trim();
+        };
         const readGeoAlias = (obj, keys) => {
             for (const k of keys) {
                 const v = String(obj?.[k] || '').trim();
@@ -123,7 +138,7 @@
             return out || s.slice(0, 1);
         };
         const formatLocationHierarchyLabel = (loc) => {
-            const regionId = String(loc?.regionId || '').trim();
+            const regionId = resolveRegionIdForLocation(loc);
             const region = regionMap.get(regionId);
             const smallMap = readGeoAlias(loc, ['smallMap', 'subMap', 'miniMap']) || String(region?.name || regionId || '未设').trim() || '未设';
             const bigMap = readGeoAlias(loc, ['bigMap', 'mainMap']) || String(game?.worldMap?.name || '未设').trim() || '未设';
@@ -171,7 +186,7 @@
                 const name = String(loc?.name || id).trim();
                 const displayName = formatLocationHierarchyLabel(loc);
                 const isCurrent = id === from;
-                const regionId = String(loc?.regionId || '').trim();
+                const regionId = resolveRegionIdForLocation(loc);
                 const edge = edgeList.find(e =>
                     (
                         (String(e?.from || '') === from || String(e?.from || '') === currentRaw) &&

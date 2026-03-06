@@ -422,6 +422,13 @@
                             </label>
                             <label style="display:flex; flex-direction:column; gap:6px; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg); cursor:pointer; user-select:none;">
                                 <span style="display:flex; align-items:center; gap:8px;">
+                                    <input id="cyoaLocalDriftCorrectionToggle" type="checkbox" ${CYOA.CONFIG?.LOCAL_DRIFT_CORRECTION_ENABLED !== false ? "checked" : ""}>
+                                    <span>启用本地纠偏（章节/地点/人物/越框）</span>
+                                </span>
+                                <small style="font-size:12px; color:var(--text-light);">关闭后不再自动收敛为“当前章节/地点”。</small>
+                            </label>
+                            <label style="display:flex; flex-direction:column; gap:6px; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg); cursor:pointer; user-select:none;">
+                                <span style="display:flex; align-items:center; gap:8px;">
                                     <input id="cyoaWordFilterEnabledToggle" type="checkbox" ${CYOA.CONFIG?.WORD_FILTER_ENABLED !== false ? "checked" : ""}>
                                     <span>启用屏蔽词过滤</span>
                                 </span>
@@ -453,6 +460,20 @@
                 if (typeof CYOA.setAiBypassCostOptimizer === "function") CYOA.setAiBypassCostOptimizer(enabled);
                 else CYOA.CONFIG.AI_BYPASS_COST_OPTIMIZER = enabled;
                 CYOA.log?.("AI_BYPASS_COST_OPTIMIZER =", enabled);
+            };
+        }
+
+        const localDriftCorrectionToggle = CYOA.$("cyoaLocalDriftCorrectionToggle");
+        if (localDriftCorrectionToggle) {
+            localDriftCorrectionToggle.onchange = () => {
+                const enabled = !!localDriftCorrectionToggle.checked;
+                CYOA.CONFIG.LOCAL_DRIFT_CORRECTION_ENABLED = enabled;
+                try {
+                    const current = CYOA.loadPluginSettings?.() || {};
+                    current.LOCAL_DRIFT_CORRECTION_ENABLED = enabled;
+                    CYOA.savePluginSettings?.(current);
+                } catch (_) {}
+                CYOA.log?.("LOCAL_DRIFT_CORRECTION_ENABLED =", enabled);
             };
         }
 

@@ -424,6 +424,22 @@
         if (CYOA.DataManager) CYOA.DataManager.saves = CYOA.saves;
     }
 
+    function resolveInitialLocationForChapter(game, chapterId) {
+        const chapterKey = String(chapterId || "").trim();
+        const chapters = Array.isArray(game?.chapters) ? game.chapters : [];
+        const scenes = Array.isArray(game?.scenes) ? game.scenes : [];
+        if (chapterKey) {
+            const chapter = chapters.find((ch) => String(ch?.id || "") === chapterKey);
+            const entry = pickChapterEntryNode(game, chapter);
+            if (entry?.location) return String(entry.location);
+            const chapterScene = scenes.find((s) => String(s?.chapterId || "") === chapterKey && String(s?.location || "").trim());
+            if (chapterScene?.location) return String(chapterScene.location);
+        }
+        const firstScene = getInitialScene(game);
+        if (firstScene?.location) return String(firstScene.location);
+        return String(game?.locations?.[0]?.id || "");
+    }
+
     function normalizeSaveShape(save, game) {
         const s = save || {};
         if (!s.id) s.id = "save_" + CYOA.generateId();
@@ -469,6 +485,20 @@
         if (!s.currentChapter) {
             const firstChapter = [...(game?.chapters || [])].sort((a, b) => Number(a?.order || 0) - Number(b?.order || 0))[0];
             s.currentChapter = game?.initialChapter || firstChapter?.id || "";
+        }
+        const validLocationIds = new Set((game?.locations || []).map((l) => String(l?.id || "").trim()).filter(Boolean));
+        const nodeLocation = String(s?.nodes?.[s.currentNodeId]?.location || "").trim();
+        const hasCurrentLocation = validLocationIds.has(String(s.currentLocation || "").trim());
+        if (!hasCurrentLocation) {
+            if (nodeLocation && validLocationIds.has(nodeLocation)) {
+                s.currentLocation = nodeLocation;
+            } else {
+                s.currentLocation = resolveInitialLocationForChapter(game, s.currentChapter);
+            }
+        }
+        if (!Array.isArray(s.visitedLocationIds)) s.visitedLocationIds = [];
+        if (s.currentLocation && !s.visitedLocationIds.includes(s.currentLocation)) {
+            s.visitedLocationIds = [s.currentLocation].concat(s.visitedLocationIds);
         }
         if (Array.isArray(s.attributes)) {
             // no-op
@@ -750,7 +780,7 @@
         const sortedChapters = getSortedChapters(game);
         const initialChapter = game.initialChapter || sortedChapters[0]?.id || "";
         const chapterEntryScene = pickChapterEntryNode(game, sortedChapters.find(ch => ch.id === initialChapter)) || firstScene;
-        const firstLoc = firstScene?.location || game?.locations?.[0]?.id || "";
+        const firstLoc = resolveInitialLocationForChapter(game, initialChapter);
 
         CYOA.currentSave = {
             id: "save_" + CYOA.generateId(),
@@ -797,7 +827,7 @@
             // 保留主聊天区快照，退出时恢复
             CYOA._preGameLogHTML = logEl.innerHTML;
         }
-        const intro = firstScene?.description || game.synopsis || "冒险开始。";
+        const intro = chapterEntryScene?.description || firstScene?.description || game.synopsis || "冒险开始。";
         CYOA.renderGameIntro?.(game.name || "CYOA", intro);
         CYOA.applyAgreementEnforcement?.({ silent: true, source: "start" });
 
@@ -906,6 +936,8 @@
 
         const playerItems = buildInitialInventory(playerChar);
         const saveId = 'save_' + Date.now() + '_' + Math.random().toString(36).substr(2, 8);
+        const initialChapterId = gameData.initialChapter || null;
+        const initialLocationId = resolveInitialLocationForChapter(gameData, initialChapterId || "");
         CYOA.currentSave = {
             id: saveId,
             gameId: gameData.id,
@@ -914,7 +946,7 @@
             updatedAt: Date.now(),
             playerCharacter: roleName,
             playerCharacterId: playerCharId,
-            currentChapter: gameData.initialChapter || null,
+            currentChapter: initialChapterId,
             completedChapters: [],
             currentNodeId: null,
             nodes: {},
@@ -982,8 +1014,8 @@
             activePostureTags: [],
             drool: 0,
             equipmentTimers: {},
-            currentLocation: null,
-            visitedLocationIds: [],
+            currentLocation: initialLocationId || null,
+            visitedLocationIds: initialLocationId ? [initialLocationId] : [],
             travelingTo: null,
             travelTurnsRemaining: 0,
             safeRoomLocation: null,
@@ -1427,6 +1459,7 @@
         }
         CYOA.addKeyEvent("chapter_enter", "进入：" + (next.title || chapterId));
         persistSave();
+        CYOA.renderSidebar?.();
     };
 
     function getChapterCompletionConditions(chapter) {
