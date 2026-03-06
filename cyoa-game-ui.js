@@ -579,6 +579,9 @@
         text = text
             .replace(/手封套/g, "封套")
             .replace(/装备列表中错误拼写[^\n。！？!?]*/g, "")
+            // 去掉 Markdown 强调符号，避免显示 **装备名** 这类包裹标记
+            .replace(/\*\*([^*\n][\s\S]*?)\*\*/g, "$1")
+            .replace(/__([^_\n][\s\S]*?)__/g, "$1")
             .replace(/\n{3,}/g, "\n\n")
             .trim();
         return text;
@@ -1120,12 +1123,9 @@
             const shouldHardCompact = noisyScore >= 2;
 
             if (!shouldHardCompact) {
-                // 正常路径：保留段落，仅做温和上限，避免超长刷屏。
-                if (isZhLocale()) {
-                    return cleaned.length > 420 ? `${cleaned.slice(0, 419)}…` : cleaned;
-                }
-                const words = cleaned.split(/\s+/).filter(Boolean);
-                return words.length > 180 ? `${words.slice(0, 180).join(" ")}...` : cleaned;
+                // 正常路径：不再主动裁剪正文，避免“看不到全文”。
+                // 仅在噪声判定触发时才进入强压缩分支。
+                return cleaned;
             }
 
             // 污染路径：强压缩成短叙事，保证可玩性。
