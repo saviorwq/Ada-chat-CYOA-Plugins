@@ -1,0 +1,532 @@
+{
+  // ===========================================================================
+  // CYOA 终极全功能注释模板（JSONC）
+  // ===========================================================================
+  // 目标：
+  // 1) 给其他 AI 当“严格输出规范”，产出可导入 JSON
+  // 2) 覆盖本插件主流程 + 高级系统 + 兼容字段
+  // 3) 注释尽量把“为什么”和“坑点”讲透
+  //
+  // 强规则：
+  // - 本文件是 JSONC（带注释），不能直接导入
+  // - 导入前必须删除注释，保存为 .json
+  // - 所有 ID 建议仅使用：a-z A-Z 0-9 _ -
+  // - 交叉引用必须成立（chapterId/location/equipmentId/itemId 等）
+  //
+  // 推荐生成流程（给其他 AI）：
+  // - 第一步：先填“顶层元信息 + chapters + scenes + locations + worldMap + initialChapter”
+  // - 第二步：再补角色、任务、物品、装备和扩展系统
+  // - 第三步：自检所有引用，再输出“纯 JSON 无注释版”
+  // ===========================================================================
+
+  // ----------------------------
+  // 0) 顶层元信息（最小导入关键）
+  // ----------------------------
+  "id": "game_ultimate_demo_001", // [必填] 游戏唯一 ID（缺失会导入失败）
+  "name": "示例：终极全功能模板", // [必填] 游戏名（缺失会导入失败）
+  "author": "AI_Generator",
+  "version": "1.0.0",
+  "synopsis": "这是一个覆盖章节、地点、装备、规则联动、故事卡的全功能示例模板。",
+
+  // ----------------------------
+  // 1) 世界观与语汇
+  // ----------------------------
+  "worldSetting": {
+    "background": "近未来都市，地下设施网络与执法体系长期对抗。",
+    "geography": "白色房间、走廊、监控室、外廊、天台。",
+    "factions": "警方、地下组织、观察者联盟。",
+    "socialStructure": "表层法治、暗层灰色秩序并存。",
+    "history": "主角在执行任务时遭伏击，被迫在受限环境中求生。",
+    "custom": "绑定保护系统，防止致命结局并在关键时刻提供可行逃脱线索。",
+
+    // [可选] 世界规则标签（通常用于“天道/规则体系”扩展）
+    // 常见示例：K/J/M/Q/C/G/Z/X，或你自己的短码
+    "ruleTags": ["K", "M"],
+
+    // [可选] 是否多规则融合世界
+    "isFusionWorld": false,
+
+    // [可选] 文案语汇模式：auto | modern | ancient
+    "lexiconMode": "modern"
+  },
+
+  // ----------------------------
+  // 2) 全局协议与基础机制
+  // ----------------------------
+  "humanityBalanceEnabled": false, // 是否启用“人性平衡协议”
+
+  "coreMechanics": {
+    // 默认模板里 type 倾向 turn-based；也可写 exploration 等
+    "type": "turn-based",
+    "description": "每回合输入动作/对话，系统推进状态并生成选项。",
+    "custom": "本作强调地点联动与装备限制。"
+  },
+
+  // [可选] 公理列表：用于模型约束注入（每条一行短规则）
+  "axioms": [
+    "叙事必须锚定当前章节与当前地点。",
+    "不得把未执行的动作写成已发生结果。",
+    "角色能力边界必须遵守。"
+  ],
+
+  // [可选] 通用判定规则说明（文案字段）
+  "rules": {
+    "judgment": "行动判定受地点环境、装备限制、属性与技能共同影响。",
+    "successFailure": "高风险行动允许失败，但失败应给出可恢复路线。",
+    "custom": "不得越过章节硬边界。"
+  },
+
+  // [可选] 行进规则（地图快速移动相关）
+  "travelRules": {
+    // limited_step 约束存在时额外增加的移动回合
+    "limitedStepExtraTurns": 2
+  },
+
+  // ----------------------------
+  // 3) 叙事器配置（AI相关）
+  // ----------------------------
+  "narrator": {
+    "enabled": true,
+    "model": "",
+    "provider": "", // 例：openai / anthropic / ollama（可空）
+    "style": "情感细腻",
+    "prompt": "你是一位专业的游戏剧情叙述者，输出要紧贴当前状态并提供四个可执行选项。",
+
+    // 可选：系统模板（可用占位变量）
+    // 常见占位：{{DEFAULT_GUARD}} / {{SYSTEM_PROMPT_TEMPLATE}} / {{#each axioms}}
+    "systemPromptTemplate": "",
+
+    "axiomInjectEnabled": true,
+    "axiomMaxCount": 10, // 建议 1-20
+    "maxTokens": 500,
+    "guardPromptTemplate": "",
+
+    // text | json（一般 text 更稳；json 需要模型严格遵守格式）
+    "responseMode": "text"
+  },
+
+  // ----------------------------
+  // 4) 角色系统
+  // ----------------------------
+  "characters": [
+    {
+      "id": "char_player",
+      "name": "主角",
+      "roleType": "playable", // playable | npc
+      "role": "playable", // 兼容旧字段（可与 roleType 同步）
+      "gender": "female",
+      "description": "冷静、谨慎、反应快。",
+
+      // 可选：初始职业/技能绑定
+      "professions": ["prof_detective"],
+      "skills": ["skill_observe"],
+
+      // 可选：初始持有与初始穿戴（ID引用）
+      "initialInventoryItemIds": ["item_keycard"],
+      "initialEquipmentIds": ["equip_wrist_lock"]
+    },
+    {
+      "id": "char_observer",
+      "name": "观察者",
+      "roleType": "npc",
+      "gender": "unknown",
+      "description": "通过广播和屏幕施加心理压力。"
+    }
+  ],
+
+  // ----------------------------
+  // 5) 属性、职业、技能
+  // ----------------------------
+  "attributes": [
+    { "id": "attr_focus", "name": "专注", "value": 55, "min": 0, "max": 100, "description": "观察/解析能力" },
+    { "id": "attr_will", "name": "意志", "value": 50, "min": 0, "max": 100, "description": "抗压与稳定度" },
+    { "id": "attr_agility", "name": "敏捷", "value": 45, "min": 0, "max": 100, "description": "移动与规避能力" }
+  ],
+
+  "professions": [
+    {
+      "id": "prof_detective",
+      "name": "刑侦新人",
+      "icon": "🕵️",
+      "traits": "观察敏锐，擅长细节推理",
+      "description": "在复杂现场中快速锁定线索。",
+      "skills": ["skill_observe", "skill_deduce"]
+    }
+  ],
+
+  "skills": [
+    {
+      "id": "skill_observe",
+      "name": "环境观察",
+      "skillType": "exploration", // combat / social / exploration 等
+      "description": "提高线索发现概率。",
+      "effect": "提升观察相关判定成功率。",
+      "unlockType": "auto", // auto / manual / quest
+      "level": 1,
+      "proficiency": 0,
+      "requiredAttributes": { "专注": 40 },
+      "consumeItems": [],
+      "learned": true
+    },
+    {
+      "id": "skill_deduce",
+      "name": "快速推理",
+      "skillType": "mental",
+      "description": "整合多条线索并生成假设。",
+      "effect": "减少无效探索回合。",
+      "unlockType": "manual",
+      "level": 1,
+      "proficiency": 0,
+      "requiredAttributes": { "意志": 35 },
+      "consumeItems": [],
+      "learned": false
+    }
+  ],
+
+  // ----------------------------
+  // 6) 任务系统
+  // ----------------------------
+  "quests": [
+    {
+      "id": "quest_escape_zone_a",
+      "name": "离开核心区",
+      "questType": "main", // main / side / hidden
+      "description": "通过核心区并抵达运维区。",
+      "objectives": [
+        "获得门禁卡",
+        "避开监控巡检",
+        "进入监控室"
+      ],
+      "rewards": ["解锁章节：走廊与监控盲区"]
+    }
+  ],
+
+  // ----------------------------
+  // 7) 物品与装备（高频坑点区）
+  // ----------------------------
+  "items": [
+    {
+      "id": "item_keycard",
+      "name": "门禁卡",
+
+      // 重要：建议仅用插件支持类型（common / quest / consumable / ...)
+      "itemType": "quest",
+
+      "quantity": 1,
+      "durability": 0, // 0=不启用耐久
+      "ownerId": null, // 角色 ID 或 null（公共）
+      "description": "可开启核心区门禁。",
+      "effect": "用于关键门禁验证。"
+    },
+    {
+      "id": "item_lockpick",
+      "name": "简易撬锁片",
+      "itemType": "consumable",
+      "quantity": 1,
+      "durability": 1,
+      "ownerId": "char_player",
+      "description": "一次性辅助开锁工具。"
+    }
+  ],
+
+  "equipment": [
+    {
+      "id": "equip_wrist_lock",
+      "name": "手腕束缚器",
+      "equipType": "约束装备",
+
+      // 关键：部位数组（slot 值需在插件支持集合内）
+      // 常见：wrist / ankle / mouth / eyes / fingers / neck / ...
+      "slots": ["wrist"],
+
+      // 关键：约束标签（影响系统判定）
+      // 常见示例：no_hands / no_fingers / limited_step / blind / mute 等
+      "constraints": ["no_hands"],
+
+      // 穿戴层（数字越大越外层）
+      "layer": 5,
+
+      // 耐久
+      "durability": 100,
+      "maxDurability": 100,
+
+      // 所有者（可空）
+      "ownerId": "",
+
+      // 开局是否自动穿戴
+      "startEquipped": true,
+
+      // 是否不可破坏
+      "indestructible": false,
+
+      // 锁相关
+      "lockLevel": 1,
+      "unlockItemId": "item_keycard",
+
+      // 计时器
+      "timerEnabled": false,
+      "timerTurns": 0,
+
+      // 是否“独立服装（占多槽组）”
+      "isIntegrated": false,
+
+      // 舒适型（会影响部分依赖/习惯系统）
+      "comfortType": "",
+
+      // 材质标签（可选）
+      "material": "metal",
+
+      // 属性修正（可选）
+      "statModifiers": {
+        "敏捷": -10
+      },
+
+      // 附件（可选，结构可扩展）
+      "attachments": [
+        {
+          "id": "att_lock_a",
+          "name": "标准锁芯",
+          "lockLevel": 1
+        }
+      ]
+    }
+  ],
+
+  // ----------------------------
+  // 8) 地图系统（章节/地点联动核心）
+  // ----------------------------
+  "locations": [
+    {
+      "id": "loc_white_room",
+      "name": "白色房间",
+      "description": "光源稳定、结构简洁、出口受控。",
+      "features": ["密闭", "明亮"],
+      "facilities": ["电子门", "摄像头", "通风口"],
+
+      // 可选：如果不填，系统会尝试从 worldMap.regions[].locationIds 反推
+      "regionId": "reg_core",
+
+      "isSafeRoom": false,
+
+      // 以下 4 项是地图层级显示别名，不是必须
+      "smallMap": "核心区",
+      "bigMap": "收容站",
+      "smallWorld": "地下城区",
+      "bigWorld": "近未来都市"
+    },
+    {
+      "id": "loc_corridor",
+      "name": "走廊",
+      "description": "长廊有交替盲区，可短暂停留。",
+      "facilities": ["监控", "盲区", "应急灯"],
+      "regionId": "reg_core",
+      "isSafeRoom": false
+    },
+    {
+      "id": "loc_control_room",
+      "name": "监控室",
+      "description": "多屏监控与门禁控制汇聚点。",
+      "facilities": ["监控终端", "门禁控制台"],
+      "regionId": "reg_ops",
+      "isSafeRoom": false
+    }
+  ],
+
+  "locationEdges": [
+    {
+      "id": "edge_core_1",
+      "from": "loc_white_room",
+      "to": "loc_corridor",
+      "travelTurns": 2,
+      "limitedStepExtraTurns": 1
+    },
+    {
+      "id": "edge_core_2",
+      "from": "loc_corridor",
+      "to": "loc_control_room",
+      "travelTurns": 2
+    }
+  ],
+
+  "worldMap": {
+    "id": "map_main",
+    "name": "收容站区域图",
+    "regions": [
+      {
+        "id": "reg_core",
+        "name": "核心区",
+        // 强烈推荐：用 locationIds 显式绑定地点
+        "locationIds": ["loc_white_room", "loc_corridor"]
+      },
+      {
+        "id": "reg_ops",
+        "name": "运维区",
+        "locationIds": ["loc_control_room"]
+      }
+    ]
+  },
+
+  // ----------------------------
+  // 9) 场景与章节（叙事骨架）
+  // ----------------------------
+  "scenes": [
+    {
+      "id": "sc_awake_room",
+      "name": "白色房间醒来",
+      "title": "初醒",
+      "chapterId": "ch_awake",
+
+      // 关键：当前地点同步来源之一
+      "location": "loc_white_room",
+
+      "decoration": "冷白光与金属门构成压迫感。",
+      "description": "你在白色房间醒来，手腕感到束缚，门禁指示灯闪烁。",
+
+      // 可互动对象（可选）
+      "interactables": [
+        {
+          "name": "电子门控制面板",
+          "function": "门禁验证",
+          "effect": "可尝试门禁交互",
+          "attributeEffect": "专注+1"
+        }
+      ],
+
+      // 可关联任务 ID（可选）
+      "quests": ["quest_escape_zone_a"],
+
+      // 在场角色（字符串列表）
+      "presentCharacters": ["主角", "观察者"]
+    },
+    {
+      "id": "sc_corridor",
+      "name": "走廊潜行",
+      "title": "走廊",
+      "chapterId": "ch_escape",
+      "location": "loc_corridor",
+      "description": "监控在固定节奏扫过，你需要抓住盲区窗口。",
+      "interactables": [],
+      "quests": ["quest_escape_zone_a"],
+      "presentCharacters": ["主角"]
+    }
+  ],
+
+  "chapters": [
+    {
+      "id": "ch_awake",
+      "title": "初醒与白色房间",
+      "order": 1,
+      "description": "建立叙事基线并完成初步脱困。",
+
+      // 可写字符串 ID 或对象（建议统一字符串 ID）
+      "scenes": ["sc_awake_room"],
+
+      "unlocked": true,
+      "monitored": false,
+
+      // 可选：章节初始姿态
+      "initialPosture": "standing",
+
+      // 可选：章节初始牵引（不需要可 null）
+      "initialTether": null,
+
+      // 章节推进条件（支持多种判定类型）
+      "transitionConditions": [
+        { "type": "has_item", "itemId": "item_keycard", "quantity": 1 }
+      ]
+    },
+    {
+      "id": "ch_escape",
+      "title": "走廊与监控盲区",
+      "order": 2,
+      "description": "处理移动限制并推进至监控室。",
+      "scenes": ["sc_corridor"],
+      "unlocked": false,
+      "monitored": true,
+      "initialPosture": "standing",
+      "initialTether": null,
+      "transitionConditions": [
+        { "type": "attribute_check", "attribute": "专注", "operator": ">=", "value": 60 }
+      ]
+    }
+  ],
+
+  // ----------------------------
+  // 10) 契约条款（可选）
+  // ----------------------------
+  "contracts": [
+    {
+      "id": "contract_no_lethal",
+      "name": "非致命协议",
+      "content": "敌对方不会对主角采取致命行为。",
+      "enabled": true
+    }
+  ],
+
+  // ----------------------------
+  // 11) 高级扩展：装备联动 / 规则发现 / 服饰预设 / 故事卡
+  // ----------------------------
+  "equipmentSynergies": [
+    {
+      "id": "syn_lock_combo",
+      "name": "束缚联动示例",
+      // 同时穿戴这些装备时触发
+      "triggers": ["equip_wrist_lock"],
+      // 触发条件文本（编辑器常见：always）
+      "condition": "always",
+      // 触发效果文本（面向叙事/规则说明）
+      "effect": "行动灵活度下降，观察判定更重要。",
+      "description": "用于强调限制态下的叙事收敛。"
+    }
+  ],
+
+  "discoveryRules": [
+    {
+      "id": "disc_rule_1",
+      "name": "监控盲区认知",
+      "description": "观察后可识别摄像头扫描节奏。",
+      // 常见：custom（也可按你的规则体系定义枚举）
+      "discoverCondition": "custom",
+      "conditionValue": "在走廊进行两次成功观察",
+      // 可选：发现后的结果说明
+      "result": "解锁更低风险移动选项。"
+    }
+  ],
+
+  "outfitPresets": [
+    {
+      "id": "preset_ops_ready",
+      "name": "潜行预设",
+      // 装备 ID 列表
+      "items": ["equip_wrist_lock"],
+      // 可选：限定章节
+      "chapter": "ch_escape",
+      // 可选：特殊规则文本
+      "specialRule": "仅在监控盲区场景可触发。"
+    }
+  ],
+
+  "storyCards": [
+    {
+      "id": "card_white_room_lore",
+      "name": "白色房间背景卡",
+      // 可自定义类型：custom / lore / clue ...
+      "type": "custom",
+      // 触发词（命中后会把 content 作为 lore 参考注入）
+      "triggerWords": ["白色房间", "门禁", "监控盲区"],
+      "content": "白色房间曾用于行为观测，门禁日志会在监控室备份。"
+    }
+  ],
+
+  // ----------------------------
+  // 12) 开局入口（非常关键）
+  // ----------------------------
+  "initialScene": "sc_awake_room",
+  "initialChapter": "ch_awake",
+
+  // ----------------------------
+  // 13) 时间戳（建议 ISO）
+  // ----------------------------
+  "createdAt": "2026-03-05T00:00:00.000Z",
+  "updatedAt": "2026-03-05T00:00:00.000Z"
+}
