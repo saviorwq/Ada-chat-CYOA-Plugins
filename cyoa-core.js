@@ -16,6 +16,18 @@
         AI_MODEL_PROFILE: 'small_7b_9b', // 模型档位预设：small_7b_9b / medium_13b_34b / large_70b_plus
         ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 兜底，优先远端 JSON 文件存储
         LOCAL_DRIFT_CORRECTION_ENABLED: true, // 本地叙事纠偏开关（章节/地点/人物/框架）
+        DYNAMIC_NPC_ENABLED: true, // 动态 NPC 生成总开关
+        DYNAMIC_NPC_SPAWN_CHANCE: 0.28, // 每回合生成概率（0-1）
+        DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS: 2, // 生成冷却回合
+        DYNAMIC_NPC_MAX_PER_CONTEXT: 2, // 单章节+地点最多动态 NPC 数
+        DYNAMIC_NPC_MAX_GLOBAL: 12, // 单存档动态 NPC 总上限
+        DYNAMIC_NPC_STALE_TURNS: 10, // 超过 N 回合未在玩家视野出现则自动回收
+        DYNAMIC_NPC_MIGRATION_CHANCE: 0.18, // 每回合迁移到邻接地点概率（0-1）
+        DYNAMIC_NPC_SAME_REGION_ONLY: true, // 迁移限制为同区域（region）内
+        DYNAMIC_NPC_LIFECYCLE_NOTICE: true, // 显示动态 NPC 的迁移/回收提示
+        DYNAMIC_NPC_NOTICE_COMPACT: true, // 轻量提示：同回合聚合为单条系统消息
+        DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS: 2, // 提示节流：同类提示至少间隔 N 回合
+        DYNAMIC_NPC_NOTICE_LEVEL: 'normal', // 提示等级：minimal / normal / verbose
         REQUIRE_STRUCTURED_CHANGES: true, // 仅允许通过 cyoa_changes JSON 落状态
         ALLOW_TEXT_CHANGE_PROTOCOL: false, // 关闭正文文本协议状态变更（获得/消耗/耐久等）
         CONSTRAINT_MODIFIER_REMOVE_SCOPE: 'by_equip', // 固定同装备来源移除

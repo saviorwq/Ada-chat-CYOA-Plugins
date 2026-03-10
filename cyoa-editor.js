@@ -75,7 +75,7 @@
             characters: { name: '', roleType: 'playable', gender: 'female', professions: [], skills: [] },
             scenes: { name: '', location: '', decoration: '', description: '', interactables: [], quests: [] },
             chapters: { title: '', order: 1, description: '', scenes: [], transitionConditions: [], initialPosture: 'standing', initialTether: null },
-            locations: { name: '', description: '', features: [], facilities: [], regionId: '', isSafeRoom: false, _edgesStr: '' },
+            locations: { name: '', description: '', features: [], facilities: [], regionId: '', isSafeRoom: false, dynamicNpcSpawnEnabled: true, dynamicNpcMigrationEnabled: true, _edgesStr: '' },
             equipmentSynergies: { name: '联动', triggers: [], condition: 'always', effect: '', description: '' },
             discoveryRules: { name: '', description: '', discoverCondition: 'custom', conditionValue: '' },
             outfitPresets: { name: '', items: [], chapter: '', specialRule: '' },
@@ -93,7 +93,11 @@
         if (type === 'equipmentSynergies') patched.triggers = Array.isArray(patched.triggers) ? patched.triggers : [];
         if (type === 'discoveryRules' && !patched.discoverCondition) patched.discoverCondition = 'custom';
         if (type === 'outfitPresets') patched.items = Array.isArray(patched.items) ? patched.items : [];
-        if (type === 'locations' && typeof patched._edgesStr !== 'string') patched._edgesStr = '';
+        if (type === 'locations') {
+            if (typeof patched._edgesStr !== 'string') patched._edgesStr = '';
+            if (patched.dynamicNpcSpawnEnabled === undefined) patched.dynamicNpcSpawnEnabled = true;
+            if (patched.dynamicNpcMigrationEnabled === undefined) patched.dynamicNpcMigrationEnabled = true;
+        }
         arr[index] = patched;
         return true;
     };
@@ -2808,6 +2812,14 @@
             <div class="cyoa-form-row">
                 <label><input type="checkbox" id="editLocSafeRoom" ${loc.isSafeRoom ? 'checked' : ''}> ${t('ui.label.safeRoom')}</label>
             </div>
+            <div class="cyoa-form-row" style="background:var(--bg); padding:10px; border-radius:8px; border:1px solid var(--border);">
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:6px;">
+                    <input type="checkbox" id="editLocDynamicNpcSpawnEnabled" ${loc.dynamicNpcSpawnEnabled !== false ? 'checked' : ''}> 允许动态NPC在本地点生成
+                </label>
+                <label style="display:flex; align-items:center; gap:8px;">
+                    <input type="checkbox" id="editLocDynamicNpcMigrationEnabled" ${loc.dynamicNpcMigrationEnabled !== false ? 'checked' : ''}> 允许动态NPC迁入/迁出本地点
+                </label>
+            </div>
             <div class="cyoa-form-row">
                 <label>${t('ui.label.features')}</label>
                 <input type="text" id="editLocFeatures" class="cyoa-input" value="${escapeHtml((loc.features || []).join(', '))}" placeholder="${t('ui.ph.features')}">
@@ -2917,6 +2929,8 @@
         item.regionId = CYOA.$('editLocRegion')?.value || '';
         if (!item.regionId) delete item.regionId;
         item.isSafeRoom = CYOA.$('editLocSafeRoom')?.checked || false;
+        item.dynamicNpcSpawnEnabled = CYOA.$('editLocDynamicNpcSpawnEnabled')?.checked !== false;
+        item.dynamicNpcMigrationEnabled = CYOA.$('editLocDynamicNpcMigrationEnabled')?.checked !== false;
         item.features = (CYOA.$('editLocFeatures')?.value || '').split(',').map(s => s.trim()).filter(Boolean);
         const facilityRows = document.querySelectorAll('#locationFacilitiesList .cyoa-facility-row');
         item.facilities = [];

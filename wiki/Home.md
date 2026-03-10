@@ -11,6 +11,7 @@
 ## 文档导航
 
 - [约束工具箱](./Constraint-Toolkit.md)
+- [动态 NPC 配置与运维](./Dynamic-NPC-Operations.md)
 - [架构说明](./Architecture.md)
 - [发布说明](./Publishing.md)
 - [发版检查清单](./Release-Checklist.md)
@@ -28,6 +29,7 @@
 - Hook 安全执行层（关键词黑名单 + 只读上下文）
 - 统一 AI 请求适配（`provider` + `max_tokens`）
 - `responseMode=text/json` 与 JSON 失败自动回退
+- 动态 NPC 生命周期控制（迁移/回收/提示分级/地点白黑名单）
 
 ---
 

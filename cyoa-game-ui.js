@@ -266,17 +266,92 @@
             || null;
     }
 
-    const DYNAMIC_NPC_RULES = {
+    const DYNAMIC_NPC_DEFAULT_RULES = {
+        enabled: true,
         maxGlobal: 12,
         maxPerContext: 2,
         spawnChancePerTurn: 0.28,
-        spawnCooldownTurns: 2
+        spawnCooldownTurns: 2,
+        staleTurns: 10,
+        migrationChancePerTurn: 0.18,
+        sameRegionOnly: true,
+        lifecycleNotice: true,
+        noticeCompact: true,
+        noticeCooldownTurns: 2,
+        noticeLevel: "normal"
     };
+
+    function getDynamicNpcRules() {
+        const cfg = CYOA.CONFIG || {};
+        const toInt = (v, fallback, min, max) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.max(min, Math.min(max, Math.round(n)));
+        };
+        const toChance = (v, fallback) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.max(0, Math.min(1, n));
+        };
+        return {
+            enabled: cfg.DYNAMIC_NPC_ENABLED !== false,
+            maxGlobal: toInt(cfg.DYNAMIC_NPC_MAX_GLOBAL, DYNAMIC_NPC_DEFAULT_RULES.maxGlobal, 0, 50),
+            maxPerContext: toInt(cfg.DYNAMIC_NPC_MAX_PER_CONTEXT, DYNAMIC_NPC_DEFAULT_RULES.maxPerContext, 0, 10),
+            spawnChancePerTurn: toChance(cfg.DYNAMIC_NPC_SPAWN_CHANCE, DYNAMIC_NPC_DEFAULT_RULES.spawnChancePerTurn),
+            spawnCooldownTurns: toInt(cfg.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, DYNAMIC_NPC_DEFAULT_RULES.spawnCooldownTurns, 0, 30),
+            staleTurns: toInt(cfg.DYNAMIC_NPC_STALE_TURNS, DYNAMIC_NPC_DEFAULT_RULES.staleTurns, 1, 60),
+            migrationChancePerTurn: toChance(cfg.DYNAMIC_NPC_MIGRATION_CHANCE, DYNAMIC_NPC_DEFAULT_RULES.migrationChancePerTurn),
+            sameRegionOnly: cfg.DYNAMIC_NPC_SAME_REGION_ONLY !== false,
+            lifecycleNotice: cfg.DYNAMIC_NPC_LIFECYCLE_NOTICE !== false,
+            noticeCompact: cfg.DYNAMIC_NPC_NOTICE_COMPACT !== false,
+            noticeCooldownTurns: toInt(cfg.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, DYNAMIC_NPC_DEFAULT_RULES.noticeCooldownTurns, 0, 20),
+            noticeLevel: ["minimal", "normal", "verbose"].includes(String(cfg.DYNAMIC_NPC_NOTICE_LEVEL || "").toLowerCase())
+                ? String(cfg.DYNAMIC_NPC_NOTICE_LEVEL).toLowerCase()
+                : DYNAMIC_NPC_DEFAULT_RULES.noticeLevel
+        };
+    }
+
+    function isDynamicNpcLocationAllowed(game, locationId, phase) {
+        const id = String(locationId || "").trim();
+        if (!id) return false;
+        const locations = Array.isArray(game?.locations) ? game.locations : [];
+        const loc = locations.find(l => String(l?.id || "").trim() === id);
+        if (!loc || typeof loc !== "object") return true;
+        const spawnEnabled = loc.dynamicNpcSpawnEnabled !== false;
+        const migrationEnabled = loc.dynamicNpcMigrationEnabled !== false;
+        const mode = String(phase || "spawn").trim().toLowerCase();
+        if (mode === "migration") return migrationEnabled;
+        return spawnEnabled;
+    }
+
+    function getLocationNameById(game, locationId) {
+        const id = String(locationId || "").trim();
+        if (!id) return "";
+        const def = (Array.isArray(game?.locations) ? game.locations : []).find(l => String(l?.id || "").trim() === id);
+        return String(def?.name || id).trim();
+    }
+
+    function getRegionKeyByLocation(locationId) {
+        const reg = CYOA.getRegionByLocation?.(locationId);
+        return String(reg?.id || reg?.name || "").trim();
+    }
+
+    function getNeighborLocationIds(game, locationId) {
+        const locId = String(locationId || "").trim();
+        if (!locId) return [];
+        const edges = Array.isArray(game?.locationEdges) ? game.locationEdges : [];
+        return edges
+            .filter(e => String(e?.from || "").trim() === locId || String(e?.to || "").trim() === locId)
+            .map(e => String(e?.from || "").trim() === locId ? String(e?.to || "").trim() : String(e?.from || "").trim())
+            .filter(Boolean)
+            .filter((v, i, arr) => arr.indexOf(v) === i);
+    }
 
     function ensureDynamicNpcStore(save) {
         if (!save || typeof save !== "object") return;
         if (!Array.isArray(save.dynamicNpcs)) save.dynamicNpcs = [];
         if (!Number.isFinite(Number(save._dynamicNpcLastSpawnTurn))) save._dynamicNpcLastSpawnTurn = -99;
+        if (!save._dynamicNpcNoticeState || typeof save._dynamicNpcNoticeState !== "object") save._dynamicNpcNoticeState = {};
     }
 
     function buildDynamicNpcContextKey(save, locId, chapterId) {
@@ -324,31 +399,125 @@
 
     function getDynamicNpcsForContext(game, save, scene, loc, options) {
         if (!game || !save) return [];
+        const rules = getDynamicNpcRules();
+        if (!rules.enabled) return [];
         ensureDynamicNpcStore(save);
         const opt = options && typeof options === "object" ? options : {};
         const allowSpawn = !!opt.allowSpawn;
         const chapterId = String(save.currentChapter || "").trim();
         const locId = String(save.currentLocation || "").trim();
+        const locationAllowed = isDynamicNpcLocationAllowed(game, locId, "spawn");
+        const locationMigrationAllowed = isDynamicNpcLocationAllowed(game, locId, "migration");
         const contextKey = buildDynamicNpcContextKey(save, locId, chapterId);
         const turn = getCompletedTurnCountFromHistory(save);
+        const noticeChunks = [];
         const facilities = [
             ...(Array.isArray(loc?.facilities) ? loc.facilities : []),
             ...(Array.isArray(scene?.facilities) ? scene.facilities : [])
         ].map(v => String(v || "").trim()).filter(Boolean).slice(0, 8);
         const locName = String(loc?.name || locId || "").trim();
 
-        // prune invalid/over-limit entries
+        // prune invalid/over-limit/stale entries
+        const staleRemoved = [];
         save.dynamicNpcs = save.dynamicNpcs
             .filter((n) => n && typeof n === "object" && String(n?.id || "").trim() && String(n?.name || "").trim())
-            .slice(0, Math.max(2, DYNAMIC_NPC_RULES.maxGlobal));
+            .filter((n) => {
+                const stale = (turn - Number(n?.lastSeenTurn ?? turn)) > rules.staleTurns;
+                if (stale) staleRemoved.push(String(n?.name || n?.id || "").trim());
+                return !stale;
+            })
+            .slice(0, Math.max(0, rules.maxGlobal));
+        if (allowSpawn && rules.lifecycleNotice && staleRemoved.length) {
+            const sampleZh = staleRemoved.slice(0, 3).join("、");
+            const sampleEn = staleRemoved.slice(0, 3).join(", ");
+            noticeChunks.push({
+                kind: "recycle",
+                zh: `🧹 回收：${sampleZh}${staleRemoved.length > 3 ? ` 等${staleRemoved.length}名` : ""}`,
+                en: `🧹 Recycled: ${sampleEn}${staleRemoved.length > 3 ? ` (+${staleRemoved.length - 3})` : ""}`
+            });
+        }
+
+        save.dynamicNpcs.forEach((n) => {
+            if (!n.contextKey) {
+                n.contextKey = buildDynamicNpcContextKey(save, n.locationId || locId, n.chapterId || chapterId);
+            }
+        });
+
+        if (allowSpawn && rules.migrationChancePerTurn > 0 && rules.maxGlobal > 0) {
+            const currentCtxRows = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey);
+            const fromRegionKey = getRegionKeyByLocation(locId);
+            const neighbors = getNeighborLocationIds(game, locId).filter((id) => {
+                if (!isDynamicNpcLocationAllowed(game, id, "migration")) return false;
+                if (!rules.sameRegionOnly) return true;
+                const toRegionKey = getRegionKeyByLocation(id);
+                if (!fromRegionKey || !toRegionKey) return true;
+                return toRegionKey === fromRegionKey;
+            });
+            const movedNotices = [];
+            currentCtxRows.forEach((n) => {
+                const lastMoveTurn = Number(n?.lastMoveTurn ?? -99);
+                const canMove = (turn - lastMoveTurn) >= 1 && Math.random() < rules.migrationChancePerTurn;
+                if (!locationMigrationAllowed || !canMove || !neighbors.length) return;
+                const nextLoc = neighbors[Math.floor(Math.random() * neighbors.length)];
+                if (!nextLoc || nextLoc === locId) return;
+                const fromName = getLocationNameById(game, locId);
+                const toName = getLocationNameById(game, nextLoc);
+                n.locationId = nextLoc;
+                n.chapterId = chapterId;
+                n.contextKey = buildDynamicNpcContextKey(save, nextLoc, chapterId);
+                n.lastMoveTurn = turn;
+                movedNotices.push(`${String(n?.name || "").trim()}:${fromName || locId}->${toName || nextLoc}`);
+            });
+            if (rules.lifecycleNotice && movedNotices.length) {
+                const listZh = movedNotices.slice(0, 2).map((x) => x.replace(":", "（").replace("->", " -> ") + "）");
+                const listEn = movedNotices.slice(0, 2).map((x) => x.replace(":", " (").replace("->", " -> ") + ")");
+                noticeChunks.push({
+                    kind: "move",
+                    zh: `🚶 迁移：${listZh.join("，")}${movedNotices.length > 2 ? ` 等${movedNotices.length}条` : ""}`,
+                    en: `🚶 Moved: ${listEn.join(", ")}${movedNotices.length > 2 ? ` (+${movedNotices.length - 2})` : ""}`
+                });
+            }
+        }
+
+        if (allowSpawn && rules.lifecycleNotice && noticeChunks.length) {
+            const recycleCount = noticeChunks.filter(c => String(c?.kind || "") === "recycle").length;
+            const moveCount = noticeChunks.filter(c => String(c?.kind || "") === "move").length;
+            const state = (save._dynamicNpcNoticeState && typeof save._dynamicNpcNoticeState === "object")
+                ? save._dynamicNpcNoticeState
+                : (save._dynamicNpcNoticeState = {});
+            const hasRecycle = noticeChunks.some(c => String(c?.kind || "") === "recycle");
+            const hasMove = noticeChunks.some(c => String(c?.kind || "") === "move");
+            const currentKind = hasRecycle && hasMove ? "mixed" : (hasRecycle ? "recycle" : "move");
+            const lastKind = String(state.kind || "").trim();
+            const lastTurn = Number(state.turn ?? -99);
+            const cooldown = Math.max(0, Number(rules.noticeCooldownTurns || 0));
+            const shouldEmit = cooldown <= 0 || currentKind !== lastKind || (turn - lastTurn) >= cooldown;
+            const isHighImportance = currentKind === "mixed" || recycleCount >= 2 || moveCount >= 2;
+            const allowByLevel = rules.noticeLevel === "verbose"
+                ? true
+                : (rules.noticeLevel === "minimal" ? isHighImportance : true);
+            if (shouldEmit && allowByLevel) {
+                if (rules.noticeCompact) {
+                    const text = isZhLocale()
+                        ? `🔔 动态NPC更新：${noticeChunks.map(x => x.zh.replace(/^[^\s]+\s*/, "")).join("；")}`
+                        : `🔔 Dynamic NPC update: ${noticeChunks.map(x => x.en.replace(/^[^\s]+\s*/, "")).join(" ; ")}`;
+                    CYOA.appendSystemMessage?.(text);
+                } else {
+                    noticeChunks.forEach((chunk) => CYOA.appendSystemMessage?.(isZhLocale() ? chunk.zh : chunk.en));
+                }
+                state.kind = currentKind;
+                state.turn = turn;
+            }
+        }
 
         const sameCtx = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey);
         if (allowSpawn) {
             const canSpawn = (
-                save.dynamicNpcs.length < DYNAMIC_NPC_RULES.maxGlobal
-                && sameCtx.length < DYNAMIC_NPC_RULES.maxPerContext
-                && (turn - Number(save._dynamicNpcLastSpawnTurn || -99)) >= DYNAMIC_NPC_RULES.spawnCooldownTurns
-                && Math.random() < DYNAMIC_NPC_RULES.spawnChancePerTurn
+                locationAllowed
+                && save.dynamicNpcs.length < rules.maxGlobal
+                && sameCtx.length < rules.maxPerContext
+                && (turn - Number(save._dynamicNpcLastSpawnTurn || -99)) >= rules.spawnCooldownTurns
+                && Math.random() < rules.spawnChancePerTurn
             );
             if (canSpawn) {
                 const allNames = []
@@ -380,9 +549,9 @@
             }
         }
 
-        const present = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey);
+        const present = save.dynamicNpcs.filter((n) => String(n?.contextKey || "") === contextKey && isDynamicNpcLocationAllowed(game, n?.locationId || locId, "present"));
         present.forEach((n) => { n.lastSeenTurn = turn; });
-        return present.slice(0, DYNAMIC_NPC_RULES.maxPerContext);
+        return present.slice(0, rules.maxPerContext);
     }
 
     function buildStrictFrame(game, save, loc, region) {
@@ -868,6 +1037,44 @@
     function parseResponseJsonEnvelope(rawText) {
         const raw = String(rawText || "").trim();
         if (!raw) return null;
+        function extractFirstJsonObject(text) {
+            const s = String(text || "");
+            const start = s.indexOf("{");
+            if (start < 0) return null;
+
+            let depth = 0;
+            let inString = false;
+            let escaped = false;
+            for (let i = start; i < s.length; i++) {
+                const ch = s[i];
+                if (inString) {
+                    if (escaped) {
+                        escaped = false;
+                    } else if (ch === "\\") {
+                        escaped = true;
+                    } else if (ch === "\"") {
+                        inString = false;
+                    }
+                    continue;
+                }
+                if (ch === "\"") {
+                    inString = true;
+                    continue;
+                }
+                if (ch === "{") {
+                    depth++;
+                    continue;
+                }
+                if (ch === "}") {
+                    depth--;
+                    if (depth === 0) {
+                        return s.slice(start, i + 1);
+                    }
+                }
+            }
+            return null;
+        }
+
         let payload = null;
         try {
             payload = JSON.parse(raw);
@@ -875,6 +1082,12 @@
             const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
             if (fenced?.[1]) {
                 try { payload = JSON.parse(fenced[1]); } catch (_) {}
+            }
+            if (!payload) {
+                const firstObj = extractFirstJsonObject(raw);
+                if (firstObj) {
+                    try { payload = JSON.parse(firstObj); } catch (_) {}
+                }
             }
         }
         if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;

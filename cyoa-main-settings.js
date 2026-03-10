@@ -427,6 +427,63 @@
                                 </span>
                                 <small style="font-size:12px; color:var(--text-light);">关闭后不再自动收敛为“当前章节/地点”。</small>
                             </label>
+                            <div style="display:flex; flex-direction:column; gap:8px; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg);">
+                                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
+                                    <input id="cyoaDynamicNpcEnabledToggle" type="checkbox" ${CYOA.CONFIG?.DYNAMIC_NPC_ENABLED !== false ? "checked" : ""}>
+                                    <span>启用动态剧情 NPC</span>
+                                </label>
+                                <div style="display:grid; grid-template-columns:1fr 1fr; gap:8px;">
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">每回合生成概率（0-1）</span>
+                                        <input id="cyoaDynamicNpcSpawnChanceInput" type="number" class="cyoa-input" min="0" max="1" step="0.01" value="${Math.max(0, Math.min(1, Number(CYOA.CONFIG?.DYNAMIC_NPC_SPAWN_CHANCE ?? 0.28))).toFixed(2)}" style="height:30px;">
+                                    </label>
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">生成冷却（回合）</span>
+                                        <input id="cyoaDynamicNpcCooldownInput" type="number" class="cyoa-input" min="0" max="30" step="1" value="${Math.max(0, Math.min(30, Math.round(Number(CYOA.CONFIG?.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS ?? 2))))}" style="height:30px;">
+                                    </label>
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">单地点上限</span>
+                                        <input id="cyoaDynamicNpcMaxPerContextInput" type="number" class="cyoa-input" min="0" max="10" step="1" value="${Math.max(0, Math.min(10, Math.round(Number(CYOA.CONFIG?.DYNAMIC_NPC_MAX_PER_CONTEXT ?? 2))))}" style="height:30px;">
+                                    </label>
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">全局上限</span>
+                                        <input id="cyoaDynamicNpcMaxGlobalInput" type="number" class="cyoa-input" min="0" max="50" step="1" value="${Math.max(0, Math.min(50, Math.round(Number(CYOA.CONFIG?.DYNAMIC_NPC_MAX_GLOBAL ?? 12))))}" style="height:30px;">
+                                    </label>
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">回收阈值（回合）</span>
+                                        <input id="cyoaDynamicNpcStaleTurnsInput" type="number" class="cyoa-input" min="1" max="60" step="1" value="${Math.max(1, Math.min(60, Math.round(Number(CYOA.CONFIG?.DYNAMIC_NPC_STALE_TURNS ?? 10))))}" style="height:30px;">
+                                    </label>
+                                    <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                        <span style="color:var(--text-light);">迁移概率（0-1）</span>
+                                        <input id="cyoaDynamicNpcMigrationChanceInput" type="number" class="cyoa-input" min="0" max="1" step="0.01" value="${Math.max(0, Math.min(1, Number(CYOA.CONFIG?.DYNAMIC_NPC_MIGRATION_CHANCE ?? 0.18))).toFixed(2)}" style="height:30px;">
+                                    </label>
+                                </div>
+                                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:12px;">
+                                    <input id="cyoaDynamicNpcSameRegionOnlyToggle" type="checkbox" ${CYOA.CONFIG?.DYNAMIC_NPC_SAME_REGION_ONLY !== false ? "checked" : ""}>
+                                    <span>仅允许在同区域内迁移</span>
+                                </label>
+                                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:12px;">
+                                    <input id="cyoaDynamicNpcLifecycleNoticeToggle" type="checkbox" ${CYOA.CONFIG?.DYNAMIC_NPC_LIFECYCLE_NOTICE !== false ? "checked" : ""}>
+                                    <span>显示动态NPC迁移/回收提示</span>
+                                </label>
+                                <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none; font-size:12px;">
+                                    <input id="cyoaDynamicNpcNoticeCompactToggle" type="checkbox" ${CYOA.CONFIG?.DYNAMIC_NPC_NOTICE_COMPACT !== false ? "checked" : ""}>
+                                    <span>提示轻量模式（同回合合并为一条）</span>
+                                </label>
+                                <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                    <span style="color:var(--text-light);">提示冷却（回合）</span>
+                                    <input id="cyoaDynamicNpcNoticeCooldownInput" type="number" class="cyoa-input" min="0" max="20" step="1" value="${Math.max(0, Math.min(20, Math.round(Number(CYOA.CONFIG?.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS ?? 2))))}" style="height:30px;">
+                                </label>
+                                <label style="display:flex; flex-direction:column; gap:4px; font-size:12px;">
+                                    <span style="color:var(--text-light);">提示等级</span>
+                                    <select id="cyoaDynamicNpcNoticeLevelSelect" class="cyoa-select" style="height:30px;">
+                                        <option value="minimal" ${String(CYOA.CONFIG?.DYNAMIC_NPC_NOTICE_LEVEL || "normal") === "minimal" ? "selected" : ""}>精简</option>
+                                        <option value="normal" ${String(CYOA.CONFIG?.DYNAMIC_NPC_NOTICE_LEVEL || "normal") === "normal" ? "selected" : ""}>标准</option>
+                                        <option value="verbose" ${String(CYOA.CONFIG?.DYNAMIC_NPC_NOTICE_LEVEL || "normal") === "verbose" ? "selected" : ""}>详细</option>
+                                    </select>
+                                </label>
+                                <small style="font-size:12px; color:var(--text-light);">设为 0 可禁用该维度生成（例如单地点上限=0）。</small>
+                            </div>
                             <label style="display:flex; flex-direction:column; gap:6px; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg); cursor:pointer; user-select:none;">
                                 <span style="display:flex; align-items:center; gap:8px;">
                                     <input id="cyoaWordFilterEnabledToggle" type="checkbox" ${CYOA.CONFIG?.WORD_FILTER_ENABLED !== false ? "checked" : ""}>
@@ -476,6 +533,95 @@
                 CYOA.log?.("LOCAL_DRIFT_CORRECTION_ENABLED =", enabled);
             };
         }
+
+        const dynamicNpcEnabledToggle = CYOA.$("cyoaDynamicNpcEnabledToggle");
+        const dynamicNpcSpawnChanceInput = CYOA.$("cyoaDynamicNpcSpawnChanceInput");
+        const dynamicNpcCooldownInput = CYOA.$("cyoaDynamicNpcCooldownInput");
+        const dynamicNpcMaxPerContextInput = CYOA.$("cyoaDynamicNpcMaxPerContextInput");
+        const dynamicNpcMaxGlobalInput = CYOA.$("cyoaDynamicNpcMaxGlobalInput");
+        const dynamicNpcStaleTurnsInput = CYOA.$("cyoaDynamicNpcStaleTurnsInput");
+        const dynamicNpcMigrationChanceInput = CYOA.$("cyoaDynamicNpcMigrationChanceInput");
+        const dynamicNpcSameRegionOnlyToggle = CYOA.$("cyoaDynamicNpcSameRegionOnlyToggle");
+        const dynamicNpcLifecycleNoticeToggle = CYOA.$("cyoaDynamicNpcLifecycleNoticeToggle");
+        const dynamicNpcNoticeCompactToggle = CYOA.$("cyoaDynamicNpcNoticeCompactToggle");
+        const dynamicNpcNoticeCooldownInput = CYOA.$("cyoaDynamicNpcNoticeCooldownInput");
+        const dynamicNpcNoticeLevelSelect = CYOA.$("cyoaDynamicNpcNoticeLevelSelect");
+        const clampChance = (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return 0.28;
+            return Math.max(0, Math.min(1, Math.round(n * 100) / 100));
+        };
+        const clampInt = (v, min, max, fallback) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return fallback;
+            return Math.max(min, Math.min(max, Math.round(n)));
+        };
+        const syncDynamicNpcInputs = () => {
+            if (dynamicNpcSpawnChanceInput) dynamicNpcSpawnChanceInput.value = clampChance(dynamicNpcSpawnChanceInput.value).toFixed(2);
+            if (dynamicNpcCooldownInput) dynamicNpcCooldownInput.value = String(clampInt(dynamicNpcCooldownInput.value, 0, 30, 2));
+            if (dynamicNpcMaxPerContextInput) dynamicNpcMaxPerContextInput.value = String(clampInt(dynamicNpcMaxPerContextInput.value, 0, 10, 2));
+            if (dynamicNpcMaxGlobalInput) dynamicNpcMaxGlobalInput.value = String(clampInt(dynamicNpcMaxGlobalInput.value, 0, 50, 12));
+            if (dynamicNpcStaleTurnsInput) dynamicNpcStaleTurnsInput.value = String(clampInt(dynamicNpcStaleTurnsInput.value, 1, 60, 10));
+            if (dynamicNpcMigrationChanceInput) dynamicNpcMigrationChanceInput.value = clampChance(dynamicNpcMigrationChanceInput.value).toFixed(2);
+            if (dynamicNpcNoticeCooldownInput) dynamicNpcNoticeCooldownInput.value = String(clampInt(dynamicNpcNoticeCooldownInput.value, 0, 20, 2));
+        };
+        const persistDynamicNpcSettings = () => {
+            const enabled = !!dynamicNpcEnabledToggle?.checked;
+            const spawnChance = clampChance(dynamicNpcSpawnChanceInput?.value);
+            const cooldown = clampInt(dynamicNpcCooldownInput?.value, 0, 30, 2);
+            const maxPerContext = clampInt(dynamicNpcMaxPerContextInput?.value, 0, 10, 2);
+            const maxGlobal = clampInt(dynamicNpcMaxGlobalInput?.value, 0, 50, 12);
+            const staleTurns = clampInt(dynamicNpcStaleTurnsInput?.value, 1, 60, 10);
+            const migrationChance = clampChance(dynamicNpcMigrationChanceInput?.value);
+            const sameRegionOnly = !!dynamicNpcSameRegionOnlyToggle?.checked;
+            const lifecycleNotice = !!dynamicNpcLifecycleNoticeToggle?.checked;
+            const noticeCompact = !!dynamicNpcNoticeCompactToggle?.checked;
+            const noticeCooldown = clampInt(dynamicNpcNoticeCooldownInput?.value, 0, 20, 2);
+            const noticeLevelRaw = String(dynamicNpcNoticeLevelSelect?.value || "normal").trim().toLowerCase();
+            const noticeLevel = ["minimal", "normal", "verbose"].includes(noticeLevelRaw) ? noticeLevelRaw : "normal";
+            CYOA.CONFIG.DYNAMIC_NPC_ENABLED = enabled;
+            CYOA.CONFIG.DYNAMIC_NPC_SPAWN_CHANCE = spawnChance;
+            CYOA.CONFIG.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS = cooldown;
+            CYOA.CONFIG.DYNAMIC_NPC_MAX_PER_CONTEXT = maxPerContext;
+            CYOA.CONFIG.DYNAMIC_NPC_MAX_GLOBAL = maxGlobal;
+            CYOA.CONFIG.DYNAMIC_NPC_STALE_TURNS = staleTurns;
+            CYOA.CONFIG.DYNAMIC_NPC_MIGRATION_CHANCE = migrationChance;
+            CYOA.CONFIG.DYNAMIC_NPC_SAME_REGION_ONLY = sameRegionOnly;
+            CYOA.CONFIG.DYNAMIC_NPC_LIFECYCLE_NOTICE = lifecycleNotice;
+            CYOA.CONFIG.DYNAMIC_NPC_NOTICE_COMPACT = noticeCompact;
+            CYOA.CONFIG.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS = noticeCooldown;
+            CYOA.CONFIG.DYNAMIC_NPC_NOTICE_LEVEL = noticeLevel;
+            try {
+                const current = CYOA.loadPluginSettings?.() || {};
+                current.DYNAMIC_NPC_ENABLED = enabled;
+                current.DYNAMIC_NPC_SPAWN_CHANCE = spawnChance;
+                current.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS = cooldown;
+                current.DYNAMIC_NPC_MAX_PER_CONTEXT = maxPerContext;
+                current.DYNAMIC_NPC_MAX_GLOBAL = maxGlobal;
+                current.DYNAMIC_NPC_STALE_TURNS = staleTurns;
+                current.DYNAMIC_NPC_MIGRATION_CHANCE = migrationChance;
+                current.DYNAMIC_NPC_SAME_REGION_ONLY = sameRegionOnly;
+                current.DYNAMIC_NPC_LIFECYCLE_NOTICE = lifecycleNotice;
+                current.DYNAMIC_NPC_NOTICE_COMPACT = noticeCompact;
+                current.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS = noticeCooldown;
+                current.DYNAMIC_NPC_NOTICE_LEVEL = noticeLevel;
+                CYOA.savePluginSettings?.(current);
+            } catch (_) {}
+            CYOA.log?.("DYNAMIC_NPC_SETTINGS =", { enabled, spawnChance, cooldown, maxPerContext, maxGlobal, staleTurns, migrationChance, sameRegionOnly, lifecycleNotice, noticeCompact, noticeCooldown, noticeLevel });
+        };
+        syncDynamicNpcInputs();
+        if (dynamicNpcEnabledToggle) dynamicNpcEnabledToggle.onchange = persistDynamicNpcSettings;
+        if (dynamicNpcSpawnChanceInput) dynamicNpcSpawnChanceInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcCooldownInput) dynamicNpcCooldownInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcMaxPerContextInput) dynamicNpcMaxPerContextInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcMaxGlobalInput) dynamicNpcMaxGlobalInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcStaleTurnsInput) dynamicNpcStaleTurnsInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcMigrationChanceInput) dynamicNpcMigrationChanceInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcSameRegionOnlyToggle) dynamicNpcSameRegionOnlyToggle.onchange = persistDynamicNpcSettings;
+        if (dynamicNpcLifecycleNoticeToggle) dynamicNpcLifecycleNoticeToggle.onchange = persistDynamicNpcSettings;
+        if (dynamicNpcNoticeCompactToggle) dynamicNpcNoticeCompactToggle.onchange = persistDynamicNpcSettings;
+        if (dynamicNpcNoticeCooldownInput) dynamicNpcNoticeCooldownInput.onchange = () => { syncDynamicNpcInputs(); persistDynamicNpcSettings(); };
+        if (dynamicNpcNoticeLevelSelect) dynamicNpcNoticeLevelSelect.onchange = persistDynamicNpcSettings;
 
         const wordFilterToggle = CYOA.$("cyoaWordFilterEnabledToggle");
         if (wordFilterToggle) {

@@ -24,6 +24,20 @@
         return Math.max(0, Math.min(1, Math.round(base * 100) / 100));
     }
 
+    function normalizeDynamicNpcChance(v, fallback) {
+        const raw = Number(v);
+        const base = Number.isFinite(raw) ? raw : Number(fallback);
+        if (!Number.isFinite(base)) return 0.28;
+        return Math.max(0, Math.min(1, Math.round(base * 100) / 100));
+    }
+
+    function normalizeDynamicNpcInt(v, fallback, min, max) {
+        const raw = Number(v);
+        const base = Number.isFinite(raw) ? raw : Number(fallback);
+        if (!Number.isFinite(base)) return min;
+        return Math.max(min, Math.min(max, Math.round(base)));
+    }
+
     function getDefaultPluginSettings() {
         return {
             AI_BYPASS_COST_OPTIMIZER: true, // 默认关闭省钱策略
@@ -35,6 +49,18 @@
             AI_DEFINITION_HEARTBEAT_TURNS: 6,
             ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 回退
             LOCAL_DRIFT_CORRECTION_ENABLED: true,
+            DYNAMIC_NPC_ENABLED: true,
+            DYNAMIC_NPC_SPAWN_CHANCE: 0.28,
+            DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS: 2,
+            DYNAMIC_NPC_MAX_PER_CONTEXT: 2,
+            DYNAMIC_NPC_MAX_GLOBAL: 12,
+            DYNAMIC_NPC_STALE_TURNS: 10,
+            DYNAMIC_NPC_MIGRATION_CHANCE: 0.18,
+            DYNAMIC_NPC_SAME_REGION_ONLY: true,
+            DYNAMIC_NPC_LIFECYCLE_NOTICE: true,
+            DYNAMIC_NPC_NOTICE_COMPACT: true,
+            DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS: 2,
+            DYNAMIC_NPC_NOTICE_LEVEL: 'normal',
             LLM_TUNINGS: []
         };
     }
@@ -81,6 +107,17 @@
                 : Number(def.AI_DEFINITION_HEARTBEAT_TURNS || 6);
             const chatTemperature = normalizeChatTemperature(parsed.AI_CHAT_TEMPERATURE, def.AI_CHAT_TEMPERATURE);
             const topP = normalizeTopP(parsed.AI_TOP_P, def.AI_TOP_P);
+            const dynamicNpcChance = normalizeDynamicNpcChance(parsed.DYNAMIC_NPC_SPAWN_CHANCE, def.DYNAMIC_NPC_SPAWN_CHANCE);
+            const dynamicNpcCooldown = normalizeDynamicNpcInt(parsed.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, def.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, 0, 30);
+            const dynamicNpcMaxPerContext = normalizeDynamicNpcInt(parsed.DYNAMIC_NPC_MAX_PER_CONTEXT, def.DYNAMIC_NPC_MAX_PER_CONTEXT, 0, 10);
+            const dynamicNpcMaxGlobal = normalizeDynamicNpcInt(parsed.DYNAMIC_NPC_MAX_GLOBAL, def.DYNAMIC_NPC_MAX_GLOBAL, 0, 50);
+            const dynamicNpcStaleTurns = normalizeDynamicNpcInt(parsed.DYNAMIC_NPC_STALE_TURNS, def.DYNAMIC_NPC_STALE_TURNS, 1, 60);
+            const dynamicNpcMigrationChance = normalizeDynamicNpcChance(parsed.DYNAMIC_NPC_MIGRATION_CHANCE, def.DYNAMIC_NPC_MIGRATION_CHANCE);
+            const dynamicNpcNoticeCooldown = normalizeDynamicNpcInt(parsed.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, def.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, 0, 20);
+            const dynamicNpcNoticeLevelRaw = String(parsed.DYNAMIC_NPC_NOTICE_LEVEL || def.DYNAMIC_NPC_NOTICE_LEVEL).trim().toLowerCase();
+            const dynamicNpcNoticeLevel = ['minimal', 'normal', 'verbose'].includes(dynamicNpcNoticeLevelRaw)
+                ? dynamicNpcNoticeLevelRaw
+                : 'normal';
             return {
                 AI_BYPASS_COST_OPTIMIZER: parsed.AI_BYPASS_COST_OPTIMIZER !== undefined
                     ? !!parsed.AI_BYPASS_COST_OPTIMIZER
@@ -99,6 +136,26 @@
                 LOCAL_DRIFT_CORRECTION_ENABLED: parsed.LOCAL_DRIFT_CORRECTION_ENABLED !== undefined
                     ? !!parsed.LOCAL_DRIFT_CORRECTION_ENABLED
                     : def.LOCAL_DRIFT_CORRECTION_ENABLED,
+                DYNAMIC_NPC_ENABLED: parsed.DYNAMIC_NPC_ENABLED !== undefined
+                    ? !!parsed.DYNAMIC_NPC_ENABLED
+                    : def.DYNAMIC_NPC_ENABLED,
+                DYNAMIC_NPC_SPAWN_CHANCE: dynamicNpcChance,
+                DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS: dynamicNpcCooldown,
+                DYNAMIC_NPC_MAX_PER_CONTEXT: dynamicNpcMaxPerContext,
+                DYNAMIC_NPC_MAX_GLOBAL: dynamicNpcMaxGlobal,
+                DYNAMIC_NPC_STALE_TURNS: dynamicNpcStaleTurns,
+                DYNAMIC_NPC_MIGRATION_CHANCE: dynamicNpcMigrationChance,
+                DYNAMIC_NPC_SAME_REGION_ONLY: parsed.DYNAMIC_NPC_SAME_REGION_ONLY !== undefined
+                    ? !!parsed.DYNAMIC_NPC_SAME_REGION_ONLY
+                    : def.DYNAMIC_NPC_SAME_REGION_ONLY,
+                DYNAMIC_NPC_LIFECYCLE_NOTICE: parsed.DYNAMIC_NPC_LIFECYCLE_NOTICE !== undefined
+                    ? !!parsed.DYNAMIC_NPC_LIFECYCLE_NOTICE
+                    : def.DYNAMIC_NPC_LIFECYCLE_NOTICE,
+                DYNAMIC_NPC_NOTICE_COMPACT: parsed.DYNAMIC_NPC_NOTICE_COMPACT !== undefined
+                    ? !!parsed.DYNAMIC_NPC_NOTICE_COMPACT
+                    : def.DYNAMIC_NPC_NOTICE_COMPACT,
+                DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS: dynamicNpcNoticeCooldown,
+                DYNAMIC_NPC_NOTICE_LEVEL: dynamicNpcNoticeLevel,
                 LLM_TUNINGS: normalizeLLMTunings(parsed.LLM_TUNINGS || def.LLM_TUNINGS)
             };
         } catch (_) {
@@ -122,6 +179,17 @@
             : Number(def.AI_DEFINITION_HEARTBEAT_TURNS || 6);
         const chatTemperature = normalizeChatTemperature(settings?.AI_CHAT_TEMPERATURE, def.AI_CHAT_TEMPERATURE);
         const topP = normalizeTopP(settings?.AI_TOP_P, def.AI_TOP_P);
+        const dynamicNpcChance = normalizeDynamicNpcChance(settings?.DYNAMIC_NPC_SPAWN_CHANCE, def.DYNAMIC_NPC_SPAWN_CHANCE);
+        const dynamicNpcCooldown = normalizeDynamicNpcInt(settings?.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, def.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, 0, 30);
+        const dynamicNpcMaxPerContext = normalizeDynamicNpcInt(settings?.DYNAMIC_NPC_MAX_PER_CONTEXT, def.DYNAMIC_NPC_MAX_PER_CONTEXT, 0, 10);
+        const dynamicNpcMaxGlobal = normalizeDynamicNpcInt(settings?.DYNAMIC_NPC_MAX_GLOBAL, def.DYNAMIC_NPC_MAX_GLOBAL, 0, 50);
+        const dynamicNpcStaleTurns = normalizeDynamicNpcInt(settings?.DYNAMIC_NPC_STALE_TURNS, def.DYNAMIC_NPC_STALE_TURNS, 1, 60);
+        const dynamicNpcMigrationChance = normalizeDynamicNpcChance(settings?.DYNAMIC_NPC_MIGRATION_CHANCE, def.DYNAMIC_NPC_MIGRATION_CHANCE);
+        const dynamicNpcNoticeCooldown = normalizeDynamicNpcInt(settings?.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, def.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, 0, 20);
+        const dynamicNpcNoticeLevelRaw = String(settings?.DYNAMIC_NPC_NOTICE_LEVEL || def.DYNAMIC_NPC_NOTICE_LEVEL).trim().toLowerCase();
+        const dynamicNpcNoticeLevel = ['minimal', 'normal', 'verbose'].includes(dynamicNpcNoticeLevelRaw)
+            ? dynamicNpcNoticeLevelRaw
+            : 'normal';
         const normalized = {
             AI_BYPASS_COST_OPTIMIZER: settings?.AI_BYPASS_COST_OPTIMIZER !== undefined
                 ? !!settings.AI_BYPASS_COST_OPTIMIZER
@@ -140,6 +208,26 @@
             LOCAL_DRIFT_CORRECTION_ENABLED: settings?.LOCAL_DRIFT_CORRECTION_ENABLED !== undefined
                 ? !!settings.LOCAL_DRIFT_CORRECTION_ENABLED
                 : def.LOCAL_DRIFT_CORRECTION_ENABLED,
+            DYNAMIC_NPC_ENABLED: settings?.DYNAMIC_NPC_ENABLED !== undefined
+                ? !!settings.DYNAMIC_NPC_ENABLED
+                : def.DYNAMIC_NPC_ENABLED,
+            DYNAMIC_NPC_SPAWN_CHANCE: dynamicNpcChance,
+            DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS: dynamicNpcCooldown,
+            DYNAMIC_NPC_MAX_PER_CONTEXT: dynamicNpcMaxPerContext,
+            DYNAMIC_NPC_MAX_GLOBAL: dynamicNpcMaxGlobal,
+            DYNAMIC_NPC_STALE_TURNS: dynamicNpcStaleTurns,
+            DYNAMIC_NPC_MIGRATION_CHANCE: dynamicNpcMigrationChance,
+            DYNAMIC_NPC_SAME_REGION_ONLY: settings?.DYNAMIC_NPC_SAME_REGION_ONLY !== undefined
+                ? !!settings.DYNAMIC_NPC_SAME_REGION_ONLY
+                : def.DYNAMIC_NPC_SAME_REGION_ONLY,
+            DYNAMIC_NPC_LIFECYCLE_NOTICE: settings?.DYNAMIC_NPC_LIFECYCLE_NOTICE !== undefined
+                ? !!settings.DYNAMIC_NPC_LIFECYCLE_NOTICE
+                : def.DYNAMIC_NPC_LIFECYCLE_NOTICE,
+            DYNAMIC_NPC_NOTICE_COMPACT: settings?.DYNAMIC_NPC_NOTICE_COMPACT !== undefined
+                ? !!settings.DYNAMIC_NPC_NOTICE_COMPACT
+                : def.DYNAMIC_NPC_NOTICE_COMPACT,
+            DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS: dynamicNpcNoticeCooldown,
+            DYNAMIC_NPC_NOTICE_LEVEL: dynamicNpcNoticeLevel,
             LLM_TUNINGS: normalizeLLMTunings(settings?.LLM_TUNINGS || def.LLM_TUNINGS)
         };
         // 清理历史遗留字段：旧版 AI 自动纠偏重试已下线
@@ -220,6 +308,20 @@
     CONFIG.AI_DEFINITION_HEARTBEAT_TURNS = Math.max(1, Number(pluginSettings.AI_DEFINITION_HEARTBEAT_TURNS || 6));
     CONFIG.ALLOW_LOCAL_FALLBACK = pluginSettings.ALLOW_LOCAL_FALLBACK === true;
     CONFIG.LOCAL_DRIFT_CORRECTION_ENABLED = pluginSettings.LOCAL_DRIFT_CORRECTION_ENABLED !== false;
+    CONFIG.DYNAMIC_NPC_ENABLED = pluginSettings.DYNAMIC_NPC_ENABLED !== false;
+    CONFIG.DYNAMIC_NPC_SPAWN_CHANCE = normalizeDynamicNpcChance(pluginSettings.DYNAMIC_NPC_SPAWN_CHANCE, 0.28);
+    CONFIG.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS = normalizeDynamicNpcInt(pluginSettings.DYNAMIC_NPC_SPAWN_COOLDOWN_TURNS, 2, 0, 30);
+    CONFIG.DYNAMIC_NPC_MAX_PER_CONTEXT = normalizeDynamicNpcInt(pluginSettings.DYNAMIC_NPC_MAX_PER_CONTEXT, 2, 0, 10);
+    CONFIG.DYNAMIC_NPC_MAX_GLOBAL = normalizeDynamicNpcInt(pluginSettings.DYNAMIC_NPC_MAX_GLOBAL, 12, 0, 50);
+    CONFIG.DYNAMIC_NPC_STALE_TURNS = normalizeDynamicNpcInt(pluginSettings.DYNAMIC_NPC_STALE_TURNS, 10, 1, 60);
+    CONFIG.DYNAMIC_NPC_MIGRATION_CHANCE = normalizeDynamicNpcChance(pluginSettings.DYNAMIC_NPC_MIGRATION_CHANCE, 0.18);
+    CONFIG.DYNAMIC_NPC_SAME_REGION_ONLY = pluginSettings.DYNAMIC_NPC_SAME_REGION_ONLY !== false;
+    CONFIG.DYNAMIC_NPC_LIFECYCLE_NOTICE = pluginSettings.DYNAMIC_NPC_LIFECYCLE_NOTICE !== false;
+    CONFIG.DYNAMIC_NPC_NOTICE_COMPACT = pluginSettings.DYNAMIC_NPC_NOTICE_COMPACT !== false;
+    CONFIG.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS = normalizeDynamicNpcInt(pluginSettings.DYNAMIC_NPC_NOTICE_COOLDOWN_TURNS, 2, 0, 20);
+    CONFIG.DYNAMIC_NPC_NOTICE_LEVEL = ['minimal', 'normal', 'verbose'].includes(String(pluginSettings.DYNAMIC_NPC_NOTICE_LEVEL || '').toLowerCase())
+        ? String(pluginSettings.DYNAMIC_NPC_NOTICE_LEVEL).toLowerCase()
+        : 'normal';
     CONFIG.LLM_TUNINGS = normalizeLLMTunings(pluginSettings.LLM_TUNINGS || []);
     CONFIG.CONSTRAINT_MODIFIER_REMOVE_SCOPE = 'by_equip';
 
