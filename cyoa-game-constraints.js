@@ -233,17 +233,56 @@
         return { active, sources, removed, removeScope };
     }
 
+    function normalizeSourceMap(sources) {
+        const src = sources && typeof sources === "object" ? sources : {};
+        const out = {};
+        Object.keys(src).forEach((k) => {
+            const rows = Array.isArray(src[k]) ? src[k] : [];
+            out[k] = rows.map((row) => ({
+                equipId: String(row?.equipId || "").trim(),
+                equipName: String(row?.equipName || "").trim(),
+                from: String(row?.from || "").trim(),
+                value: String(row?.value || "").trim()
+            }));
+        });
+        return out;
+    }
+
+    function buildImpactLines(activeList, sourceMap) {
+        const active = Array.isArray(activeList) ? activeList : [];
+        const src = sourceMap && typeof sourceMap === "object" ? sourceMap : {};
+        return active.map((key) => {
+            const label = String(CYOA.getConstraintLabel?.(key) || key).trim();
+            const equips = Array.from(new Set((src[key] || []).map((s) => String(s?.equipName || s?.equipId || "").trim()).filter(Boolean))).slice(0, 4);
+            return `- ${label}: ${equips.join("、") || "未知来源"}`;
+        });
+    }
+
     CYOA.getActiveConstraints = function() {
         return resolveConstraintBundle().active;
     };
 
     CYOA.getActiveConstraintDetails = function() {
         const { active, sources, removed, removeScope } = resolveConstraintBundle();
+        const activeList = Array.from(active);
+        const normalizedSources = normalizeSourceMap(sources);
+        const compactSources = Object.keys(normalizedSources).reduce((acc, key) => {
+            acc[key] = normalizedSources[key]
+                .map((row) => String(row.equipName || row.equipId || "").trim())
+                .filter(Boolean)
+                .filter((v, i, arr) => arr.indexOf(v) === i)
+                .slice(0, 6);
+            return acc;
+        }, {});
         return {
-            active: Array.from(active),
-            sources,
+            schemaVersion: 1,
+            active: activeList,
+            activeLabels: activeList.map((k) => String(CYOA.getConstraintLabel?.(k) || k).trim()),
+            sources: normalizedSources,
+            compactSources,
             removed,
-            removeScope
+            removeScope,
+            impactLines: buildImpactLines(activeList, normalizedSources)
         };
     };
 

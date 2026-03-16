@@ -12,8 +12,12 @@
         AI_CHAT_TEMPERATURE: 0.15, // 对话温度（建议 0.1-0.2，降低放飞）
         AI_TOP_P: 0.9, // nucleus sampling（建议 0.7-0.95，越低越收敛）
         AI_GUARD_PROFILE: 'strict', // 约束档位：strict / balanced / free
+        CONSTRAINT_ENFORCEMENT_MODE: 'soft', // 约束执行模式：soft(仅HUD基础限制) / hard(本地强约束改写+拦截)
+        STATE_QUERY_MODE: 'minimal_on_demand', // 状态注入策略：minimal_on_demand / hybrid / full_inline
+        STATE_QUERY_MAX_ROUNDS: 1, // 每回合最多状态查询轮次
+        RAG_RULEBOOK_ENABLED: true, // 启用规则说明书 RAG
         AI_DEFINITION_HEARTBEAT_TURNS: 6, // 每 N 回合注入一次轻量定义包（开局会注入全量）
-        AI_MODEL_PROFILE: 'small_7b_9b', // 模型档位预设：small_7b_9b / medium_13b_34b / large_70b_plus
+        AI_MODEL_PROFILE: 'small_7b_9b', // 模型档位预设：tiny_4b / small_7b_9b / medium_13b_34b / large_70b_plus
         ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 兜底，优先远端 JSON 文件存储
         LOCAL_DRIFT_CORRECTION_ENABLED: true, // 本地叙事纠偏开关（章节/地点/人物/框架）
         DYNAMIC_NPC_ENABLED: true, // 动态 NPC 生成总开关

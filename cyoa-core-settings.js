@@ -7,8 +7,10 @@
     const CONFIG = CYOA?.CONFIG;
     if (!CYOA || !CONFIG) return;
 
-    const PROFILE_VALUES = ['small_7b_9b', 'medium_13b_34b', 'large_70b_plus'];
+    const PROFILE_VALUES = ['tiny_4b', 'small_7b_9b', 'medium_13b_34b', 'large_70b_plus'];
     const GUARD_PROFILE_VALUES = ['strict', 'balanced', 'free'];
+    const CONSTRAINT_ENFORCEMENT_VALUES = ['soft', 'hard'];
+    const STATE_QUERY_MODE_VALUES = ['minimal_on_demand', 'hybrid', 'full_inline'];
 
     function normalizeChatTemperature(v, fallback) {
         const raw = Number(v);
@@ -45,6 +47,10 @@
             AI_CHAT_TEMPERATURE: 0.15, // 默认收敛温度，减少自由发挥
             AI_TOP_P: 0.9, // nucleus sampling，建议与温度协同收敛
             AI_GUARD_PROFILE: 'strict', // 约束档位：strict / balanced / free
+            CONSTRAINT_ENFORCEMENT_MODE: 'soft', // 约束执行模式：soft / hard
+            STATE_QUERY_MODE: 'minimal_on_demand', // minimal_on_demand / hybrid / full_inline
+            STATE_QUERY_MAX_ROUNDS: 1,
+            RAG_RULEBOOK_ENABLED: true,
             AI_MODEL_PROFILE: 'small_7b_9b',
             AI_DEFINITION_HEARTBEAT_TURNS: 6,
             ALLOW_LOCAL_FALLBACK: false, // 默认禁用 localStorage 回退
@@ -101,6 +107,18 @@
             const guardProfile = GUARD_PROFILE_VALUES.includes(guardProfileRaw)
                 ? guardProfileRaw
                 : def.AI_GUARD_PROFILE;
+            const constraintModeRaw = String(parsed.CONSTRAINT_ENFORCEMENT_MODE || def.CONSTRAINT_ENFORCEMENT_MODE).trim().toLowerCase();
+            const constraintMode = CONSTRAINT_ENFORCEMENT_VALUES.includes(constraintModeRaw)
+                ? constraintModeRaw
+                : def.CONSTRAINT_ENFORCEMENT_MODE;
+            const stateQueryModeRaw = String(parsed.STATE_QUERY_MODE || def.STATE_QUERY_MODE).trim().toLowerCase();
+            const stateQueryMode = STATE_QUERY_MODE_VALUES.includes(stateQueryModeRaw)
+                ? stateQueryModeRaw
+                : def.STATE_QUERY_MODE;
+            const queryRoundsRaw = Number(parsed.STATE_QUERY_MAX_ROUNDS);
+            const stateQueryMaxRounds = Number.isFinite(queryRoundsRaw)
+                ? Math.max(0, Math.min(3, Math.round(queryRoundsRaw)))
+                : Number(def.STATE_QUERY_MAX_ROUNDS || 1);
             const heartbeatRaw = Number(parsed.AI_DEFINITION_HEARTBEAT_TURNS);
             const heartbeatTurns = Number.isFinite(heartbeatRaw) && heartbeatRaw >= 1 && heartbeatRaw <= 30
                 ? Math.round(heartbeatRaw)
@@ -128,6 +146,12 @@
                 AI_CHAT_TEMPERATURE: chatTemperature,
                 AI_TOP_P: topP,
                 AI_GUARD_PROFILE: guardProfile,
+                CONSTRAINT_ENFORCEMENT_MODE: constraintMode,
+                STATE_QUERY_MODE: stateQueryMode,
+                STATE_QUERY_MAX_ROUNDS: stateQueryMaxRounds,
+                RAG_RULEBOOK_ENABLED: parsed.RAG_RULEBOOK_ENABLED !== undefined
+                    ? !!parsed.RAG_RULEBOOK_ENABLED
+                    : def.RAG_RULEBOOK_ENABLED,
                 AI_MODEL_PROFILE: modelProfile,
                 AI_DEFINITION_HEARTBEAT_TURNS: heartbeatTurns,
                 ALLOW_LOCAL_FALLBACK: parsed.ALLOW_LOCAL_FALLBACK !== undefined
@@ -173,6 +197,18 @@
         const guardProfile = GUARD_PROFILE_VALUES.includes(guardProfileRaw)
             ? guardProfileRaw
             : def.AI_GUARD_PROFILE;
+        const constraintModeRaw = String(settings?.CONSTRAINT_ENFORCEMENT_MODE || def.CONSTRAINT_ENFORCEMENT_MODE).trim().toLowerCase();
+        const constraintMode = CONSTRAINT_ENFORCEMENT_VALUES.includes(constraintModeRaw)
+            ? constraintModeRaw
+            : def.CONSTRAINT_ENFORCEMENT_MODE;
+        const stateQueryModeRaw = String(settings?.STATE_QUERY_MODE || def.STATE_QUERY_MODE).trim().toLowerCase();
+        const stateQueryMode = STATE_QUERY_MODE_VALUES.includes(stateQueryModeRaw)
+            ? stateQueryModeRaw
+            : def.STATE_QUERY_MODE;
+        const queryRoundsRaw = Number(settings?.STATE_QUERY_MAX_ROUNDS);
+        const stateQueryMaxRounds = Number.isFinite(queryRoundsRaw)
+            ? Math.max(0, Math.min(3, Math.round(queryRoundsRaw)))
+            : Number(def.STATE_QUERY_MAX_ROUNDS || 1);
         const heartbeatRaw = Number(settings?.AI_DEFINITION_HEARTBEAT_TURNS);
         const heartbeatTurns = Number.isFinite(heartbeatRaw) && heartbeatRaw >= 1 && heartbeatRaw <= 30
             ? Math.round(heartbeatRaw)
@@ -200,6 +236,12 @@
             AI_CHAT_TEMPERATURE: chatTemperature,
             AI_TOP_P: topP,
             AI_GUARD_PROFILE: guardProfile,
+            CONSTRAINT_ENFORCEMENT_MODE: constraintMode,
+            STATE_QUERY_MODE: stateQueryMode,
+            STATE_QUERY_MAX_ROUNDS: stateQueryMaxRounds,
+            RAG_RULEBOOK_ENABLED: settings?.RAG_RULEBOOK_ENABLED !== undefined
+                ? !!settings.RAG_RULEBOOK_ENABLED
+                : def.RAG_RULEBOOK_ENABLED,
             AI_MODEL_PROFILE: modelProfile,
             AI_DEFINITION_HEARTBEAT_TURNS: heartbeatTurns,
             ALLOW_LOCAL_FALLBACK: settings?.ALLOW_LOCAL_FALLBACK !== undefined
@@ -304,6 +346,16 @@
     CONFIG.AI_GUARD_PROFILE = GUARD_PROFILE_VALUES.includes(String(pluginSettings.AI_GUARD_PROFILE || '').toLowerCase())
         ? String(pluginSettings.AI_GUARD_PROFILE || '').toLowerCase()
         : 'strict';
+    CONFIG.CONSTRAINT_ENFORCEMENT_MODE = CONSTRAINT_ENFORCEMENT_VALUES.includes(String(pluginSettings.CONSTRAINT_ENFORCEMENT_MODE || '').toLowerCase())
+        ? String(pluginSettings.CONSTRAINT_ENFORCEMENT_MODE || '').toLowerCase()
+        : 'soft';
+    CONFIG.STATE_QUERY_MODE = STATE_QUERY_MODE_VALUES.includes(String(pluginSettings.STATE_QUERY_MODE || '').toLowerCase())
+        ? String(pluginSettings.STATE_QUERY_MODE || '').toLowerCase()
+        : 'minimal_on_demand';
+    CONFIG.STATE_QUERY_MAX_ROUNDS = Number.isFinite(Number(pluginSettings.STATE_QUERY_MAX_ROUNDS))
+        ? Math.max(0, Math.min(3, Math.round(Number(pluginSettings.STATE_QUERY_MAX_ROUNDS))))
+        : 1;
+    CONFIG.RAG_RULEBOOK_ENABLED = pluginSettings.RAG_RULEBOOK_ENABLED !== false;
     CONFIG.AI_MODEL_PROFILE = String(pluginSettings.AI_MODEL_PROFILE || 'small_7b_9b');
     CONFIG.AI_DEFINITION_HEARTBEAT_TURNS = Math.max(1, Number(pluginSettings.AI_DEFINITION_HEARTBEAT_TURNS || 6));
     CONFIG.ALLOW_LOCAL_FALLBACK = pluginSettings.ALLOW_LOCAL_FALLBACK === true;

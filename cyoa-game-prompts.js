@@ -1075,6 +1075,18 @@
         if (frameLines.length) {
             baseLines.push("", ...frameLines);
         }
+        baseLines.push("");
+        if (isZh) {
+            baseLines.push(
+                "硬边界守门：禁止无视物理约束，禁止跳出当前游戏框架（章节/地点/在场对象）。",
+                "按需查询规则：当关键信息不足时，可先输出 state_query；拿到查询结果后必须直接给最终叙事与4选项，不可反复查询。"
+            );
+        } else {
+            baseLines.push(
+                "Hard-boundary gate: do not ignore physical constraints; do not break current game frame (chapter/location/present entities).",
+                "On-demand query rule: when critical info is missing, you may output state_query first; after query result you must return final narrative + 4 options directly without repeated querying."
+            );
+        }
         return baseLines.join("\n");
     };
 })();

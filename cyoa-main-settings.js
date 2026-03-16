@@ -374,6 +374,7 @@
                                 <span>模型档位预设</span>
                             </label>
                             <select id="cyoaModelProfileSelect" class="cyoa-select" style="height:32px;">
+                                <option value="tiny_4b" ${CYOA.CONFIG?.AI_MODEL_PROFILE === "tiny_4b" ? "selected" : ""}>超小模型（4B）</option>
                                 <option value="small_7b_9b" ${CYOA.CONFIG?.AI_MODEL_PROFILE === "small_7b_9b" ? "selected" : ""}>免费小模型（7B-9B）</option>
                                 <option value="medium_13b_34b" ${CYOA.CONFIG?.AI_MODEL_PROFILE === "medium_13b_34b" ? "selected" : ""}>中模型（13B-34B）</option>
                                 <option value="large_70b_plus" ${CYOA.CONFIG?.AI_MODEL_PROFILE === "large_70b_plus" ? "selected" : ""}>大模型（70B+）</option>
@@ -411,6 +412,22 @@
                             <small id="cyoaModelProfileHint" style="font-size:12px; color:var(--text-light);">
                                 可先选模型预设，再手动微调定义心跳；温度建议 0.10-0.20、Top P 建议 0.70-0.95，最终以玩家填写为准。
                             </small>
+                            <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                                <span style="font-size:12px; color:var(--text-light); white-space:nowrap;">状态注入策略</span>
+                                <select id="cyoaStateQueryModeSelect" class="cyoa-select" style="height:30px; min-width:220px;">
+                                    <option value="minimal_on_demand" ${String(CYOA.CONFIG?.STATE_QUERY_MODE || "minimal_on_demand") === "minimal_on_demand" ? "selected" : ""}>最小注入 + 按需查询（推荐）</option>
+                                    <option value="hybrid" ${String(CYOA.CONFIG?.STATE_QUERY_MODE || "minimal_on_demand") === "hybrid" ? "selected" : ""}>混合策略（中等注入 + 查询）</option>
+                                    <option value="full_inline" ${String(CYOA.CONFIG?.STATE_QUERY_MODE || "minimal_on_demand") === "full_inline" ? "selected" : ""}>全量直注入（兼容旧路径）</option>
+                                </select>
+                            </div>
+                            <div style="display:flex; align-items:center; gap:8px;">
+                                <span style="font-size:12px; color:var(--text-light); white-space:nowrap;">查询预算（回合内）</span>
+                                <input id="cyoaStateQueryMaxRoundsInput" type="number" class="cyoa-input" min="0" max="3" step="1" value="${Math.max(0, Math.min(3, Math.round(Number(CYOA.CONFIG?.STATE_QUERY_MAX_ROUNDS ?? 1))))}" style="height:30px; width:92px;">
+                            </div>
+                            <label style="display:flex; align-items:center; gap:8px; cursor:pointer; user-select:none;">
+                                <input id="cyoaRagRulebookEnabledToggle" type="checkbox" ${CYOA.CONFIG?.RAG_RULEBOOK_ENABLED !== false ? "checked" : ""}>
+                                <span>启用规则说明书 RAG</span>
+                            </label>
                         </div>
                         <div style="display:grid; grid-template-columns:1fr; gap:10px;">
                             <label style="display:flex; flex-direction:column; gap:6px; border:1px solid var(--border); border-radius:10px; padding:10px; background:var(--bg); cursor:pointer; user-select:none;">
@@ -638,6 +655,9 @@
         }
 
         const modelProfileSelect = CYOA.$("cyoaModelProfileSelect");
+        const stateQueryModeSelect = CYOA.$("cyoaStateQueryModeSelect");
+        const stateQueryMaxRoundsInput = CYOA.$("cyoaStateQueryMaxRoundsInput");
+        const ragRulebookEnabledToggle = CYOA.$("cyoaRagRulebookEnabledToggle");
         const guardProfileSelect = CYOA.$("cyoaGuardProfileSelect");
         const heartbeatTurnsInput = CYOA.$("cyoaHeartbeatTurnsInput");
         const chatTemperatureInput = CYOA.$("cyoaChatTemperatureInput");
@@ -646,7 +666,13 @@
         const constraintPresetApplyBtn = CYOA.$("cyoaConstraintPresetApplyBtn");
         const modelProfileHint = CYOA.$("cyoaModelProfileHint");
         if (modelProfileSelect) {
-            const profileToHeartbeat = { small_7b_9b: 6, medium_13b_34b: 8, large_70b_plus: 10 };
+            const profileToHeartbeat = { tiny_4b: 12, small_7b_9b: 6, medium_13b_34b: 8, large_70b_plus: 10 };
+            const profileToSampling = {
+                tiny_4b: { temp: 0.10, topP: 0.80 },
+                small_7b_9b: { temp: 0.15, topP: 0.85 },
+                medium_13b_34b: { temp: 0.15, topP: 0.90 },
+                large_70b_plus: { temp: 0.18, topP: 0.92 }
+            };
             const constraintPresets = {
                 beginner: { guard: "strict", temp: 0.10, topP: 0.80 },
                 stable: { guard: "balanced", temp: 0.15, topP: 0.85 },
@@ -685,6 +711,7 @@
                 } catch (_) {}
             };
             const profileHintText = (profile, turns) => {
+                if (profile === "tiny_4b") return `适合 4B：建议每 ${turns} 回合发送轻量定义包；温度建议 0.08-0.12，Top P 建议 0.75-0.85。`;
                 if (profile === "small_7b_9b") return `适合 7B-9B：建议每 ${turns} 回合发送轻量定义包；温度建议 0.10-0.20，Top P 建议 0.70-0.95。`;
                 if (profile === "medium_13b_34b") return `适合 13B-34B：建议每 ${turns} 回合发送轻量定义包；温度建议 0.10-0.20，Top P 建议 0.70-0.95。`;
                 return `适合 70B+：建议每 ${turns} 回合发送轻量定义包；温度建议 0.10-0.20，Top P 建议 0.70-0.95。`;
@@ -725,8 +752,11 @@
             modelProfileSelect.onchange = () => {
                 const profile = String(modelProfileSelect.value || "small_7b_9b");
                 const turns = Number(profileToHeartbeat[profile] || 6);
+                const sampling = profileToSampling[profile] || profileToSampling.small_7b_9b;
                 if (heartbeatTurnsInput) heartbeatTurnsInput.value = String(turns);
-                saveProfileAndTurns(profile, turns);
+                if (chatTemperatureInput) chatTemperatureInput.value = Number(sampling.temp).toFixed(2);
+                if (topPInput) topPInput.value = Number(sampling.topP).toFixed(2);
+                saveProfileAndTurns(profile, turns, sampling.temp, sampling.topP);
                 syncHint();
                 CYOA.log?.("AI_MODEL_PROFILE =", profile, "AI_DEFINITION_HEARTBEAT_TURNS =", turns, "AI_CHAT_TEMPERATURE =", CYOA.CONFIG?.AI_CHAT_TEMPERATURE, "AI_TOP_P =", CYOA.CONFIG?.AI_TOP_P);
             };
@@ -784,6 +814,30 @@
                 CYOA.log?.("AI_GUARD_PROFILE =", next);
             };
         }
+
+        const persistStateQuerySettings = () => {
+            const rawMode = String(stateQueryModeSelect?.value || CYOA.CONFIG?.STATE_QUERY_MODE || "minimal_on_demand").trim().toLowerCase();
+            const mode = ["minimal_on_demand", "hybrid", "full_inline"].includes(rawMode) ? rawMode : "minimal_on_demand";
+            const roundsRaw = Number(stateQueryMaxRoundsInput?.value);
+            const rounds = Number.isFinite(roundsRaw) ? Math.max(0, Math.min(3, Math.round(roundsRaw))) : 1;
+            const ragRulebookEnabled = !!ragRulebookEnabledToggle?.checked;
+            if (stateQueryModeSelect) stateQueryModeSelect.value = mode;
+            if (stateQueryMaxRoundsInput) stateQueryMaxRoundsInput.value = String(rounds);
+            CYOA.CONFIG.STATE_QUERY_MODE = mode;
+            CYOA.CONFIG.STATE_QUERY_MAX_ROUNDS = rounds;
+            CYOA.CONFIG.RAG_RULEBOOK_ENABLED = ragRulebookEnabled;
+            try {
+                const current = CYOA.loadPluginSettings?.() || {};
+                current.STATE_QUERY_MODE = mode;
+                current.STATE_QUERY_MAX_ROUNDS = rounds;
+                current.RAG_RULEBOOK_ENABLED = ragRulebookEnabled;
+                CYOA.savePluginSettings?.(current);
+            } catch (_) {}
+            CYOA.log?.("STATE_QUERY_SETTINGS =", { mode, rounds, ragRulebookEnabled });
+        };
+        if (stateQueryModeSelect) stateQueryModeSelect.onchange = persistStateQuerySettings;
+        if (stateQueryMaxRoundsInput) stateQueryMaxRoundsInput.onchange = persistStateQuerySettings;
+        if (ragRulebookEnabledToggle) ragRulebookEnabledToggle.onchange = persistStateQuerySettings;
 
         const localFallbackToggle = CYOA.$("cyoaAllowLocalFallbackToggle");
         if (localFallbackToggle) {

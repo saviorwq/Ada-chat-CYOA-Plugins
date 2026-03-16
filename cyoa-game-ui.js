@@ -18,6 +18,16 @@
     const t = CYOA.t || ((k) => k);
     const escapeHtml = CYOA.escapeHtml || ((s) => String(s ?? ""));
     const isZhLocale = () => (CYOA._storyLocale || "zh") === "zh";
+    const getStateQueryMode = () => {
+        const raw = String(CYOA.CONFIG?.STATE_QUERY_MODE || "minimal_on_demand").trim().toLowerCase();
+        if (raw === "full_inline" || raw === "hybrid" || raw === "minimal_on_demand") return raw;
+        return "minimal_on_demand";
+    };
+    const getStateQueryMaxRounds = () => {
+        const raw = Number(CYOA.CONFIG?.STATE_QUERY_MAX_ROUNDS);
+        if (!Number.isFinite(raw)) return 1;
+        return Math.max(0, Math.min(3, Math.round(raw)));
+    };
 
     function detectStoryLocale(game, save, userText) {
         const sceneId = save?.currentNodeId;
@@ -773,6 +783,194 @@
         if (speech) speech.value = "";
     };
 
+    function parseStateQueryKeysFromText(rawText) {
+        const raw = String(rawText || "").trim();
+        if (!raw) return [];
+        const normalizeKey = (k) => {
+            const s = String(k || "").trim().toLowerCase();
+            if (!s) return "";
+            const alias = {
+                posture: "posture",
+                constraints: "active_constraints",
+                active_constraints: "active_constraints",
+                constraint_sources: "constraint_sources",
+                equip: "equipment_impacts",
+                equipment: "equipment_impacts",
+                equipment_impacts: "equipment_impacts",
+                skills: "skills",
+                recent: "recent",
+                interactables: "interactables",
+                world: "world",
+                rag: "rag_rules",
+                rag_rules: "rag_rules",
+                rules: "rag_rules",
+                rulebook: "rag_rules"
+            };
+            return alias[s] || "";
+        };
+        const out = [];
+        const push = (v) => {
+            const key = normalizeKey(v);
+            if (!key) return;
+            if (!out.includes(key)) out.push(key);
+        };
+        const fenced = raw.match(/```(?:json)?\s*([\s\S]*?)\s*```/i);
+        const jsonSource = fenced?.[1] || raw;
+        try {
+            const parsed = JSON.parse(jsonSource);
+            const arr = Array.isArray(parsed?.state_query) ? parsed.state_query : [];
+            arr.forEach(push);
+        } catch (_) {
+            const m = raw.match(/\[STATE_QUERY\]\s*([^\n]+)/i);
+            if (m?.[1]) m[1].split(/[,\s|，、]+/).forEach(push);
+        }
+        return out.slice(0, 8);
+    }
+
+    function buildStateQueryCapabilityHint() {
+        const maxRounds = getStateQueryMaxRounds();
+        if (isZhLocale()) {
+            return [
+                "你可以按需查询状态：若信息不足，可先仅输出 JSON：{\"state_query\":[\"posture\",\"active_constraints\",\"constraint_sources\",\"equipment_impacts\",\"skills\",\"recent\",\"interactables\",\"rag_rules\"]}。",
+                `查询预算：最多 ${maxRounds} 次 state_query。`,
+                "拿到查询结果后必须直接输出最终叙事+4选项，不要再次输出 state_query。"
+            ].join("\n");
+        }
+        return [
+            "You can query state on demand. If info is insufficient, first output JSON only: {\"state_query\":[\"posture\",\"active_constraints\",\"constraint_sources\",\"equipment_impacts\",\"skills\",\"recent\",\"interactables\",\"rag_rules\"]}.",
+            `Query budget: at most ${maxRounds} state_query round(s).`,
+            "After receiving query results, output final narrative + 4 options directly, and do not output state_query again."
+        ].join("\n");
+    }
+
+    function buildStateQueryResultBlock(queryKeys, ctx) {
+        const keys = Array.isArray(queryKeys) ? queryKeys : [];
+        const state = ctx?.state || {};
+        const save = ctx?.save || {};
+        const activeConstraints = ctx?.activeConstraints || [];
+        const constraintDetails = ctx?.constraintDetails || {};
+        const skillState = String(ctx?.skillState || "").trim();
+        const recentLite = String(ctx?.recentLite || "").trim();
+        const strictFrame = ctx?.strictFrame || {};
+        const lines = [];
+        const has = (k) => keys.includes(k);
+        if (has("posture")) {
+            const posture = String(save?.posture || state?.posture || "standing").trim();
+            const dur = Number(save?.postureDuration || 0);
+            lines.push(isZhLocale()
+                ? `- posture: ${posture}${dur > 0 ? `（${dur}回合）` : ""}`
+                : `- posture: ${posture}${dur > 0 ? ` (${dur} turns)` : ""}`);
+        }
+        if (has("active_constraints")) {
+            const labels = (Array.isArray(activeConstraints) ? activeConstraints : []).map((k) => String(CYOA.getConstraintLabel?.(k) || k).trim()).filter(Boolean);
+            lines.push(isZhLocale() ? `- active_constraints: ${labels.join("、") || "无"}` : `- active_constraints: ${labels.join(", ") || "none"}`);
+        }
+        if (has("constraint_sources")) {
+            const compact = constraintDetails?.compactSources && typeof constraintDetails.compactSources === "object"
+                ? constraintDetails.compactSources
+                : {};
+            const sourceLines = Object.keys(compact).slice(0, 8).map((k) => {
+                const label = String(CYOA.getConstraintLabel?.(k) || k).trim();
+                const equips = Array.isArray(compact[k]) ? compact[k].slice(0, 3) : [];
+                return isZhLocale() ? `${label}:${equips.join("、") || "未知"}` : `${label}:${equips.join(", ") || "unknown"}`;
+            });
+            lines.push(isZhLocale() ? `- constraint_sources: ${sourceLines.join("；") || "无"}` : `- constraint_sources: ${sourceLines.join("; ") || "none"}`);
+        }
+        if (has("equipment_impacts")) {
+            const impactLines = Array.isArray(constraintDetails?.impactLines) ? constraintDetails.impactLines : [];
+            lines.push(`- equipment_impacts:\n${impactLines.join("\n") || (isZhLocale() ? "无" : "none")}`);
+        }
+        if (has("skills")) lines.push(isZhLocale() ? `- skills: ${skillState || "无"}` : `- skills: ${skillState || "none"}`);
+        if (has("recent")) lines.push(`- recent:\n${recentLite || (isZhLocale() ? "无" : "none")}`);
+        if (has("interactables")) {
+            const npcs = Array.isArray(strictFrame?.presentCharacters) ? strictFrame.presentCharacters.slice(0, 8) : [];
+            const fac = Array.isArray(strictFrame?.facilities) ? strictFrame.facilities.slice(0, 8) : [];
+            lines.push(isZhLocale()
+                ? `- interactables: NPC=${npcs.join("、") || "无"}；设施=${fac.join("、") || "无"}`
+                : `- interactables: NPC=${npcs.join(", ") || "none"}; facilities=${fac.join(", ") || "none"}`);
+        }
+        if (has("world")) {
+            lines.push(`- world: chapter=${state.chapter || ""}; location=${state.location || ""}; region=${state.region || ""}`);
+        }
+        if (has("rag_rules")) {
+            const ragSnippet = String(CYOA.queryRagByKeys?.(keys, ctx) || "").trim();
+            lines.push(`- rag_rules:\n${ragSnippet || (isZhLocale() ? "无" : "none")}`);
+        }
+        const body = lines.join("\n").trim();
+        return isZhLocale()
+            ? `【状态查询结果】\n${body || "- 无可用结果"}\n\n请基于以上结果，直接输出最终叙事与4个选项（2行动+2对话），禁止再次输出 state_query。`
+            : `[StateQueryResult]\n${body || "- no results"}\n\nBased on the result above, output final narrative and 4 options directly (2 actions + 2 dialogues). Do not output state_query again.`;
+    }
+
+    function buildGameSettingPacketLite(params) {
+        const p = params && typeof params === "object" ? params : {};
+        const mode = String(p.mode || getStateQueryMode()).trim().toLowerCase();
+        const game = p.game || {};
+        const save = p.save || {};
+        const state = p.state || {};
+        const strictFrameLite = String(p.strictFrameLite || "").trim();
+        const aiInputText = String(p.aiInputText || "").trim();
+        const definitionPacket = String(p.definitionPacket || "").trim();
+        const stateQueryHint = String(p.stateQueryHint || "").trim();
+        const synopsisLite = String(p.synopsisLite || "").trim();
+        const worldText = String(p.worldText || "").trim();
+        const backgroundText = String(p.backgroundText || "").trim();
+        const skillState = String(p.skillState || "").trim();
+        const ragLite = String(p.ragLite || "").trim();
+        const storyCardLite = String(p.storyCardLite || "").trim();
+        const recentLite = String(p.recentLite || "").trim();
+
+        if (isZhLocale()) {
+            const lines = [
+                `【游戏设定包】${game.name || "CYOA"}`,
+                `【当前章节】${state.chapter || save.currentChapter || "未设置"}`,
+                `【当前地点】${state.location || save.currentLocation || "未设置"}`,
+                `【主角】${state.player || save.playerCharacter || "玩家"}`,
+                `【主角姿势】${state.posture || save.posture || "standing"}`,
+                "【硬边界规则】不得无视物理规则；不得跳出游戏框架；不得捏造未查询到的关键状态。",
+                `【硬边界事实框架】${strictFrameLite || "{}"}`
+            ];
+            if (mode === "hybrid" || mode === "full_inline") {
+                lines.push(`【故事简介】${synopsisLite || "无"}`);
+                lines.push(`【世界观】${worldText || "无"}`);
+                lines.push(`【背景】${backgroundText || "无"}`);
+                lines.push(`【技能】${skillState || "无"}`);
+            }
+            if (mode === "full_inline") {
+                if (ragLite) lines.push(`【RAG记忆库】\n${ragLite}`);
+                if (storyCardLite) lines.push(`【Lore卡】\n${storyCardLite}`);
+                if (recentLite) lines.push(`【最近】\n${recentLite}`);
+            }
+            if (definitionPacket) lines.push(`【定义心跳】\n${definitionPacket}`);
+            lines.push(`【状态按需查询】\n${stateQueryHint || "可按需查询状态。"}\n【输入】\n${aiInputText || "（无）"}`);
+            return lines.join("\n");
+        }
+
+        const lines = [
+            `[GameSettingPacket] ${game.name || "CYOA"}`,
+            `[CurrentChapter] ${state.chapter || save.currentChapter || "unset"}`,
+            `[CurrentLocation] ${state.location || save.currentLocation || "unset"}`,
+            `[Player] ${state.player || save.playerCharacter || "player"}`,
+            `[PlayerPosture] ${state.posture || save.posture || "standing"}`,
+            "[HardBoundaryRules] Do not ignore physical rules; do not break game frame; do not fabricate unqueried critical state.",
+            `[HardBoundaryFrame] ${strictFrameLite || "{}"}`
+        ];
+        if (mode === "hybrid" || mode === "full_inline") {
+            lines.push(`[StorySynopsis] ${synopsisLite || "none"}`);
+            lines.push(`[WorldSetting] ${worldText || "none"}`);
+            lines.push(`[Background] ${backgroundText || "none"}`);
+            lines.push(`[Skills] ${skillState || "none"}`);
+        }
+        if (mode === "full_inline") {
+            if (ragLite) lines.push(`[RAG]\n${ragLite}`);
+            if (storyCardLite) lines.push(`[LoreCards]\n${storyCardLite}`);
+            if (recentLite) lines.push(`[Recent]\n${recentLite}`);
+        }
+        if (definitionPacket) lines.push(`[DefinitionHeartbeat]\n${definitionPacket}`);
+        lines.push(`[StateQueryCapability]\n${stateQueryHint || "You may query state on demand."}\n[Input]\n${aiInputText || "(empty)"}`);
+        return lines.join("\n");
+    }
+
     function sleep(ms) {
         return new Promise(resolve => setTimeout(resolve, ms));
     }
@@ -1159,13 +1357,19 @@
     function adaptAiByResponseMode(aiRawText, responseMode) {
         const mode = String(responseMode || "text").trim().toLowerCase();
         const raw = String(aiRawText || "").trim();
+        const keepRawForDisplay = (src) => String(src || "")
+            .replace(/```cyoa_changes[\s\S]*?```/ig, "")
+            .replace(/```cyoa_changes[\s\S]*$/ig, "")
+            .trim();
         if (mode !== "json") {
-            const plain = sanitizeAITextForDisplay(raw) || "（无回复）";
+            const sanitized = sanitizeAITextForDisplay(raw);
+            const plain = sanitized || keepRawForDisplay(raw) || "（无回复）";
             return { aiRawText: raw || "（无回复）", aiText: plain, usedFallback: false };
         }
         const env = parseResponseJsonEnvelope(raw);
         if (!env) {
-            const plain = sanitizeAITextForDisplay(raw) || "（无回复）";
+            const sanitized = sanitizeAITextForDisplay(raw);
+            const plain = sanitized || keepRawForDisplay(raw) || "（无回复）";
             return { aiRawText: raw || "（无回复）", aiText: plain, usedFallback: true };
         }
         const body = [env.narrative, env.optionLines.join("\n")].filter(Boolean).join("\n\n").trim() || "（无回复）";
@@ -2034,22 +2238,63 @@
                 .filter((v, i, arr) => arr.indexOf(v) === i);
         }
 
+        function getKnownModelPool() {
+            const fromAll = (Array.isArray(window.allModels) ? window.allModels : [])
+                .map(m => String(m?.value || "").trim())
+                .filter(Boolean);
+            const fromMain = (typeof MainApp !== "undefined" && typeof MainApp.getModels === "function")
+                ? (MainApp.getModels("chat") || []).map(m => String(m?.value || "").trim()).filter(Boolean)
+                : [];
+            const fromSelect = Array.from(document.getElementById("model")?.options || [])
+                .map(opt => String(opt?.value || "").trim())
+                .filter(Boolean);
+            return [...fromAll, ...fromMain, ...fromSelect]
+                .filter((v, i, arr) => arr.indexOf(v) === i);
+        }
+
         function resolveChatModelForGame() {
             const current = String(window.gameModeModel || document.getElementById("model")?.value || "").trim();
+            const narratorModel = String(game?.narrator?.model || "").trim();
             const chatPool = getChatModelPool();
-            if (!chatPool.length) return "";
+            const knownPool = getKnownModelPool();
+            const pickAndSync = (picked) => {
+                const v = String(picked || "").trim();
+                if (!v) return "";
+                // 与界面同步，避免后续又被错误模型污染
+                const modelEl = document.getElementById("model");
+                if (modelEl) {
+                    const hasOpt = Array.from(modelEl.options || []).some(opt => String(opt?.value || "") === v);
+                    if (hasOpt) modelEl.value = v;
+                }
+                window.gameModeModel = v;
+                return v;
+            };
 
-            const currentIsChat = chatPool.includes(current);
-            if (currentIsChat) return current;
+            if (current && chatPool.includes(current)) return pickAndSync(current);
+            if (narratorModel && chatPool.includes(narratorModel)) return pickAndSync(narratorModel);
+            // 兼容“模型类型未标成 chat”的情况：只要是已知模型值，仍允许走该模型
+            if (current && knownPool.includes(current)) return pickAndSync(current);
+            if (narratorModel && knownPool.includes(narratorModel)) return pickAndSync(narratorModel);
+            if (!chatPool.length) {
+                if (narratorModel) return pickAndSync(narratorModel);
+                if (current) return pickAndSync(current);
+                return "";
+            }
 
-            const providerId = current.includes("::") ? current.split("::")[0] : "";
-            const sameProvider = chatPool.find(v => providerId && v.startsWith(providerId + "::"));
-            const picked = sameProvider || chatPool[0];
+            const currentProvider = current.includes("::") ? current.split("::")[0] : "";
+            const narratorProvider = narratorModel.includes("::") ? narratorModel.split("::")[0] : "";
+            const sameProvider = chatPool.find(v =>
+                (currentProvider && v.startsWith(currentProvider + "::"))
+                || (narratorProvider && v.startsWith(narratorProvider + "::"))
+            );
+            const picked = sameProvider || chatPool[0] || narratorModel || current || "";
 
-            // 与界面同步，避免后续又被错误模型污染
             const modelEl = document.getElementById("model");
-            if (modelEl && picked) modelEl.value = picked;
-            return picked;
+            if (modelEl && picked) {
+                const hasOpt = Array.from(modelEl.options || []).some(opt => String(opt?.value || "") === String(picked));
+                if (hasOpt) modelEl.value = picked;
+            }
+            return pickAndSync(picked);
         }
 
         function pickBackupChatModel(currentModel) {
@@ -2456,6 +2701,14 @@
 
         function buildAiChatRequestPayload(model, tunedSystemPrompt, userPayload, game) {
             const provider = resolveNarratorProvider(game, model);
+            const providerDef = (Array.isArray(window.providers) ? window.providers : [])
+                .find((p) => String(p?.id || "").trim() === String(provider || "").trim());
+            const deploymentType = String(providerDef?.deployment_type || "").trim().toLowerCase();
+            const baseUrl = String(providerDef?.base_url || "").trim().toLowerCase();
+            const isLikelyLocalProvider = deploymentType === "local"
+                || /(?:^https?:\/\/)?(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?/i.test(baseUrl)
+                || /^https?:\/\/192\.168\./i.test(baseUrl)
+                || /^https?:\/\/10\./i.test(baseUrl);
             const payload = {
                 client: "cyoa",
                 clientRuntime: "browser_plugin",
@@ -2469,7 +2722,8 @@
                     { role: "system", content: tunedSystemPrompt },
                     { role: "user", content: userPayload }
                 ],
-                stream: true
+                // 本地供应商优先非流式，规避 NDJSON/SSE 兼容差异导致“无回复”
+                stream: !isLikelyLocalProvider
             };
             if (provider) payload.provider = provider;
             return payload;
@@ -2481,6 +2735,56 @@
                 ? `${guardPrompt}\n\n${prompt}\n\n[Model-specific tuning]\n${modelTuning}`
                 : `${guardPrompt}\n\n${prompt}`;
             const requestPayload = buildAiChatRequestPayload(model, tunedSystemPrompt, userPayload, game);
+            const extractChunkText = (parsed) => String(
+                parsed?.choices?.[0]?.delta?.content
+                || parsed?.choices?.[0]?.message?.content
+                || parsed?.choices?.[0]?.text
+                || parsed?.message?.content
+                || parsed?.content
+                || parsed?.response
+                || parsed?.error?.message
+                || parsed?.error
+                || ""
+            );
+            const appendChunkSmart = (base, chunk) => {
+                const cur = String(base || "");
+                const next = String(chunk || "");
+                if (!next) return cur;
+                // 兼容部分后端返回“累计全文”而非 delta，避免重复拼接
+                if (cur && next.startsWith(cur)) return next;
+                return cur + next;
+            };
+            const consumePossibleJsonLine = (line, onText) => {
+                const trimmed = String(line || "").trim();
+                if (!trimmed) return false;
+                const raw = trimmed.startsWith("data:") ? trimmed.replace(/^data:\s*/, "") : trimmed;
+                if (!raw || raw === "[DONE]") return false;
+                try {
+                    const parsed = JSON.parse(raw);
+                    const deltaText = extractChunkText(parsed);
+                    if (!deltaText) return false;
+                    onText(deltaText);
+                    return true;
+                } catch (_) {
+                    return false;
+                }
+            };
+            const tryExtractTextFromRawCollected = (rawCollected) => {
+                const raw = String(rawCollected || "").trim();
+                if (!raw) return "";
+                try {
+                    const parsed = JSON.parse(raw);
+                    return extractChunkText(parsed);
+                } catch (_) {}
+                let merged = "";
+                raw.split(/\r?\n/).forEach((line) => {
+                    consumePossibleJsonLine(line, (deltaText) => {
+                        merged = appendChunkSmart(merged, deltaText);
+                    });
+                });
+                if (merged) return merged;
+                return "";
+            };
             const r = await fetch("ai_proxy.php", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
@@ -2489,7 +2793,16 @@
             if (!r.ok) throw new Error(`AI request failed: HTTP ${r.status}`);
             let aiRawText = "";
             let rawCollected = "";
-            if (r.body && typeof r.body.getReader === "function") {
+            if (requestPayload.stream !== true) {
+                const rawText = await r.text();
+                rawCollected = rawText;
+                try {
+                    const d = JSON.parse(rawText);
+                    aiRawText = extractChunkText(d);
+                } catch (_) {
+                    aiRawText = tryExtractTextFromRawCollected(rawText) || rawText;
+                }
+            } else if (r.body && typeof r.body.getReader === "function") {
                 const reader = r.body.getReader();
                 const decoder = new TextDecoder("utf-8");
                 let buffer = "";
@@ -2502,60 +2815,83 @@
                     const lines = buffer.split(/\r?\n/);
                     buffer = lines.pop() || "";
                     lines.forEach((line) => {
-                        const trimmed = String(line || "").trim();
-                        if (!trimmed.startsWith("data:")) return;
-                        const data = trimmed.replace(/^data:\s*/, "");
-                        if (!data || data === "[DONE]") return;
-                        try {
-                            const parsed = JSON.parse(data);
-                            const deltaText = String(
-                                parsed?.choices?.[0]?.delta?.content
-                                || parsed?.choices?.[0]?.message?.content
-                                || parsed?.choices?.[0]?.text
-                                || parsed?.message?.content
-                                || parsed?.content
-                                || ""
-                            );
-                            if (!deltaText) return;
-                            aiRawText += deltaText;
+                        const ok = consumePossibleJsonLine(line, (deltaText) => {
+                            aiRawText = appendChunkSmart(aiRawText, deltaText);
                             if (typeof onPartialRaw === "function") onPartialRaw(aiRawText);
-                        } catch (_) {
-                            // ignore non-JSON SSE fragments
-                        }
+                        });
+                        if (ok) return;
+                        // ignore non-JSON fragments
                     });
                 }
                 rawCollected += decoder.decode();
                 if (!aiRawText && rawCollected.trim()) {
-                    try {
-                        const d = JSON.parse(rawCollected);
-                        aiRawText = String(
-                            d?.choices?.[0]?.message?.content
-                            || d?.choices?.[0]?.text
-                            || d?.message?.content
-                            || d?.content
-                            || ""
-                        );
-                    } catch (_) {
-                        aiRawText = rawCollected;
-                    }
+                    aiRawText = tryExtractTextFromRawCollected(rawCollected) || "";
                 }
             } else {
                 const rawText = await r.text();
                 rawCollected = rawText;
                 try {
                     const d = JSON.parse(rawText);
-                    aiRawText = String(
-                        d?.choices?.[0]?.message?.content
-                        || d?.choices?.[0]?.text
-                        || d?.message?.content
-                        || d?.content
-                        || ""
-                    );
+                    aiRawText = extractChunkText(d);
                 } catch (_) {
                     aiRawText = rawText;
                 }
             }
-            aiRawText = String(aiRawText || "").trim() || "（无回复）";
+            // 兜底：流式未取到正文时，自动降级非流式重试一次（仅本次请求内）
+            if (!String(aiRawText || "").trim()) {
+                try {
+                    const fallbackPayload = { ...requestPayload, stream: false };
+                    const rf = await fetch("ai_proxy.php", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(fallbackPayload)
+                    });
+                    if (rf.ok) {
+                        const rawFallback = await rf.text();
+                        let parsedFallback = null;
+                        try { parsedFallback = JSON.parse(rawFallback); } catch (_) {}
+                        aiRawText = String(
+                            extractChunkText(parsedFallback || {})
+                            || tryExtractTextFromRawCollected(rawFallback)
+                            || rawFallback
+                            || ""
+                        ).trim();
+                    }
+                } catch (_) {}
+            }
+            // 终极兜底：若仍为空，使用轻量上下文再请求一次（适配本地小模型上下文承载能力）
+            if (!String(aiRawText || "").trim()) {
+                try {
+                    const liteInput = isZhLocale()
+                        ? `【轻量模式】\n【当前章节】${curChapter?.title || save?.currentChapter || "未设置"}\n【当前地点】${loc?.name || save?.currentLocation || "未设置"}\n【玩家输入】${aiInputText}\n请用中文先叙述当前结果，再给出4个可执行选项（2行动+2对话）。`
+                        : `[Lite mode]\n[CurrentChapter] ${curChapter?.title || save?.currentChapter || "unset"}\n[CurrentLocation] ${loc?.name || save?.currentLocation || "unset"}\n[PlayerInput] ${aiInputText}\nNarrate outcome first, then provide exactly 4 executable options (2 actions + 2 dialogues).`;
+                    const litePayload = buildAiChatRequestPayload(model, tunedSystemPrompt, liteInput, game);
+                    litePayload.stream = false;
+                    const rl = await fetch("ai_proxy.php", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify(litePayload)
+                    });
+                    if (rl.ok) {
+                        const rawLite = await rl.text();
+                        let parsedLite = null;
+                        try { parsedLite = JSON.parse(rawLite); } catch (_) {}
+                        aiRawText = String(
+                            extractChunkText(parsedLite || {})
+                            || tryExtractTextFromRawCollected(rawLite)
+                            || rawLite
+                            || ""
+                        ).trim();
+                    }
+                } catch (_) {}
+            }
+            aiRawText = String(aiRawText || "").trim();
+            if (!aiRawText) {
+                const status = Number(r.status || 0);
+                aiRawText = isZhLocale()
+                    ? `（空回复）上游未返回可解析正文（HTTP ${status || "?"}）`
+                    : `(Empty reply) Upstream returned no parseable text (HTTP ${status || "?"})`;
+            }
             const adapted = adaptAiByResponseMode(aiRawText, responseMode);
             aiRawText = adapted.aiRawText;
             const aiText = adapted.aiText;
@@ -2565,6 +2901,7 @@
                 bypassCost: String(r.headers.get("x-cyoa-bypass-cost") || "") === "1",
                 costPipeline: String(r.headers.get("x-cyoa-cost-pipeline") || "") === "1",
                 cacheHit: String(r.headers.get("x-cyoa-cache-hit") || "") === "1" || String(r.headers.get("x-cache-hit") || "").toLowerCase() === "true",
+                streamRequested: requestPayload.stream === true,
                 usedJsonFallback
             };
             return { aiRawText, aiText, meta };
@@ -2686,9 +3023,25 @@
         const charProfileLite = normalizePromptText(charProfileBlock, 1000);
         const worldText = normalizePromptText(game.worldSetting, 420);
         const backgroundText = normalizePromptText(game.background || game.settingBackground || game.coreMechanics, 420);
-        const userPayload = isZhLocale()
-            ? `【游戏】${game.name || "CYOA"}\n【故事简介】${normalizePromptText(game.synopsis, 240)}\n【世界观】${worldText}\n【背景】${backgroundText}\n【当前章节】${curChapter?.title || save.currentChapter || "未设置"}\n【当前地点】${loc?.name || save.currentLocation || "未设置"}\n【状态】${JSON.stringify(state)}\n【技能】${skillState || "无"}\n【人物档案约束】\n${charProfileLite || "无"}\n【叙事一致性裁决】世界/环境/线索/结果叙述必须服从在场人物档案与能力边界，人物做不到的事情不得写成已发生。\n【硬边界事实框架】${packed.strictFrameLite}\n【RAG记忆库】\n${packed.ragLite || "无"}\n【Lore卡】\n${packed.storyCardLite || "无"}\n${definitionPacket ? `【定义心跳】\n${definitionPacket}\n` : ""}【最近】\n${packed.recentLite}\n【输入】\n${aiInputText}`
-            : `[Game] ${game.name || "CYOA"}\n[StorySynopsis] ${normalizePromptText(game.synopsis, 240)}\n[WorldSetting] ${worldText}\n[Background] ${backgroundText}\n[CurrentChapter] ${curChapter?.title || save.currentChapter || "unset"}\n[CurrentLocation] ${loc?.name || save.currentLocation || "unset"}\n[State] ${JSON.stringify(state)}\n[Skills] ${skillState || "none"}\n[CharacterProfileConstraints]\n${charProfileLite || "none"}\n[NarrativeConsistencyGate] World/environment/clue/outcome narration must obey present-character profiles and capability bounds; impossible actions must not be narrated as completed outcomes.\n[HardBoundaryFrame] ${packed.strictFrameLite}\n[RAG]\n${packed.ragLite || "none"}\n[LoreCards]\n${packed.storyCardLite || "none"}\n${definitionPacket ? `[DefinitionHeartbeat]\n${definitionPacket}\n` : ""}[Recent]\n${packed.recentLite}\n[Input]\n${aiInputText}`;
+        const stateQueryHint = buildStateQueryCapabilityHint();
+        const stateQueryMode = getStateQueryMode();
+        const userPayload = buildGameSettingPacketLite({
+            mode: stateQueryMode,
+            game,
+            save,
+            state,
+            aiInputText,
+            strictFrameLite: packed.strictFrameLite,
+            definitionPacket,
+            stateQueryHint,
+            synopsisLite: normalizePromptText(game.synopsis, 240),
+            worldText,
+            backgroundText,
+            skillState: skillState || (isZhLocale() ? "无" : "none"),
+            ragLite: packed.ragLite || "",
+            storyCardLite: packed.storyCardLite || "",
+            recentLite: packed.recentLite || ""
+        });
         const prompt = game.narrator?.prompt || (isZhLocale()
             ? "你是 CYOA 叙述者。回复剧情后必须给出4个选项：2个行动、2个对话。"
             : "You are the CYOA narrator. After each response, provide exactly 4 options: 2 actions and 2 dialogues.");
@@ -2730,20 +3083,90 @@
         }
         const effectiveGuardPrompt = normalizePromptText(guardPrompt, 4200);
 
+        async function runStateQueryLoop(model, basePayload, partialHandler) {
+            const maxRounds = getStateQueryMaxRounds();
+            const queryCtx = {
+                state,
+                save,
+                strictFrame,
+                activeConstraints: Array.from(activeConstraints || []),
+                constraintDetails,
+                skillState,
+                recentLite: packed.recentLite || "",
+                game,
+                ragLite: packed.ragLite || ""
+            };
+            let queryRounds = 0;
+            const queryBlocks = [];
+            const buildPayloadWithQueries = () => (queryBlocks.length ? `${basePayload}\n\n${queryBlocks.join("\n\n")}` : basePayload);
+
+            let current = await requestChatOnce(
+                model,
+                effectiveGuardPrompt,
+                effectiveNarratorPrompt,
+                buildPayloadWithQueries(),
+                normalizedResponseMode,
+                partialHandler
+            );
+            while (true) {
+                const queryKeys = parseStateQueryKeysFromText(current.aiRawText) || parseStateQueryKeysFromText(current.aiText);
+                if (!Array.isArray(queryKeys) || !queryKeys.length) break;
+                if (queryRounds >= maxRounds) {
+                    CYOA.appendSystemMessage?.(isZhLocale()
+                        ? "⚠️ 状态按需查询已达到上限，已回退本地安全叙事。"
+                        : "⚠️ State query budget exceeded; fallback to local safe narrative.");
+                    return {
+                        aiRawText: "",
+                        aiText: buildSafeFallbackReply(save),
+                        meta: { ...(current.meta || {}), queryBudgetExceeded: true }
+                    };
+                }
+                queryRounds += 1;
+                CYOA.appendSystemMessage?.(isZhLocale()
+                    ? `ℹ️ 状态按需查询：${queryKeys.join("、")}`
+                    : `ℹ️ State query: ${queryKeys.join(", ")}`);
+                const queryBlock = buildStateQueryResultBlock(queryKeys, queryCtx);
+                queryBlocks.push(queryBlock);
+                current = await requestChatOnce(
+                    model,
+                    effectiveGuardPrompt,
+                    effectiveNarratorPrompt,
+                    buildPayloadWithQueries(),
+                    normalizedResponseMode,
+                    partialHandler
+                );
+            }
+            return current;
+        }
+
         try {
             CYOA._pendingNodeChangeMeta = null;
             const model = resolveChatModelForGame();
             if (!model) throw new Error("未找到可用的聊天模型（chat）");
             if (model) window.gameModeModel = model;
-            let { aiRawText, aiText, meta } = await requestChatOnce(model, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
+            let { aiRawText, aiText, meta } = await runStateQueryLoop(model, userPayload, (partialRaw) => {
                 if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
                 const partialText = dedupeStreamingTailLines(sanitizeAITextForDisplay(partialRaw)) || "…";
                 setAssistantBubbleText(assistantBubble, partialText);
             });
+            if (String(aiText || "").trim() === "（无回复）" && String(aiRawText || "").trim()) {
+                CYOA.appendSystemMessage?.(
+                    isZhLocale()
+                        ? "ℹ️ 检测到回复文本被清洗后为空，已改为尽量保留原文显示。"
+                        : "ℹ️ Reply became empty after sanitization; preserving raw text as fallback."
+                );
+            }
             if (normalizedResponseMode === "json" && meta?.usedJsonFallback) {
                 CYOA.appendSystemMessage?.(isZhLocale()
                     ? "ℹ️ JSON 模式解析失败，已自动回退到文本模式显示（本回合）。"
                     : "ℹ️ JSON mode parse failed; auto-fell back to text display for this turn.");
+            }
+            if (/^\s*（空回复）/.test(String(aiRawText || ""))) {
+                CYOA.appendSystemMessage?.(
+                    isZhLocale()
+                        ? `⚠️ 模型返回空正文：model=${model}，stream=${meta?.streamRequested ? "on" : "off"}，http=${meta?.httpStatus || "?"}`
+                        : `⚠️ Empty model body: model=${model}, stream=${meta?.streamRequested ? "on" : "off"}, http=${meta?.httpStatus || "?"}`
+                );
             }
             const tianDaoReason = parseTianDaoDirective(aiText) || parseTianDaoDirective(aiRawText);
             if (tianDaoReason != null) {
@@ -2846,7 +3269,7 @@
                     const modelEl = document.getElementById("model");
                     if (modelEl) modelEl.value = backup;
                     setAssistantBubbleText(assistantBubble, isZhLocale() ? "（检测到异常回复，正在切换模型重试…）" : "(Reply looked invalid, retrying with backup model...)");
-                    const retried = await requestChatOnce(backup, effectiveGuardPrompt, effectiveNarratorPrompt, userPayload, normalizedResponseMode, (partialRaw) => {
+                    const retried = await runStateQueryLoop(backup, userPayload, (partialRaw) => {
                         if (seq !== CYOA._gameMsgSeq || !CYOA.currentGame || !CYOA.currentSave) return;
                         const partialText = dedupeStreamingTailLines(sanitizeAITextForDisplay(partialRaw)) || "…";
                         setAssistantBubbleText(assistantBubble, partialText);

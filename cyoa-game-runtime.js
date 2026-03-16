@@ -48,7 +48,8 @@
         });
         const pid = String(CYOA.pluginMeta?.id || CYOA.CONFIG?.PLUGIN_ID || "").trim();
         if (pid) push(`plugins/${pid}/${fileName}`);
-        push(fileName);
+        // Stable fallback by folder name; avoid root-path 404 noise.
+        push(`plugins/cyoa/${fileName}`);
         return out;
     }
 
@@ -290,6 +291,15 @@
         const attrs = (Array.isArray(save?.attributes) ? save.attributes : [])
             .slice(0, 20)
             .map(a => `${a.id || a.name}:${a.value}`).sort();
+        const constraintDetails = CYOA.getActiveConstraintDetails?.() || {};
+        const sourceSig = Object.keys(constraintDetails?.sources || {})
+            .sort()
+            .map((k) => {
+                const equips = Array.from(new Set((constraintDetails.sources[k] || []).map(s => String(s?.equipId || s?.equipName || "").trim()).filter(Boolean))).sort();
+                return `${k}:${equips.join("|")}`;
+            })
+            .join(";");
+        const rulebookVersion = Number(constraintDetails?.schemaVersion || 1);
         return JSON.stringify({
             gameId: game?.id || "",
             chapter: save?.currentChapter || "",
@@ -297,8 +307,39 @@
             posture: save?.posture || "",
             player: save?.playerCharacterId || save?.playerCharacter || "",
             constraints: Array.from(CYOA.getActiveConstraints?.() || new Set()).sort(),
-            equip, quests, skills, attrs
+            equip, quests, skills, attrs, sourceSig, rulebookVersion
         });
+    }
+
+    function buildRulebookRag(save, game) {
+        const details = CYOA.getActiveConstraintDetails?.() || {};
+        const impacts = Array.isArray(details?.impactLines) ? details.impactLines.slice(0, 24) : [];
+        const constraints = Array.isArray(details?.active) ? details.active : [];
+        const posture = String(save?.posture || "").trim() || "standing";
+        const postureDuration = Number(save?.postureDuration || 0);
+        const equipped = getUniqueEquippedItemsForRAG(save, game).slice(0, 16);
+        const lines = [
+            "[规则说明书/Rulebook]",
+            `- posture: ${posture}${postureDuration > 0 ? ` (${postureDuration} turns)` : ""}`,
+            `- active_constraints: ${constraints.join(", ") || "none"}`,
+            `- equipped_items: ${equipped.map(e => e.name || e.id).join(", ") || "none"}`
+        ];
+        if (impacts.length) {
+            lines.push("- constraint_equipment_impacts:");
+            impacts.forEach((line) => lines.push(`  ${line}`));
+        }
+        const styleGuide = Array.isArray(CYOA.getLocalTemplateLibrary?.()?.ragReference?.styleGuide)
+            ? CYOA.getLocalTemplateLibrary().ragReference.styleGuide.slice(0, 8)
+            : [];
+        if (styleGuide.length) {
+            lines.push("- narrative_rulebook:");
+            styleGuide.forEach((line) => lines.push(`  - ${String(line || "").trim()}`));
+        }
+        lines.push("- hard_boundaries:");
+        lines.push("  - Do not ignore physical constraints.");
+        lines.push("  - Do not jump outside current chapter/location frame.");
+        lines.push("  - Unknown facts must be queried before assertion.");
+        return lines.join("\n");
     }
 
     function buildRAGText(save, game) {
@@ -367,6 +408,10 @@
         if (examples.length) {
             lines.push(`[本地模板示例] ${examples.slice(0, 2).join(" / ")}`);
         }
+        if (CYOA.CONFIG?.RAG_RULEBOOK_ENABLED !== false) {
+            const rulebook = buildRulebookRag(save, game);
+            if (rulebook) lines.push(rulebook);
+        }
         return lines.join("\n");
     }
 
@@ -390,6 +435,40 @@
         const save = CYOA.currentSave;
         if (!save) return "";
         return String(save._ragCache || CYOA.generateRAG?.() || "");
+    };
+
+    CYOA.queryRagByKeys = function(keys, context) {
+        const list = Array.isArray(keys) ? keys.map(k => String(k || "").trim().toLowerCase()).filter(Boolean) : [];
+        const game = context?.game || CYOA.currentGame;
+        const save = context?.save || CYOA.currentSave;
+        if (!game || !save) return "";
+        const out = [];
+        const has = (k) => list.includes(k);
+        if (has("rag_rules") || has("rules") || has("rulebook")) {
+            out.push(buildRulebookRag(save, game));
+        }
+        if (has("equipment_impacts")) {
+            const impacts = Array.isArray(context?.constraintDetails?.impactLines)
+                ? context.constraintDetails.impactLines
+                : (CYOA.getActiveConstraintDetails?.()?.impactLines || []);
+            out.push([
+                "[equipment_impacts]",
+                ...(impacts.length ? impacts.slice(0, 24) : ["none"])
+            ].join("\n"));
+        }
+        if (has("interactables")) {
+            const ragText = String(CYOA.getRAG?.() || "").trim();
+            const hitLines = ragText
+                .split(/\r?\n/)
+                .filter((line) => /\[(在场人物|地点设施|当前地点|当前场景|邻接地点)\]/.test(line))
+                .slice(0, 10);
+            if (hitLines.length) out.push(["[interactables]", ...hitLines].join("\n"));
+        }
+        if (!out.length) {
+            const rag = String(CYOA.getRAG?.() || "").trim();
+            return rag ? rag.split(/\r?\n/).slice(0, 16).join("\n") : "";
+        }
+        return out.join("\n\n");
     };
 
     CYOA.invalidateRAG = function() {
@@ -772,6 +851,20 @@
 
         CYOA.currentGame = game;
         CYOA._gamePhase = "playing";
+        // 进入游戏时优先采用剧本叙述者模型，避免受主界面分类筛选影响
+        const narratorModel = String(game?.narrator?.model || "").trim();
+        const modelEl = document.getElementById("model");
+        const uiModel = String(modelEl?.value || "").trim();
+        const preferredModel = narratorModel || uiModel || String(window.gameModeModel || "").trim();
+        if (preferredModel) {
+            window.gameModeModel = preferredModel;
+            const provider = preferredModel.includes("::") ? String(preferredModel.split("::")[0] || "").trim() : "";
+            if (provider) window.gameModeProvider = provider;
+            if (modelEl) {
+                const hasOption = Array.from(modelEl.options || []).some(opt => String(opt?.value || "").trim() === preferredModel);
+                if (hasOption) modelEl.value = preferredModel;
+            }
+        }
 
         const playable = roleName
             ? (game.characters || []).find(c => c.name === roleName || c.id === roleName) || getDefaultPlayable(game)
